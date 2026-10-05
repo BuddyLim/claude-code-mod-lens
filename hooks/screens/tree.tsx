@@ -157,7 +157,16 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
     />
   )
 
-  const fileRow = (path: string, mark: string, name = path, depth = 0, isPickable = false) => {
+  // `scope` tells apart the rows of a file that is listed twice: among the
+  // changed files, and again in the tree of every file (`all:`).
+  const fileRow = (
+    path: string,
+    mark: string,
+    name = path,
+    depth = 0,
+    isPickable = false,
+    scope = '',
+  ) => {
     const counts = countLabel(diagsOf(diags, path))
     const isChecked = isCheckable(path)
     const icon = iconOf(path)
@@ -187,7 +196,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         <Text color={icon.color}>{icon.glyph} </Text>
         <Button
           plain
-          key={`file:${path}`}
+          key={`file:${scope}${path}`}
           // A file still being checked shows the busy mark beside what
           // has been found in it so far; its tick waits for the last tool.
           label={`${name}  ${[counts, !shell.isScanning ? '' : model.isQueued(path) ? '⋯ queued' : isAwaited(path, shell.pending) ? shell.busyMark : ''].filter(part => part !== '').join(' ') || (isChecked ? '✓' : '·')}`}
@@ -411,7 +420,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
   ).map(({ row, isClosed }) =>
     row.kind === 'dir'
       ? folderRow(row, isClosed, 99, [], 'all:')
-      : fileRow(row.path, statusOf.get(row.path) ?? ' ', row.name, row.depth),
+      : fileRow(row.path, statusOf.get(row.path) ?? ' ', row.name, row.depth, false, 'all:'),
   )
 
   // The picked stash's message is wrapped here, to the width its box has,
