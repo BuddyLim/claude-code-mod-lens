@@ -100,6 +100,10 @@ export type View = {
   // The commit compared against the base in place of the working tree; ''
   // while it is the working tree that is compared.
   target: string
+  // The worktree whose files, as they stand, the working tree is compared
+  // with ('' for none): `base` is then a snapshot of them, taken again with
+  // every scan.
+  baseWorktree: string
   // The pull or merge request the target is the head of, as a label for the
   // header ("PR #12 → main · its title"); '' when the target is not one.
   request: string
@@ -194,6 +198,10 @@ export type Scan = {
   // `git stash list`: each stash's name (stash@{0}) and what it says it holds.
   // `base` is the short hash of the commit it was made on, `when` how long ago.
   stashes: { ref: string; subject: string; base: string; when: string }[]
+  // The repo's worktrees (`git worktree list`): the folder each is reviewed
+  // at, the branch it has checked out ('' when detached), and whether it is
+  // the one under review.
+  worktrees: Worktree[]
   // The tools a scan under way is still waiting on, by name and project.
   pending: string[]
   // Hints that code is never used: they fade that code, and are not counted
@@ -207,6 +215,9 @@ export type Scan = {
 
 export type LineStat = [added: number, deleted: number]
 
+// `head` is the full hash of the commit it has checked out.
+export type Worktree = { path: string; branch: string; head: string; isCurrent: boolean }
+
 // A repo reviewed before, as the store keeps it between sessions: where it
 // is, what was being compared (`requestTyped` when that was a pull or merge
 // request, which is fetched again), how the file tree was laid out, and when.
@@ -219,6 +230,9 @@ export type Recent = {
   layout: 'tree' | 'list'
   isBrowsing: boolean
   at: number
+  // The repo it is a worktree of (its own path when it is the main one):
+  // what the list groups by. '' where that was never asked.
+  home: string
 }
 
 export type Commit = {

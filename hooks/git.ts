@@ -325,6 +325,18 @@ const UNCOMMITTED_COLOR = '#8b949e'
 
 export type Stash = Scan['stashes'][number]
 
+// `git worktree list --porcelain`: a block per worktree, its folder first,
+// then its commit and the branch it has checked out (none when detached).
+export const parseWorktrees = (out: string): { path: string; branch: string; head: string }[] =>
+  out
+    .split(/\n\s*\n/)
+    .map(block => ({
+      path: /^worktree (.+)$/m.exec(block)?.[1] ?? '',
+      branch: /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] ?? '',
+      head: /^HEAD ([0-9a-f]+)$/m.exec(block)?.[1] ?? '',
+    }))
+    .filter(one => one.path !== '')
+
 // Exports a commit ($1, its short hash $2) of the folder it runs in to a
 // temporary folder and prints that folder's real path. A repo folder keeps
 // this export and the one named by $3 (the comparison's other side, when it
@@ -404,6 +416,7 @@ export type Changes = {
   headHash: string
   dirty: string[]
   stashes: Stash[]
+  worktrees: Scan['worktrees']
   history: GraphRow[]
   refusal?: string
 }
@@ -420,7 +433,7 @@ export const readChanges = async (
 ): Promise<Changes> => {
   const sides = target === '' ? [base] : [base, target]
   const git = (argv: string[]) => run(['git', ...argv], { cwd: repo, timeoutMs: 60_000 })
-  const [named, untracked, hunks, numstat, log, branches, head, headHash, dirty, stashes] =
+  const [named, untracked, hunks, numstat, log, branches, head, headHash, dirty, stashes, trees, top, prefix] =
     await Promise.all([
       git(['diff', '--name-status', '--relative', ...sides]),
       git(['ls-files', '--others', '--exclude-standard']),
@@ -445,8 +458,29 @@ export const readChanges = async (
       // Each stash with its parents (the first is the commit it was made on)
       // and how long ago.
       git(['stash', 'list', '--format=%gd%x01%gs%x01%p%x01%ar']),
+      // The repo's worktrees, and where the folder under review sits in its own.
+      git(['worktree', 'list', '--porcelain']),
+      git(['rev-parse', '--show-toplevel']),
+      git(['rev-parse', '--show-prefix']),
     ])
-  const newFiles = parseUntracked(target === '' ? untracked.stdout : '')
+  // Each worktree is reviewed at the same folder of it as this one is.
+  const inside = prefix.stdout.trim().replace(/\/$/, '')
+  const worktrees = parseWorktrees(trees.stdout).map(one => ({
+    path: inside === '' ? one.path : `${one.path}/${inside}`,
+    branch: one.branch,
+    head: one.head,
+    isCurrent: one.path === top.stdout.trim(),
+  }))
+  // A worktree kept inside the repo is a checkout of its own, not new files
+  // of this one: git lists its folder as untracked, and it is left out.
+  const nested = parseWorktrees(trees.stdout)
+    .map(one => one.path)
+    .filter(path => path !== top.stdout.trim())
+  const newFiles = parseUntracked(target === '' ? untracked.stdout : '').filter(one => {
+    const whole = `${repo}/${one.path}`.replace(/\/$/, '')
+
+    return !nested.some(path => whole === path || whole.startsWith(`${path}/`))
+  })
   // git counts lines only for files it tracks; a new file's are all added.
   const counted =
     newFiles.length === 0
@@ -475,9 +509,59 @@ export const readChanges = async (
 
       return { ref, subject, base: parents.split(' ')[0] ?? '', when }
     }),
+    worktrees,
     history: layoutHistory(parseCommits(log.stdout), headHash.stdout.trim()),
     ...(named.exitCode !== 0 ? { refusal: tail(named.stderr) } : {}),
   }
+}
+
+// Prints a commit holding a worktree's files as they stand: what it has
+// checked out, with its uncommitted edits and its untracked files. The
+// commit is built through an index of its own and belongs to no branch, so
+// nothing of the worktree changes: not its files, its index or its HEAD.
+// Worktrees kept inside it are left out, being checkouts of their own.
+const SNAPSHOT = [
+  'top=$(git rev-parse --show-toplevel) && cd "$top" || exit 1',
+  'head=$(git rev-parse HEAD) || exit 1',
+  'index=$(mktemp) || exit 1',
+  'git worktree list --porcelain | sed -n "s/^worktree //p" > "$index.trees"',
+  'set -- .',
+  'while IFS= read -r tree; do',
+  '  case "$tree" in "$top"/*) set -- "$@" ":(exclude)${tree#"$top"/}";; esac',
+  'done < "$index.trees"',
+  'rm -f "$index" "$index.trees"',
+  'export GIT_INDEX_FILE="$index"',
+  'git read-tree HEAD && git add -A -- "$@" && tree=$(git write-tree)',
+  'status=$?',
+  'rm -f "$index"',
+  'unset GIT_INDEX_FILE',
+  '[ "$status" -eq 0 ] || exit 1',
+  'git -c user.name=lens -c user.email=lens@localhost commit-tree "$tree" -p "$head" -m "lens: a worktree as it stands"',
+].join('\n')
+
+// A commit of a worktree's files as they stand (see SNAPSHOT), by its hash;
+// '' with git's reason where it could not be made.
+export const snapshotWorktree = async (
+  run: Run,
+  path: string,
+): Promise<{ hash: string; refusal: string }> => {
+  const made = await run(['sh', '-c', SNAPSHOT], { cwd: path, timeoutMs: 120_000 })
+  const hash = made.stdout.trim()
+
+  return made.exitCode === 0 && /^[0-9a-f]{40,}$/.test(hash)
+    ? { hash, refusal: '' }
+    : { hash: '', refusal: tail(made.stderr) || 'git made no snapshot' }
+}
+
+// The repo a folder's worktree belongs to, by the path of its main
+// checkout; the folder's own repo root when it is that one. '' outside a repo.
+export const mainRepoOf = async (run: Run, repo: string): Promise<string> => {
+  const asked = await run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    cwd: repo,
+    timeoutMs: 20_000,
+  })
+
+  return asked.exitCode === 0 ? asked.stdout.trim().replace(/\/\.git\/?$/, '') : ''
 }
 
 // The files git tracks in the repo, or only those matching the patterns.

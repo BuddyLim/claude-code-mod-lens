@@ -10,6 +10,7 @@ import {
   parseNameStatus,
   parseNumstat,
   parseRemoved,
+  parseWorktrees,
   sumStats,
 } from './git'
 import * as git from './git'
@@ -229,4 +230,16 @@ test('an export that fails has no folder, and a file never committed has no blam
     refusal: 'tar: broken',
   })
   expect(await git.blame(run, '/repo', 'a.py', '', async () => 0)).toEqual({ lines: [] })
+})
+
+test('worktrees are read with the branch each has checked out', () => {
+  expect(
+    parseWorktrees(
+      'worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/wt/fix\nHEAD def\nbranch refs/heads/fix/a-b\n\nworktree /repo/wt/old\nHEAD 123\ndetached\n',
+    ),
+  ).toEqual([
+    { path: '/repo', branch: 'main', head: 'abc' },
+    { path: '/repo/wt/fix', branch: 'fix/a-b', head: 'def' },
+    { path: '/repo/wt/old', branch: '', head: '123' },
+  ])
 })

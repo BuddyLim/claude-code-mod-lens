@@ -53,6 +53,7 @@ export const NO_VIEW: View = {
   bodyTop: 0,
   graphTop: 0,
   target: '',
+  baseWorktree: '',
   request: '',
   requestTyped: '',
   isCommenting: false,
@@ -98,6 +99,7 @@ export const NO_SCAN: Scan = {
   headHash: '',
   dirty: [],
   stashes: [],
+  worktrees: [],
   pending: [],
   faded: [],
   checked: 0,
@@ -154,7 +156,10 @@ export const comparisonOf = (now: View, found: Scan, history: readonly GraphRow[
   return {
     headName,
     side: now.target === '' ? headName : shortRef(now.target),
-    against: baseBranch ?? shortRef(now.base),
+    against:
+      (now.baseWorktree ?? '') !== ''
+        ? `${now.baseWorktree.split('/').pop() ?? ''} (worktree, as it stands)`
+        : (baseBranch ?? shortRef(now.base)),
     isComparing:
       now.target !== '' ||
       (now.base !== 'HEAD' &&

@@ -1,7 +1,16 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Recent } from '../types'
-import { RECENTS, agoOf, cleanUp, comparisonLabel, recentOf, remember, settledRecents } from './recents'
+import {
+  RECENTS,
+  agoOf,
+  cleanUp,
+  comparisonLabel,
+  groupRecents,
+  recentOf,
+  remember,
+  settledRecents,
+} from './recents'
 import { NO_VIEW } from './state'
 
 const one = (repo: string, at = 1): Recent => ({
@@ -13,6 +22,7 @@ const one = (repo: string, at = 1): Recent => ({
   layout: 'tree',
   isBrowsing: false,
   at,
+  home: '',
 })
 
 test('a review is kept with its comparison and layout', () => {
@@ -82,4 +92,21 @@ test('cleaning up is one command, given each repo once', async () => {
 
   expect(ran).toHaveLength(1)
   expect(ran[0]?.slice(3)).toEqual(['sh', '/a', '/b'])
+})
+
+test('the worktrees of one repo are listed together, under it', () => {
+  const list = [
+    { ...one('/code/app/wt/fix', 9), home: '/code/app' },
+    one('/code/other', 8),
+    { ...one('/code/app', 7), home: '/code/app' },
+  ]
+
+  expect(groupRecents(list).map(group => [group.home, group.reviews.map(each => each.repo)])).toEqual([
+    ['/code/app', ['/code/app/wt/fix', '/code/app']],
+    ['/code/other', ['/code/other']],
+  ])
+})
+
+test('a comparison with a worktree is not kept: its snapshot does not last', () => {
+  expect(recentOf({ ...NO_VIEW, repo: '/a', base: 'abc123', baseWorktree: '/a/wt/x' }, 1).base).toBe('HEAD')
 })

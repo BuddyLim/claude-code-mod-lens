@@ -169,6 +169,7 @@ export const scanRepo = async (
     headHash: changes.headHash,
     dirty: changes.dirty,
     stashes: changes.stashes,
+    worktrees: changes.worktrees,
   }
 
   await ports.writeScan(

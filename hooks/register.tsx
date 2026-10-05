@@ -250,7 +250,10 @@ const rememberReview = async ($: EngineInterface): Promise<void> => {
     return
   }
 
-  const list = remember(await readRecents($), recentOf(now, await $.clock.now()))
+  const list = remember(
+    await readRecents($),
+    recentOf(now, await $.clock.now(), await git.mainRepoOf(runOf($), now.repo)),
+  )
 
   await $.store.set('recents', list).catch(() => undefined)
   await update($, recents, () => list)
@@ -322,6 +325,19 @@ const runScan = async ($: EngineInterface, taken: Job): Promise<void> => {
   // review is kept for next time.
   void rememberReview($)
 
+  // A comparison with another worktree is with its files as they stand now:
+  // they are read again, and the scan runs against that.
+  let base = now.base
+
+  if ((now.baseWorktree ?? '') !== '') {
+    const taken = await git.snapshotWorktree(runOf($), now.baseWorktree)
+
+    if (taken.hash !== '' && taken.hash !== base) {
+      base = taken.hash
+      await update($, view, (last): View => ({ ...last, base }))
+    }
+  }
+
   await scanRepo(
     {
       run: runOf($),
@@ -352,7 +368,7 @@ const runScan = async ($: EngineInterface, taken: Job): Promise<void> => {
     },
     {
       repo: now.repo,
-      base: now.base,
+      base,
       target: now.target ?? '',
       extra: now.extra ?? [],
       isBrowsing: now.isBrowsing ?? false,
@@ -755,6 +771,35 @@ const startCompare = async (
     return
   }
 
+  // "@name" is another worktree of the repo as its files stand, uncommitted
+  // work and all: a commit is made of them (nothing of that worktree
+  // changes) and compared with like any other. `beside` is its folder.
+  let beside = ''
+
+  if (to.startsWith('@')) {
+    const name = to.slice(1)
+    const other = ((await read($, scan)).worktrees ?? []).find(
+      one => !one.isCurrent && one.path.split('/').pop() === name,
+    )
+
+    if (other === undefined) {
+      $.ui.toast(`This repo has no other worktree called "${name}"`, { timeoutMs: 8000 })
+
+      return
+    }
+
+    const taken = await git.snapshotWorktree(run, other.path)
+
+    if (taken.hash === '') {
+      $.ui.toast(`${name} could not be read as it stands: ${taken.refusal}`, { timeoutMs: 10_000 })
+
+      return
+    }
+
+    beside = other.path
+    to = taken.hash
+  }
+
   // What is not a ref but reads as a pull or merge request (#12, !34, a
   // link) is looked up on the forge: its head is fetched under a ref of the
   // mod's own, and it is compared with where it forked from its target.
@@ -792,6 +837,7 @@ const startCompare = async (
       ...last,
       base: to,
       target: from,
+      baseWorktree: beside,
       request,
       requestTyped: typed,
       isCommenting: false,
@@ -814,6 +860,21 @@ const checkOut = async (
   target: string,
   isBranch: boolean,
 ): Promise<void> => {
+  // A branch another worktree has checked out cannot be checked out here
+  // too (git refuses); its worktree is where it is, so the review goes there.
+  const held = isBranch
+    ? ((await read($, scan)).worktrees ?? []).find(one => one.branch === target && !one.isCurrent)
+    : undefined
+
+  if (held !== undefined) {
+    $.ui.toast(`${target} is checked out in the worktree ${held.path.split('/').pop() ?? ''}: reviewing it there`, {
+      timeoutMs: 6000,
+    })
+    await openReview($, held.path, undefined)
+
+    return
+  }
+
   const refusal = await git.checkOut(runOf($), repo, target, isBranch)
 
   if (refusal !== '') {
@@ -832,6 +893,7 @@ const checkOut = async (
       ...last,
       base: 'HEAD',
       target: '',
+      baseWorktree: '',
       screen: 'tree',
       selected: '',
       commit: '',
@@ -1359,6 +1421,7 @@ export const register: Register = (on, options) => {
           shell,
           rows: history,
           stashes: found.stashes,
+          worktrees: found.worktrees,
           branches: found.branches,
           head: found.head,
           headHash: found.headHash,
@@ -1402,7 +1465,16 @@ export const register: Register = (on, options) => {
           popStash: ref => void applyStash($, repo, ref, true),
           compareWith: hash => {
             rescan()
-            set((last): View => ({ ...last, base: hash, target: '', screen: 'tree', selected: '' }))
+            set(
+              (last): View => ({
+                ...last,
+                base: hash,
+                target: '',
+                baseWorktree: '',
+                screen: 'tree',
+                selected: '',
+              }),
+            )
           },
           checkOutBranch: name => void checkOut($, repo, name, true),
           checkOutCommit: hash => void checkOut($, repo, hash, false),
@@ -1436,6 +1508,7 @@ export const register: Register = (on, options) => {
                   : { ...last, pickB: value },
             ),
           compare: (side, against) => void startCompare($, repo, side, against),
+          switchWorktree: path => void openReview($, path, undefined),
         },
       )
 
@@ -1492,7 +1565,7 @@ export const register: Register = (on, options) => {
             openGraph: () => set((last): View => ({ ...last, screen: 'graph', backFile: '' })),
             stopComparing: () => {
               rescan()
-              set((last): View => ({ ...last, base: 'HEAD', target: '' }))
+              set((last): View => ({ ...last, base: 'HEAD', target: '', baseWorktree: '' }))
             },
             toggleMore: () => set(last => ({ ...last, isMore: !(last.isMore ?? false) })),
             help,

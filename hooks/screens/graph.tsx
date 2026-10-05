@@ -8,7 +8,7 @@
 
 import type { RenderChildren } from 'claude-code'
 
-import type { GraphRow, Picked, Span } from '../../types'
+import type { GraphRow, Picked, Span, Worktree } from '../../types'
 import type { Stash } from '../git'
 import { GRAPH_COMMITS, UNCOMMITTED, laneColor } from '../git'
 import { clamp, wrapText } from '../text'
@@ -29,6 +29,9 @@ import {
 const BRANCH_ICON = '\u{e725}'
 const TAG_ICON = '\u{f02b}'
 const BADGE_GROUND = '#2d333b'
+// A worktree's badge: its mark and the colour it sits on.
+const WORKTREE_ICON = '\u{f07c}'
+const WORKTREE_COLOR = '#4ec9b0'
 // The longest a branch's name is drawn on a graph row before it is cut.
 const BADGE_NAME = 18
 // The compare panel: how many names it offers under its fields, and the rows
@@ -43,6 +46,9 @@ export type GraphModel = {
   // the commit it was made on.
   rows: readonly GraphRow[]
   stashes: readonly Stash[]
+  // The repo's worktrees: each other one is a badge on the commit it has
+  // checked out, pressed to review it there.
+  worktrees: readonly Worktree[]
   // The local branches, the one checked out ("HEAD" when detached) and its
   // commit's short hash.
   branches: readonly string[]
@@ -99,6 +105,8 @@ export type GraphActions = {
   cancelCompare: () => void
   typeCompare: (field: 'a' | 'b', text: string) => void
   takeOffer: (value: string) => void
+  // Reviews another worktree of the repo.
+  switchWorktree: (path: string) => void
   compare: (side: string, against: string) => void
 }
 
@@ -330,9 +338,14 @@ export const graphScreen = (
     }
 
     const unworn = merged.length - worn.length
+    // The other worktrees that have this commit checked out, by folder name.
+    const housed = model.worktrees
+      .filter(one => !one.isCurrent && one.head !== '' && one.head.startsWith(row.hash))
+      .map(one => ({ path: one.path, name: cut(one.path.split('/').pop() ?? one.path, BADGE_NAME) }))
     const badges =
       worn.reduce((sum, one) => sum + one.name.length + 6, 0) +
-      (unworn > 0 ? String(unworn).length + 4 : 0)
+      (unworn > 0 ? String(unworn).length + 4 : 0) +
+      housed.reduce((sum, one) => sum + one.name.length + 5, 0)
     const isCrowded =
       unworn > 0 || worn.some((one, at) => one.name !== `${merged[at]?.name}${merged[at]?.tail}`)
     const subject = row.subject === '' ? '(no message)' : row.subject
@@ -361,6 +374,23 @@ export const graphScreen = (
           </Text>
         </Box>
       ),
+      // A worktree is a badge too, and a handle: pressed, the review moves
+      // to that worktree, where it was left.
+      ...housed.map(one => (
+        <Box flexShrink={0} marginRight={1}>
+          <Text backgroundColor={WORKTREE_COLOR} color="#000000">
+            {' '}
+            {WORKTREE_ICON}{' '}
+          </Text>
+          <Text> </Text>
+          <Button
+            plain
+            key={`worktree:${one.path}`}
+            label={one.name}
+            onPress={() => actions.switchWorktree(one.path)}
+          />
+        </Box>
+      )),
       <Box flexGrow={1} flexShrink={1} height={1} overflow="hidden">
         <Button
           plain
@@ -491,6 +521,16 @@ export const graphScreen = (
   const offers = isPicking
     ? [
         ...(pickField === 'a' ? [{ value: '', label: 'working tree (your files as they are)' }] : []),
+        // Another worktree, as its files stand: its uncommitted work too.
+        ...(pickField === 'b'
+          ? model.worktrees
+              .filter(one => !one.isCurrent)
+              .map(one => {
+                const name = one.path.split('/').pop() ?? one.path
+
+                return { value: `@${name}`, label: `@${name}  that worktree's files as they stand` }
+              })
+          : []),
         ...branches.map(name => ({ value: name, label: name })),
         ...graphRows
           .filter(row => row.hash !== UNCOMMITTED)
@@ -520,7 +560,7 @@ export const graphScreen = (
       <Input
         key="pick-b"
         label="with   "
-        placeholder="a branch, a commit, or a request: #12, !34 or its link"
+        placeholder="a branch, a commit, a request (#12, !34, a link) or @worktree"
         value={pickB}
         submitLabel="compare"
         onInput={value => actions.typeCompare('b', value)}

@@ -13,15 +13,17 @@ import type { Run } from './run'
 export const RECENTS = 12
 
 // A review as the list keeps it.
-export const recentOf = (now: View, at: number): Recent => ({
+export const recentOf = (now: View, at: number, home = ''): Recent => ({
   repo: now.repo,
-  base: now.base,
+  // A comparison with another worktree is with a snapshot that does not last.
+  base: (now.baseWorktree ?? '') === '' ? now.base : 'HEAD',
   target: now.target ?? '',
   request: (now.target ?? '') === '' ? '' : (now.request ?? ''),
   requestTyped: (now.target ?? '') === '' ? '' : (now.requestTyped ?? ''),
   layout: now.layout ?? 'tree',
   isBrowsing: now.isBrowsing ?? false,
   at,
+  home,
 })
 
 // The list with a review put first, in place of what it held of that repo.
@@ -51,10 +53,26 @@ export const settledRecents = (stored: unknown): Recent[] =>
             layout: held.layout === 'list' ? 'list' : 'tree',
             isBrowsing: held.isBrowsing === true,
             at: typeof held.at === 'number' ? held.at : 0,
+            home: text(held.home),
           },
         ]
       : []
   })
+
+// The list as the recents screen shows it: the worktrees of one repo
+// together, under the repo they belong to, each group where its latest
+// review sits in the list.
+export const groupRecents = (list: readonly Recent[]): { home: string; reviews: Recent[] }[] => {
+  const groups = new Map<string, Recent[]>()
+
+  for (const one of list) {
+    const home = one.home === '' ? one.repo : one.home
+
+    groups.set(home, [...(groups.get(home) ?? []), one])
+  }
+
+  return [...groups].map(([home, reviews]) => ({ home, reviews }))
+}
 
 // What a review was comparing, in a few words, for the list.
 export const comparisonLabel = (one: Recent): string =>
