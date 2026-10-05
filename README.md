@@ -30,8 +30,15 @@ the problem or it was already there.
   compare any two branches, commits or pull requests.
 - **Commit, stash and discard** the files you tick, from the file tree.
 - **Pull and merge requests.** Compare with `#12` (or a link) to review a
-  request's changes; its review comments show on the lines they are on, and
-  you can post one. GitHub through `gh`, GitLab through `glab`.
+  request's changes; the repo's open requests are offered in the compare
+  panel. Review threads show as cards on the lines they are on: reply,
+  resolve or reopen one, post a new comment under a line, list every thread,
+  and submit a review (approve, request changes or comment). GitHub through
+  `gh`, GitLab through `glab`.
+- **Worktrees.** Each other worktree of the repo is a badge on the commit it
+  has checked out; press it to review that worktree where you left it.
+  Compare with `@name` to read your files against another worktree's as they
+  stand, uncommitted work included.
 - **Hand things to Claude.** Send a line's problems, a function, your
   selection or every new issue to the prompt (appended, never submitted), or
   have Claude told automatically what its own edits broke.
