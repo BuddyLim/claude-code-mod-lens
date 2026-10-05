@@ -11,6 +11,10 @@ export type MiniLine = {
   // What the language server says starts on the line, when it has said:
   // 0 nothing, 1 a function or method, 2 a class or type. Absent is nothing.
   head?: 0 | 1 | 2
+  // Whether a review comment sits on the line, and whether every thread
+  // there has been resolved.
+  isTalked?: boolean
+  isSettled?: boolean
 }
 
 // How many characters of a line one dot stands for.
@@ -20,6 +24,8 @@ const CODE = 0x8b949e
 const CHANGED = 0x73c991
 const WARNING = 0xcca700
 const ERROR = 0xf14c4c
+const COMMENT = 0xc586c0
+const RESOLVED = 0x9a8444
 const WINDOW = 0x3a3d41
 const BRAILLE = 0x2800
 const SPACE = 0x20
@@ -41,6 +47,8 @@ type DotRow = {
   length: number
   mark: number
   head: number
+  isTalked: boolean
+  isSettled: boolean
   isChanged: boolean
   isInWindow: boolean
 }
@@ -68,6 +76,9 @@ export const minimapCells = (
       length: Math.max(0, ...held.map(line => line.length)),
       mark: Math.max(0, ...held.map(line => line.mark)),
       head: Math.max(0, ...held.map(line => line.head ?? 0)),
+      // An open thread among them keeps the rows the colour of one.
+      isTalked: held.some(line => line.isTalked === true && line.isSettled !== true),
+      isSettled: held.some(line => line.isTalked === true && line.isSettled === true),
       isChanged: held.some(line => line.isChanged),
       isInWindow: from < lines.length && from < top - 1 + shown && to > top - 1,
     }
@@ -79,12 +90,17 @@ export const minimapCells = (
     const held = summary.slice(row * 4, row * 4 + 4)
     const mark = Math.max(...held.map(one => one.mark))
     const head = Math.max(...held.map(one => one.head))
-    // A problem outranks a change, which outranks the outline.
+    // A problem outranks a comment, which outranks a change, which outranks
+    // the outline.
     const color =
       mark === 2
         ? ERROR
         : mark === 1
           ? WARNING
+          : held.some(one => one.isTalked)
+            ? COMMENT
+          : held.some(one => one.isSettled)
+            ? RESOLVED
           : held.some(one => one.isChanged)
             ? CHANGED
             : head === 2

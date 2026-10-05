@@ -293,23 +293,48 @@ export const graphScreen = (
     // lists every name in full.
     let badgeRoom = Math.floor(textRoom * 0.45)
     const worn: { ref: string; name: string }[] = []
+    // A branch and a remote's copy of it on the same commit share one badge,
+    // the remote named after it ("main | origin"): the copy has no badge of
+    // its own. A name is a remote's copy when it is no local branch and what
+    // follows its first slash is one on this row.
+    const onRow = new Set(names)
+    const isCopy = (name: string): boolean =>
+      name.includes('/') &&
+      !model.branches.includes(name) &&
+      onRow.has(name.slice(name.indexOf('/') + 1))
+    const merged = row.refs.flatMap((ref, at) => {
+      const name = names[at] ?? ''
 
-    for (const [at, ref] of row.refs.entries()) {
-      const name = cut(names[at] ?? '', BADGE_NAME)
+      if (!ref.startsWith('tag: ') && isCopy(name)) {
+        return []
+      }
 
-      if (name.length + 6 > badgeRoom) {
+      const remotes = ref.startsWith('tag: ')
+        ? []
+        : names
+            .filter(other => isCopy(other) && other.slice(other.indexOf('/') + 1) === name)
+            .map(other => ` | ${other.slice(0, other.indexOf('/'))}`)
+
+      return [{ ref, name, tail: remotes.join('') }]
+    })
+
+    for (const { ref, name, tail } of merged) {
+      const label = `${cut(name, BADGE_NAME)}${tail}`
+
+      if (label.length + 6 > badgeRoom) {
         break
       }
 
-      badgeRoom -= name.length + 6
-      worn.push({ ref, name })
+      badgeRoom -= label.length + 6
+      worn.push({ ref, name: label })
     }
 
-    const unworn = row.refs.length - worn.length
+    const unworn = merged.length - worn.length
     const badges =
       worn.reduce((sum, one) => sum + one.name.length + 6, 0) +
       (unworn > 0 ? String(unworn).length + 4 : 0)
-    const isCrowded = unworn > 0 || worn.some((one, at) => one.name !== names[at])
+    const isCrowded =
+      unworn > 0 || worn.some((one, at) => one.name !== `${merged[at]?.name}${merged[at]?.tail}`)
     const subject = row.subject === '' ? '(no message)' : row.subject
 
     // The title is the row's handle: pressing it opens what the commit holds.
@@ -486,7 +511,7 @@ export const graphScreen = (
       <Input
         key="pick-a"
         label="compare"
-        placeholder="working tree, or a branch or commit"
+        placeholder="working tree, a branch or commit, or a request: #12"
         value={pickA}
         submitLabel="compare"
         onInput={value => actions.typeCompare('a', value)}

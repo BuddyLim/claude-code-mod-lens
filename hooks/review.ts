@@ -306,6 +306,10 @@ export type Comment = {
   isResolved?: boolean // where the forge says
   isOutdated?: boolean // attached to a version of the file that has since changed
   oldLine?: number // for a comment on a removed line: its line in the target's version of the file
+  // What the forge calls the thread it is in, by which the thread is resolved (and, on GitLab,
+  // replied to): GitHub's node id of the review thread, GitLab's discussion id. Absent where the
+  // forge did not say, and on general comments.
+  thread?: string
 }
 
 type Json = Record<string, unknown>
@@ -516,12 +520,12 @@ const byTime = (comments: Comment[]): Comment[] =>
 
 // ---- GitHub ----
 
-type ThreadState = { isResolved: boolean; isOutdated: boolean }
+type ThreadState = { isResolved: boolean; isOutdated: boolean; id: string }
 
 const THREADS_QUERY =
   'query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){' +
   'pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}' +
-  'nodes{isResolved isOutdated comments(first:1){nodes{databaseId}}}}}}}'
+  'nodes{id isResolved isOutdated comments(first:1){nodes{databaseId}}}}}}}'
 
 const gh = (place: Place, ...rest: string[]): string[] => ['gh', 'api', '--hostname', place.host, ...rest]
 
@@ -546,6 +550,7 @@ const fromGithubLine = (raw: unknown, threads: Map<string, ThreadState>): Commen
     when: text(one.created_at),
     ...(replyTo === '' ? {} : { replyTo }),
     ...(thread ? { isResolved: thread.isResolved } : {}),
+    ...(thread && thread.id !== '' ? { thread: thread.id } : {}),
     isOutdated,
     ...(isOnOld && line > 0 ? { oldLine: line } : {}),
   }
@@ -611,7 +616,11 @@ const githubComments = async (run: Run, place: Place): Promise<{ comments: Comme
           const id = named(record(first).databaseId)
 
           if (id !== '') {
-            threads.set(id, { isResolved: thread.isResolved === true, isOutdated: thread.isOutdated === true })
+            threads.set(id, {
+              isResolved: thread.isResolved === true,
+              isOutdated: thread.isOutdated === true,
+              id: named(thread.id),
+            })
           }
         }
       }
@@ -645,7 +654,7 @@ const gitlabRequest = (place: Place): string =>
   `projects/${encodeURIComponent(place.repo)}/merge_requests/${place.number}`
 
 // One note of a discussion. `headSha` is the request's current head, '' when it is not known.
-const fromGitlabNote = (raw: unknown, rootId: string, headSha: string): Comment => {
+const fromGitlabNote = (raw: unknown, rootId: string, headSha: string, thread = ''): Comment => {
   const one = record(raw)
   const id = named(one.id)
   const hasPlace = typeof one.position === 'object' && one.position !== null
@@ -669,6 +678,8 @@ const fromGitlabNote = (raw: unknown, rootId: string, headSha: string): Comment 
     ...(one.resolvable === true ? { isResolved: one.resolved === true } : {}),
     ...(isOutdated === undefined ? {} : { isOutdated }),
     ...(hasPlace && !isOnFile && newLine === 0 && oldLine > 0 ? { oldLine } : {}),
+    // Only a thread that can be resolved is kept by its discussion: a general note has none.
+    ...(thread === '' || one.resolvable !== true ? {} : { thread }),
   }
 }
 
@@ -677,7 +688,9 @@ const fromGitlabDiscussion = (raw: unknown, headSha: string): Comment[] => {
   const notes = (Array.isArray(listed) ? (listed as unknown[]) : []).filter(note => record(note).system !== true)
   const rootId = named(record(notes[0]).id)
 
-  return notes.map(note => fromGitlabNote(note, rootId, headSha))
+  const thread = named(record(raw).id)
+
+  return notes.map(note => fromGitlabNote(note, rootId, headSha, thread))
 }
 
 const gitlabComments = async (run: Run, place: Place): Promise<{ comments: Comment[] } | { error: string }> => {
@@ -919,6 +932,105 @@ export const postComment = async (
   } catch {
     return { error: `The comment may have been posted on ${place.label}, but gh's answer could not be read: reload to check` }
   }
+}
+
+// Answers a review thread. `root` is the thread's first comment: GitHub replies to that comment
+// by its id, GitLab adds a note to the discussion (`root.thread`).
+export const replyComment = async (
+  run: Run,
+  typed: string,
+  root: Pick<Comment, 'id' | 'thread'>,
+  body: string,
+): Promise<{ comment: Comment } | { error: string }> => {
+  if (body.trim() === '') {
+    return { error: 'Write something before posting the reply' }
+  }
+
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place
+  }
+
+  if (place.forge === 'gitlab' && (root.thread ?? '') === '') {
+    return { error: 'GitLab did not say which discussion that comment is in: refresh (r) and try again' }
+  }
+
+  const posted = await call(
+    run,
+    place.forge === 'gitlab'
+      ? glab(
+          place,
+          '-X',
+          'POST',
+          `${gitlabRequest(place)}/discussions/${root.thread ?? ''}/notes`,
+          '-f',
+          `body=${body}`,
+        )
+      : gh(
+          place,
+          '-X',
+          'POST',
+          `repos/${place.repo}/pulls/${place.number}/comments/${root.id}/replies`,
+          '-f',
+          `body=${body}`,
+        ),
+  )
+
+  if (posted.exitCode !== 0) {
+    return { error: whyFailed(place, posted, 'comment on') }
+  }
+
+  try {
+    const made =
+      place.forge === 'gitlab'
+        ? fromGitlabNote(JSON.parse(posted.stdout), root.id, '', root.thread ?? '')
+        : fromGithubLine(JSON.parse(posted.stdout), new Map())
+
+    return { comment: { ...made, replyTo: root.id } }
+  } catch {
+    return { error: `The reply may have been posted on ${place.label}, but the answer could not be read: refresh to check` }
+  }
+}
+
+// Marks a review thread resolved, or open again. Answers '' when the forge took it, else why not.
+export const resolveThread = async (
+  run: Run,
+  typed: string,
+  thread: string,
+  isResolved: boolean,
+): Promise<string> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  if (thread === '') {
+    return `${place.label} did not say which thread that comment is in: refresh (r) and try again`
+  }
+
+  const verb = isResolved ? 'resolveReviewThread' : 'unresolveReviewThread'
+  const ran = await call(
+    run,
+    place.forge === 'gitlab'
+      ? glab(
+          place,
+          '-X',
+          'PUT',
+          `${gitlabRequest(place)}/discussions/${thread}?resolved=${isResolved ? 'true' : 'false'}`,
+        )
+      : gh(
+          place,
+          'graphql',
+          '-f',
+          `query=mutation($id:ID!){${verb}(input:{threadId:$id}){thread{isResolved}}}`,
+          '-f',
+          `id=${thread}`,
+        ),
+  )
+
+  return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'comment on')
 }
 
 // The sub-folder of the repo that `run` executes in, as a prefix ('' at the root, 'frontend/' in a

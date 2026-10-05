@@ -19,7 +19,7 @@ import { minimapCells } from '../minimap'
 import { markSpans, withInlays } from '../parts'
 import type { Comment } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
-import { clamp, findMatches, wrapText } from '../text'
+import { clamp, findMatches, shortRef, wrapText } from '../text'
 import { iconOf } from '../tree'
 import type { Kit, Shell } from './frame'
 import {
@@ -64,6 +64,11 @@ export type Insight = {
   hints: Map<number, InlayHint[]>
 }
 
+// How many lines of a comment show while the file is not expanded.
+const TALK_FOLDED = 3
+// The colour of a review thread that has been resolved.
+const RESOLVED_COLOR = '#9a8444'
+
 export type FileModel = {
   shell: Shell
   file: string
@@ -107,6 +112,11 @@ export type FileModel = {
   canComment: boolean
   isCommenting: boolean
   commentLine: number
+  // The thread being answered, by its first comment's id; '' for none.
+  replyTo: string
+  // Counts the comments sent or dropped: the field keeps its own text under
+  // its key, so each new comment gets a field of its own, empty.
+  commentRound: number
   talk: readonly Comment[]
   // The breadcrumb's open list, and what the folder it last opened holds.
   crumb: Crumb
@@ -146,6 +156,14 @@ export type FileActions = {
   pressLine: (line: number) => void
   // Puts a line's diagnostics, with its code, into the prompt.
   sendIssues: (line: number) => void
+  // Puts the review thread on a line, with the code it is about, into the prompt.
+  sendTalk: (line: number) => void
+  // Opens the comment box under a line as an answer to the thread there, and
+  // marks that thread resolved or open again. Both write to the forge only
+  // once the person posts or presses.
+  replyOn: (line: number) => void
+  resolveOn: (line: number, isResolved: boolean) => void
+  cancelComment: () => void
   // Puts what was dragged over into the prompt.
   sendSelection: () => void
   // Looks up the name dragged over, among the lines `from`..`to` on screen.
@@ -419,28 +437,133 @@ export const fileScreen = (
     // What reviewers said on this line: one cut line, or the whole thread
     // when everything is expanded.
     const talk = talkByLine.get(n) ?? []
-    const talkLines =
+    // They are drawn as one card under the line, a thread as a review tool
+    // shows it: who and when, then what was said, replies indented. Folded,
+    // the card keeps the first comment's opening lines and counts the rest.
+    const talkWidth = Math.max(24, Math.min(100, codeColumns - gutter - 4))
+    const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
+
+    for (const [at, one] of (model.isExpanded ? talk : talk.slice(0, 1)).entries()) {
+      const indent = at === 0 ? '' : '  '
+      const body = wrapText(one.body.trim(), talkWidth - 4 - indent.length)
+
+      talkLines.push({
+        kind: 'head',
+        text: `${indent}${at === 0 ? COMMENT_ICON : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
+      })
+
+      for (const line of model.isExpanded ? body : body.slice(0, TALK_FOLDED)) {
+        talkLines.push({ kind: 'body', text: `${indent}${line}` })
+      }
+
+      if (!model.isExpanded && (body.length > TALK_FOLDED || talk.length > 1)) {
+        talkLines.push({
+          kind: 'more',
+          text: `${[body.length > TALK_FOLDED ? '…' : '', talk.length > 1 ? `${talk.length - 1} ${talk.length === 2 ? 'reply' : 'replies'}` : ''].filter(part => part !== '').join(' ')} · e expands`,
+        })
+      }
+    }
+
+    // What can be done with the thread sits on the card's last row.
+    const isSettled = talk.some(one => one.isResolved === true)
+    const canSettle = talk.some(one => one.isResolved !== undefined)
+    // A settled thread steps back: a dim gold in place of the comments' purple.
+    const talkColor = isSettled ? RESOLVED_COLOR : COMMENT_COLOR
+    const cardHeight = talk.length === 0 ? 0 : talkLines.length + 2 + (model.canComment ? 1 : 0)
+    // The box a comment or a reply is typed in opens under the line it is
+    // for (under the thread, when it answers one). Only Enter or its post
+    // button sends anything to the forge.
+    const isWriting = isCommenting && commentLine === n && Input !== undefined
+    const writeHeight = isWriting ? 3 : 0
+    const answered = model.replyTo === '' ? undefined : talk[0]
+    const writeRows =
+      isWriting && Input !== undefined
+        ? [
+            <Box
+              marginLeft={gutter + 2}
+              width={talkWidth}
+              height={3}
+              columnGap={2}
+              borderStyle="round"
+              borderColor={COMMIT_BOX}
+              paddingX={1}
+              overflow="hidden"
+            >
+              <Input
+                key={`comment-text:${model.commentRound}`}
+                label={answered === undefined ? `comment on line ${n}` : `reply to ${answered.author}`}
+                placeholder="what to say, then Enter"
+                submitLabel="post"
+                autoFocus
+                onInput={actions.typeComment}
+                onSubmit={value => actions.postComment(value)}
+              />
+              <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+              <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
+            </Box>,
+          ]
+        : []
+    // One element as tall as its lines and its border: the window counts the
+    // card and the box by `talkHeight`.
+    const talkHeight = cardHeight + writeHeight
+    const talkRows =
       talk.length === 0
-        ? []
-        : model.isExpanded
-          ? talk.flatMap(one => wrapText(said(one), Math.max(20, codeColumns - gutter - 6)))
-          : [
-              `${said(talk[0] as Comment)}${talk.length > 1 ? `  +${talk.length - 1} more` : ''}`.slice(
-                0,
-                Math.max(20, codeColumns - gutter - 6),
-              ),
-            ]
-    const talkRows = talkLines.map((text, at) => (
-      <Box marginLeft={gutter + 2} height={1} overflow="hidden">
-        <Text color={COMMENT_COLOR}>
-          {at === 0 ? COMMENT_ICON : ' '} {text}
-        </Text>
-      </Box>
-    ))
+        ? writeRows
+        : [
+            <Box
+              marginLeft={gutter + 2}
+              width={talkWidth}
+              height={cardHeight}
+              flexDirection="column"
+              borderStyle="round"
+              borderColor={talkColor}
+              paddingX={1}
+              overflow="hidden"
+            >
+              {talkLines.map((line, at) => {
+                const text = (
+                  <Text
+                    wrap="truncate-end"
+                    color={line.kind === 'head' ? talkColor : undefined}
+                    bold={line.kind === 'head'}
+                    dimColor={line.kind === 'more'}
+                  >
+                    {line.text}
+                  </Text>
+                )
+
+                // The card's first row carries its handle, as a problem's
+                // does: pressed, the thread and its code go to the prompt.
+                return at === 0 ? (
+                  <Box height={1} columnGap={1} overflow="hidden">
+                    <Button plain key={`talk:${n}`} label="↗" onPress={() => actions.sendTalk(n)} />
+                    {text}
+                  </Box>
+                ) : (
+                  text
+                )
+              })}
+              {model.canComment && (
+                <Box height={1} columnGap={3} overflow="hidden">
+                  <Button plain key={`reply:${n}`} label="↩ reply" onPress={() => actions.replyOn(n)} />
+                  {canSettle && (
+                    <Button
+                      plain
+                      key={`settle:${n}`}
+                      label={isSettled ? '↺ reopen' : '✓ resolve'}
+                      onPress={() => actions.resolveOn(n, !isSettled)}
+                    />
+                  )}
+                  <Button plain key={`talk-send:${n}`} label="↗ to prompt" onPress={() => actions.sendTalk(n)} />
+                </Box>
+              )}
+            </Box>,
+            ...writeRows,
+          ]
 
     if (first === undefined) {
       return {
-        rows: codeRows + talkRows.length,
+        rows: codeRows + talkHeight,
         elements: [
           <Box>
             {number}
@@ -480,7 +603,7 @@ export const fileScreen = (
     )
 
     return {
-      rows: codeRows + (isOpen ? cardRows : isBeside ? 0 : 1) + talkRows.length,
+      rows: codeRows + (isOpen ? cardRows : isBeside ? 0 : 1) + talkHeight,
       elements: [
         <Box key={`line:${n}`}>
           {number}
@@ -609,6 +732,8 @@ export const fileScreen = (
               mark:
                 here.length === 0 ? 0 : here.some(({ diag }) => diag.severity === 'error') ? 2 : 1,
               isChanged: changed.some(range => at + 1 >= range[0] && at + 1 <= range[1]),
+              isTalked: talkByLine.has(at + 1),
+              isSettled: (talkByLine.get(at + 1) ?? []).some(one => one.isResolved === true),
               head: heads.get(at + 1) ?? 0,
             }
           }),
@@ -963,30 +1088,13 @@ export const fileScreen = (
         {/* The comment row: a line number picks the line, and only Enter or
             the post button sends anything to the forge. */}
         {isCommenting && Input !== undefined && (
-          <Box columnGap={2} height={1} overflow="hidden">
-            {commentLine === 0 ? (
-              <Text color={COMMENT_COLOR}>
-                {COMMENT_ICON} Press a line number to comment on that line.
-              </Text>
-            ) : (
-              [
-                <Input
-                  key="comment-text"
-                  label={`comment on line ${commentLine}`}
-                  placeholder="what to say"
-                  submitLabel="post"
-                  autoFocus
-                  onInput={actions.typeComment}
-                  onSubmit={value => actions.postComment(value)}
-                />,
-                <Button
-                  key="comment-post"
-                  variant="primary"
-                  label="post"
-                  onPress={() => actions.postComment()}
-                />,
-              ]
-            )}
+          <Box height={1} overflow="hidden">
+            <Text color={COMMENT_COLOR} wrap="truncate-end">
+              {COMMENT_ICON}{' '}
+              {commentLine === 0
+                ? 'Commenting: press a line number to write on that line, or reply on a thread.'
+                : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
+            </Text>
           </Box>
         )}
         {/* The find row: typing narrows the matches, Enter goes to the next. */}
@@ -1033,12 +1141,12 @@ export const fileScreen = (
             <Text color="red">
               − removed · was in{' '}
               {!model.isChecked
-                ? `${commit}^`
+                ? `${shortRef(commit)}^`
                 : shell.isComparing
                   ? shell.against
                   : 'your last commit'}
             </Text>
-            <Text color="green">+ added · in {commit !== '' ? commit : shell.headName}</Text>
+            <Text color="green">+ added · in {commit !== '' ? shortRef(commit) : shell.headName}</Text>
           </Box>
         )}
         {lines === undefined && <Text dimColor>Loading…</Text>}

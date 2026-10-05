@@ -1,6 +1,11 @@
 // Plain text made to fit: wrapped to a width, cut into pieces that render
 // alone, folded by indentation, and searched.
 
+// A ref as a person reads it: a full commit hash cut to git's usual seven
+// characters, and a request's own ref (refs/lens/pr-12) to its last part.
+export const shortRef = (ref: string): string =>
+  /^[0-9a-f]{8,40}$/.test(ref) ? ref.slice(0, 7) : ref.replace(/^refs\/lens\//, '')
+
 export const clamp = (value: number, low: number, high: number): number =>
   Math.min(Math.max(low, value), Math.max(low, high))
 

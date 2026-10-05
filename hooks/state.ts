@@ -17,6 +17,7 @@ import type {
   View,
 } from '../types'
 import { sumStats } from './git'
+import { shortRef } from './text'
 
 export const NO_SYMBOL: Lookup = {
   file: '',
@@ -56,6 +57,7 @@ export const NO_VIEW: View = {
   requestTyped: '',
   isCommenting: false,
   commentLine: 0,
+  replyTo: '',
   isPreview: true,
   isFinding: false,
   find: '',
@@ -151,8 +153,8 @@ export const comparisonOf = (now: View, found: Scan, history: readonly GraphRow[
 
   return {
     headName,
-    side: now.target === '' ? headName : now.target,
-    against: baseBranch ?? now.base,
+    side: now.target === '' ? headName : shortRef(now.target),
+    against: baseBranch ?? shortRef(now.base),
     isComparing:
       now.target !== '' ||
       (now.base !== 'HEAD' &&

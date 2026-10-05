@@ -311,7 +311,7 @@ const GH_REVIEWS = `${GH} repos/acme/app/pulls/12/reviews?per_page=100 --paginat
 const GH_THREADS =
   `${GH} graphql --paginate -f query=query($owner:String!,$name:String!,$number:Int!,$endCursor:String)` +
   '{repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor)' +
-  '{pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated comments(first:1){nodes{databaseId}}}}}}}' +
+  '{pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated comments(first:1){nodes{databaseId}}}}}}}' +
   ' -f owner=acme -f name=app -F number=12'
 
 const GL = 'glab api --hostname gitlab.com'
@@ -503,6 +503,7 @@ test('GitLab discussions become comments, skipping system notes', async () => {
         body: 'note 1',
         when: '2026-02-01T09:00:00.000Z',
         isResolved: true,
+        thread: 'd1',
         isOutdated: false,
       },
       {
@@ -514,6 +515,7 @@ test('GitLab discussions become comments, skipping system notes', async () => {
         when: '2026-02-02T09:00:00.000Z',
         replyTo: '1',
         isResolved: true,
+        thread: 'd1',
         isOutdated: false,
       },
       { id: '4', path: '', line: 0, author: 'cat', body: 'note 4', when: '2026-02-04T09:00:00.000Z' },
@@ -525,6 +527,7 @@ test('GitLab discussions become comments, skipping system notes', async () => {
         body: 'note 5',
         when: '2026-02-05T09:00:00.000Z',
         isResolved: false,
+        thread: 'd4',
         isOutdated: true,
       },
       {
@@ -535,6 +538,7 @@ test('GitLab discussions become comments, skipping system notes', async () => {
         body: 'note 6',
         when: '2026-02-06T09:00:00.000Z',
         isResolved: false,
+        thread: 'd5',
         isOutdated: false,
         oldLine: 8,
       },

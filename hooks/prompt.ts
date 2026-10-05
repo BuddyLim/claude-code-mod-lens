@@ -50,6 +50,27 @@ export const codeBlock = (
 export const quoteBlock = (path: string, text: string): string =>
   `From ${path}:\n${fence(path, text.replace(/\s+$/, ''))}`
 
+// A review thread as the prompt takes it: who said what on which line (the
+// replies under the comment they answer), then the code it is about, lines
+// `from` to `to`. `request` names the pull or merge request it is on ("PR #12",
+// "MR !34"), '' when that is not known.
+export const talkBlock = (
+  request: string,
+  path: string,
+  line: number,
+  thread: readonly { author: string; body: string; isResolved?: boolean }[],
+  from: number,
+  to: number,
+  texts: readonly string[],
+): string =>
+  [
+    `Review comment${request === '' ? '' : ` in ${request}`} on ${path}:${line}${thread.some(one => one.isResolved === true) ? ' (resolved)' : ''}:`,
+    ...thread.map(
+      (one, at) => `${at === 0 ? '-' : '  -'} ${one.author}: ${one.body.trim().replace(/\s*\n\s*/g, ' ')}`,
+    ),
+    codeBlock(path, from, to, texts),
+  ].join('\n')
+
 // A line's diagnostics as the prompt takes them: each message with its tool
 // and rule, then the line they point at.
 export const diagBlock = (

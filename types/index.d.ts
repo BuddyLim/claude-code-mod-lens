@@ -109,6 +109,9 @@ export type View = {
   requestTyped: string
   isCommenting: boolean
   commentLine: number
+  // The first comment of the thread being answered, by its id; '' while the
+  // comment being typed starts a thread of its own.
+  replyTo: string
   // Whether a markdown file is drawn rendered (the default) or as its source.
   isPreview: boolean
   // The file screen's search: whether its field shows, what is typed in it,

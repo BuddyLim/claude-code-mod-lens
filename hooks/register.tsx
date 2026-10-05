@@ -35,10 +35,18 @@ import {
   lspWorkspaceSymbols,
 } from './lsp'
 import type { InlayHint, SemanticToken } from './lsp-types'
-import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock } from './prompt'
+import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import type { Comment, Run as ForgeRun } from './review'
-import { fetchComments, parseRequest, postComment, repoPrefix, resolveRequest } from './review'
+import {
+  fetchComments,
+  parseRequest,
+  postComment,
+  replyComment,
+  repoPrefix,
+  resolveRequest,
+  resolveThread,
+} from './review'
 import type { Run } from './run'
 import { tail } from './run'
 import type { Job } from './scan'
@@ -79,6 +87,8 @@ const PANE = 'lens'
 // How many unchanged files opened from the tree of every file stay among
 // those checked.
 const EXTRA_FILES = 20
+// The most lines of code sent to the prompt with a review thread.
+const TALK_CODE = 80
 
 // The session's state. Its shapes are the contract's (types/index.d.ts) and
 // its defaults are in state.ts; the atoms are written here because the
@@ -135,6 +145,8 @@ let isLoading = false
 let draft = ''
 let draftBody = ''
 let commentDraft = ''
+// How many comments have been sent or dropped: see `FileModel.commentRound`.
+let commentRound = 0
 
 // How the language-server bridge runs its commands, made by `serverRun` from
 // the first handle that needs it.
@@ -725,6 +737,18 @@ const startCompare = async (
   let request = ''
   let typed = ''
 
+  // A request is a comparison by itself (its head with where it forked from
+  // its target), so it may be typed in either field, and what the other
+  // field holds is set aside.
+  const isRequest = async (name: string): Promise<boolean> =>
+    name !== '' && parseRequest(name) !== undefined && !(await known(name))
+
+  if (await isRequest(from)) {
+    ;[from, to] = ['', from]
+  } else if (await isRequest(to)) {
+    from = ''
+  }
+
   if (to === '') {
     $.ui.toast('Name a branch, a commit or a pull request to compare with')
 
@@ -870,8 +894,72 @@ const postReview = async (
   }
 
   commentDraft = ''
+  commentRound += 1
   $.ui.toast(`Comment posted on line ${line}`)
   await update($, view, last => ({ ...last, commentLine: 0 }))
+}
+
+// Answers the thread whose first comment is `root`, on the forge.
+const postReply = async (
+  $: EngineInterface,
+  repo: string,
+  typed: string,
+  root: Comment,
+  body: string,
+): Promise<void> => {
+  if (body.trim() === '') {
+    $.ui.toast('Type the reply first')
+
+    return
+  }
+
+  const answer = await replyComment(forgeRun(runOf($), repo), typed, root, body.trim())
+
+  if ('error' in answer) {
+    $.ui.toast(answer.error, { timeoutMs: 10_000 })
+
+    return
+  }
+
+  if (commentsCache !== undefined && commentsCache.key === `${repo}\n${typed}`) {
+    // The forge's own path and line for a reply may be missing; it sits
+    // where the thread does.
+    commentsCache.comments.push({ ...answer.comment, path: root.path, line: root.line })
+  }
+
+  commentDraft = ''
+  commentRound += 1
+  $.ui.toast(`Replied to ${root.author}`)
+  await update($, view, last => ({ ...last, commentLine: 0, replyTo: '' }))
+}
+
+// Marks the thread `root` starts as resolved, or open again, on the forge.
+const settleThread = async (
+  $: EngineInterface,
+  repo: string,
+  typed: string,
+  root: Comment,
+  isResolved: boolean,
+): Promise<void> => {
+  const refusal = await resolveThread(forgeRun(runOf($), repo), typed, root.thread ?? '', isResolved)
+
+  if (refusal !== '') {
+    $.ui.toast(refusal, { timeoutMs: 10_000 })
+
+    return
+  }
+
+  if (commentsCache !== undefined && commentsCache.key === `${repo}\n${typed}`) {
+    for (const one of commentsCache.comments) {
+      if (one.id === root.id || one.replyTo === root.id) {
+        one.isResolved = isResolved
+      }
+    }
+  }
+
+  $.ui.toast(isResolved ? 'Thread resolved' : 'Thread reopened')
+  // The file screen reads the source's stamp: a new one redraws it.
+  await update($, source, last => ({ ...last, stamp: last.stamp + 1 }))
 }
 
 // Loads the file the pane asked for, when the module does not hold its lines.
@@ -1595,6 +1683,16 @@ export const register: Register = (on, options) => {
     const canComment = reviewed !== undefined && commit === target
     const isCommenting = now.isCommenting && canComment
     const symbol = now.symbol.file === file ? now.symbol : undefined
+    const talk = commit === target ? comments.filter(one => one.path === file && one.line > 0) : []
+    // The first comment of the thread on a line: what a reply answers and
+    // what resolving settles. A reply is listed under the comment it answers.
+    const rootOn = (n: number): Comment | undefined => {
+      const first = talk.find(one => one.line === n)
+
+      return first === undefined || first.replyTo === undefined
+        ? first
+        : (talk.find(one => one.id === first.replyTo) ?? first)
+    }
     const drawn = fileScreen(
       kit,
       {
@@ -1624,7 +1722,9 @@ export const register: Register = (on, options) => {
         canComment,
         isCommenting,
         commentLine: now.commentLine,
-        talk: commit === target ? comments.filter(one => one.path === file && one.line > 0) : [],
+        replyTo: now.replyTo,
+        commentRound,
+        talk,
         crumb: now.crumb,
         folder: crumbCache,
         symbol,
@@ -1666,7 +1766,7 @@ export const register: Register = (on, options) => {
           // While commenting on a request, a line number picks the line
           // to comment on.
           isCommenting
-            ? set(last => ({ ...last, commentLine: n }))
+            ? set(last => ({ ...last, commentLine: n, replyTo: '' }))
             : // The fold is the function or class the server says starts
               // here; without a server, what the indentation suggests.
               void sendToComposer(
@@ -1688,6 +1788,27 @@ export const register: Register = (on, options) => {
               texts,
             ),
           ),
+        // A review thread goes with the code it is about: the function or
+        // class that starts on its line, or else a few lines either side.
+        sendTalk: n => {
+          const fold = (info === undefined ? undefined : foldOf(info.items, n))?.to ?? foldEnd(texts, n)
+          const [from, to] =
+            fold > n ? [n, Math.min(fold, n + TALK_CODE)] : [Math.max(1, n - 3), Math.min(lineCount, n + 3)]
+
+          void sendToComposer(
+            $,
+            // The request's label is what its header line starts with.
+            talkBlock(
+              compared.request.split(' → ')[0] ?? '',
+              file,
+              n,
+              talk.filter(one => one.line === n),
+              from,
+              to,
+              texts,
+            ),
+          )
+        },
         // What the person last dragged over with the mouse, as a quoted block.
         sendSelection: async () => {
           const selected = await $.ui.selection()
@@ -1777,11 +1898,39 @@ export const register: Register = (on, options) => {
             ...was,
             isCommenting: !isCommenting,
             commentLine: 0,
+            replyTo: '',
           })),
+        replyOn: n => {
+          const root = rootOn(n)
+
+          if (root !== undefined) {
+            set(was => ({ ...was, isCommenting: true, commentLine: n, replyTo: root.id }))
+          }
+        },
+        resolveOn: (n, isResolved) => {
+          const root = rootOn(n)
+
+          if (root !== undefined) {
+            void settleThread($, repo, requestTyped, root, isResolved)
+          }
+        },
+        cancelComment: () => {
+          commentDraft = ''
+          commentRound += 1
+          set(was => ({ ...was, commentLine: 0, replyTo: '' }))
+        },
         typeComment: text => {
           commentDraft = text
         },
-        postComment: entered =>
+        postComment: entered => {
+          const root = now.replyTo === '' ? undefined : rootOn(now.commentLine)
+
+          if (root !== undefined) {
+            void postReply($, repo, requestTyped, root, entered ?? commentDraft)
+
+            return
+          }
+
           void postReview(
             $,
             repo,
@@ -1790,7 +1939,8 @@ export const register: Register = (on, options) => {
             file,
             now.commentLine,
             entered ?? commentDraft,
-          ),
+          )
+        },
       },
     )
 

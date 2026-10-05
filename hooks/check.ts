@@ -462,8 +462,14 @@ const checkTree = async (
     checks.push(
       (async () => {
         if (needsTsc && !(await has(`${bin}/tsc`))) {
+          // Packages can only be installed where something lists them.
+          const listed = await run(['sh', '-c', NEAREST, 'sh', 'package.json', under(dir, 'x')])
+          const packageDir = [...groupByRoot(listed.stdout).keys()][0] ?? '.'
+
           sink.push(
-            `tsc skipped in ${here(dir)}: its packages are not installed. Run npm install (or pnpm, yarn, bun) there, then press r`,
+            (await has('package.json', packageDir))
+              ? `tsc skipped in ${here(dir)}: its packages are not installed. Run npm install (or pnpm, yarn, bun) there, then press r`
+              : `tsc skipped in ${here(dir)}: no package.json`,
           )
         } else if (needsTsc) {
           progress?.start(`tsc (${dir})`)

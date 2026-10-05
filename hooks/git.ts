@@ -336,7 +336,9 @@ const EXPORT_BASE = [
   'dir="$root/$name-$2"',
   'if [ ! -d "$dir" ]; then',
   '  mkdir -p "$root" || exit 1',
-  '  find "$root" -maxdepth 1 -name "$name-*" ! -name "$name-$2" ! -name "$name-${3:-$2}" -exec rm -rf {} +',
+  // Only what is inside the folder: `find` would otherwise offer the folder
+  // itself, whose name a repo's can match (a repo called "lens", "lens-base").
+  '  find "$root" -mindepth 1 -maxdepth 1 -name "$name-*" ! -name "$name-$2" ! -name "$name-${3:-$2}" -exec rm -rf {} +',
   '  mkdir "$dir.partial" && git archive "$1" | tar -x -C "$dir.partial" && mv "$dir.partial" "$dir" || exit 1',
   'fi',
   'cd "$dir" && pwd -P',
