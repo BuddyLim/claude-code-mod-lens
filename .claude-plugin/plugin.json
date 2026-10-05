@@ -1,0 +1,76 @@
+{
+  "name": "lens",
+  "version": "0.2.0",
+  "description": "Review a repo's changes in a pane: the changed files with editor-style diagnostics (pyright, ruff, tsc, eslint, terraform), a diff view, a git graph, commits and stashes, and pull request comments. Run /lens [folder] [base].",
+  "author": { "name": "BuddyLim" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "languageServers": {
+      "type": "boolean",
+      "title": "Language servers first",
+      "description": "Ask the language servers (pyright, tsserver, terraform-ls) before the command-line checkers: answers come in milliseconds once they are warm. Off uses the command-line checkers alone.",
+      "default": true
+    },
+    "ruff": {
+      "type": "boolean",
+      "title": "Check Python with ruff",
+      "description": "Lint the Python files of a change with ruff (run through uvx).",
+      "default": true
+    },
+    "pyright": {
+      "type": "boolean",
+      "title": "Check Python with pyright",
+      "description": "Type-check the Python files of a change with pyright, through its language server or its command.",
+      "default": true
+    },
+    "tsc": {
+      "type": "boolean",
+      "title": "Check TypeScript with tsc",
+      "description": "Type-check the TypeScript files of a change, through tsserver or the project's own tsc.",
+      "default": true
+    },
+    "eslint": {
+      "type": "boolean",
+      "title": "Check TypeScript with eslint",
+      "description": "Lint the TypeScript files of a change with the project's own eslint, where it has one.",
+      "default": true
+    },
+    "terraform": {
+      "type": "boolean",
+      "title": "Check Terraform",
+      "description": "Validate the Terraform files of a change with terraform-ls or terraform validate.",
+      "default": true
+    },
+    "markNew": {
+      "type": "boolean",
+      "title": "Mark new vs pre-existing",
+      "description": "Check the base's version of each changed file too, so every problem is marked as brought by the change or already there. Off makes a scan quicker.",
+      "default": true
+    },
+    "sidePadding": {
+      "type": "number",
+      "title": "Side padding",
+      "description": "The cells left clear at each side of the pane, 0 to 8.",
+      "default": 2
+    },
+    "keys": {
+      "type": "string",
+      "title": "Keys shown",
+      "description": "main row + more… keeps the less-used keys in a box that m (or a) opens; all shown keeps that box open.",
+      "default": "main row + more…",
+      "options": ["main row + more…", "all shown"]
+    },
+    "remember": {
+      "type": "boolean",
+      "title": "Remember reviews",
+      "description": "Keep each repo's comparison and layout between sessions, so /lens picks it up where it was left, and offer the recent repos when /lens is run outside one.",
+      "default": true
+    },
+    "cleanUp": {
+      "type": "boolean",
+      "title": "Clean up when a session ends",
+      "description": "Stop the language servers and delete the temporary exports of commits and the refs pull requests were fetched under. A review picked up again fetches what it needs.",
+      "default": true
+    }
+  }
+}

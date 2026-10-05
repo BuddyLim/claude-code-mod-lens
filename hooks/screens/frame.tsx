@@ -1,0 +1,195 @@
+// What every screen shares: the elements a screen is drawn with, the line
+// that says what is under review, the frame round a screen, and the few
+// colours and marks more than one screen uses.
+//
+// A screen is a pure view: it takes these elements, a model of plain data
+// and its actions (what a person can do there, as closures), and returns the
+// tree to draw. It never sees the engine's handle.
+
+import type { ElementTable, Elements, RenderChildren } from 'claude-code'
+
+import type { Severity } from '../../types'
+import type { Comment } from '../review'
+
+// The elements of the surface the pane is on. Every surface has the first
+// three; a screen draws without the others where a surface lacks them.
+export type Kit = {
+  Box: Elements['terminal']['Box']
+  Text: Elements['terminal']['Text']
+  Button: Elements['terminal']['Button']
+  Input: Elements['terminal']['Input'] | undefined
+  Markdown: Elements['terminal']['Markdown'] | undefined
+  Raster: Elements['terminal']['Raster'] | undefined
+}
+
+export const kitOf = (table: ElementTable): Kit => ({
+  Box: table.Box,
+  Text: table.Text,
+  Button: table.Button,
+  Input: 'Input' in table ? table.Input : undefined,
+  Markdown: 'Markdown' in table ? table.Markdown : undefined,
+  Raster: 'Raster' in table ? table.Raster : undefined,
+})
+
+// The changed files in one row of numbers: lines added and deleted across
+// them, and the errors and other problems found in them. `fresh` is how many
+// of those the change brought, where that is known.
+export type Totals = {
+  files: number
+  added: number
+  deleted: number
+  errors: number
+  others: number
+  fresh: number | undefined
+}
+
+// What every screen says of the review itself, and the room it has.
+export type Shell = {
+  // The cells and rows a screen has to itself, inside the side padding and,
+  // while a comparison is on, its border; `inset` is what that border takes
+  // of each (2, or 0).
+  columns: number
+  rows: number
+  inset: number
+  // The cells left clear at each side of the screen (a setting).
+  padding: number
+  // The folder under review, by its own name.
+  repoName: string
+  // What is checked out, by branch name where there is one.
+  headName: string
+  // The side the comparison is read from (the target, or what is checked
+  // out) and what it is read against, by a branch's name where it has one.
+  side: string
+  against: string
+  // The pull or merge request under review, as a label; '' for none.
+  request: string
+  // Whether anything but the uncommitted changes is being compared.
+  isComparing: boolean
+  // While a scan runs: the mark that turns, and the tools still out.
+  isScanning: boolean
+  busyMark: string
+  pending: readonly string[]
+  // How many of the files to check have been, while they go in batches.
+  checked: number
+  toCheck: number
+  // What else the pane is waiting on, in a few words ('' for nothing): the
+  // language server reading the open file.
+  working: string
+  isProjectChecked: boolean
+  // What a scan could not do, a line each.
+  notes: readonly string[]
+  totals: Totals
+}
+
+export const COLOR: Record<Severity, string> = { error: 'red', warning: 'yellow', info: 'cyan' }
+export const MARK: Record<Severity, string> = { error: '✖', warning: '⚠', info: 'ℹ' }
+// git's one-letter status as a word, in the colour VS Code gives it.
+export const STATUS_WORD: Record<string, [word: string, color: string]> = {
+  M: ['modified', '#e2c08d'],
+  A: ['added', '#73c991'],
+  D: ['deleted', '#f14c4c'],
+  R: ['renamed', '#73c991'],
+  T: ['type changed', '#e2c08d'],
+  '?': ['new', '#73c991'],
+}
+export const CARD_BACKGROUND = '#1f1f1f'
+export const COMMIT_BOX = '#3794ff'
+export const STASH_ICON = '\u{f187}'
+export const STASH_COLOR = '#a371f7'
+// A request's review comments: their mark and their colour.
+export const COMMENT_ICON = '\u{f075}'
+export const COMMENT_COLOR = '#c586c0'
+// How many lines of a commit's body show at once.
+export const BODY_ROWS = 12
+// The most files listed under a commit or a stash.
+export const COMMIT_FILES = 40
+// The border drawn round every screen while a comparison is on.
+const COMPARE_COLOR = '#ffab40'
+
+// A review comment in one line: who said it, what, and whether it is settled.
+export const said = (one: Comment): string =>
+  `${one.author}: ${one.body.replace(/\s+/g, ' ')}${one.isResolved === true ? '  ✓ resolved' : ''}`
+
+// The first line of every screen: the folder, what is compared, and while a
+// scan runs, what it is waiting on.
+export const statusLine = ({ Text }: Kit, shell: Shell) => (
+  <Text dimColor wrap="truncate-end">
+    {shell.repoName} · {shell.request === '' ? shell.side : shell.request}
+    {shell.request !== ''
+      ? ''
+      : shell.isComparing
+        ? ` vs ${shell.against}`
+        : ' · uncommitted changes'}
+    {shell.isScanning
+      ? ` · ${shell.busyMark} ${shell.pending.length === 0 ? 'reading changes' : `checking: ${shell.pending.join(', ')}`}`
+      : ''}
+    {shell.isScanning && shell.toCheck > shell.checked && shell.checked > 0
+      ? ` · ${shell.checked} of ${shell.toCheck} files checked`
+      : ''}
+    {shell.working === '' ? '' : ` · ${shell.working}`}
+    {shell.isProjectChecked ? ' · whole project checked' : ''}
+  </Text>
+)
+
+export const notesOf = ({ Text }: Kit, notes: readonly string[]) =>
+  notes.map(note => (
+    <Text color="yellow" wrap="truncate-end">
+      ! {note}
+    </Text>
+  ))
+
+// Every screen has `h`: the keys that work on it, and what the marks mean.
+export const helpButton = ({ Button }: Kit, onPress: () => void) => (
+  <Button plain key="help" hotkey="h" label="keys" onPress={onPress} />
+)
+
+// The frame round a screen. While a comparison is on, every screen is drawn
+// inside a bright border, so it cannot be mistaken for the plain view of the
+// working tree. Every screen also keeps a little air on each side, so its
+// text does not sit against the pane's own edge (or the comparison border).
+//
+// A screen that draws its own window (`isOwn`: the file, the graph) is as
+// tall as the pane, which leaves the pane nothing to scroll, and its scroll
+// keys (the arrows, page up and down) are only raised while it has rows to
+// scroll. So such a screen gets a blank row above it and a few below, and
+// the pane is to be held one row down (the `pin` key, which the hooks
+// module's timer scrolls to): there is then always a row either way, the
+// keys always raise `ui.scroll`, and the scroll hook turns them into moves
+// of the screen's window.
+export const frame = (
+  { Box, Text }: Kit,
+  isComparing: boolean,
+  padding: number,
+  screen: RenderChildren,
+  isOwn = false,
+) => {
+  const framed = isComparing ? (
+    <Box
+      key="pin"
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={COMPARE_COLOR}
+      paddingX={padding}
+    >
+      {screen}
+    </Box>
+  ) : (
+    <Box key="pin" flexDirection="column" paddingX={padding}>
+      {screen}
+    </Box>
+  )
+
+  if (!isOwn) {
+    return framed
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Text> </Text>
+      {framed}
+      <Text> </Text>
+      <Text> </Text>
+      <Text> </Text>
+    </Box>
+  )
+}

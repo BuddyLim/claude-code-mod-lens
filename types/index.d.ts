@@ -1,0 +1,264 @@
+export type Severity = 'error' | 'warning' | 'info'
+
+export type Diag = {
+  path: string
+  line: number
+  col: number
+  // The column the range ends before, on the same line; 0 when unknown.
+  endCol: number
+  severity: Severity
+  tool: string
+  rule: string
+  message: string
+  // Whether the change brought it: true when the base's version of the file
+  // had no such diagnostic, false when it did; absent where the base was not
+  // checked (a file the change does not touch).
+  isNew?: boolean
+  // Whether it marks code that is never used (an unread import or variable),
+  // which an editor fades instead of underlining.
+  isUnused?: boolean
+}
+
+export type ChangedFile = { path: string; status: string }
+
+// A name looked up in a file: where it was asked about (`at`, `col`), what the
+// language server said (`text`, and `signature` for the call it sits in),
+// where it is defined and where its type is (`path`/`typePath` '' when the
+// server could not say; a path outside the folder under review is absolute),
+// and whether anything implements it.
+export type Lookup = {
+  file: string
+  name: string
+  at: number
+  col: number
+  text: string
+  path: string
+  line: number
+  typePath: string
+  typeLine: number
+  hasImplementations: boolean
+  signature: string
+}
+
+// The breadcrumb's open list: a folder's entries (`dir`, '' for the folder
+// under review itself) or the names at a level of the file's outline
+// (`level`, 0 the top). `left` is the column it opens under; `top` the first
+// entry it shows, or -1 to open on the entry the file is at.
+export type Crumb = {
+  kind: 'none' | 'dir' | 'symbol'
+  dir: string
+  level: number
+  left: number
+  top: number
+}
+
+// The list screen: places to jump to (uses of a name, callers, an outline,
+// search results). A row with no path is a heading. `prompt` is the list as
+// text for the prompt, '' when there is no such form.
+// A row that names something (an outline entry, a search hit) also has a
+// mark for its kind, drawn in that kind's colour, and a `tail` drawn dim
+// after the name.
+export type ListRow = {
+  label: string
+  path: string
+  line: number
+  mark?: string
+  color?: string
+  tail?: string
+}
+export type Listing = { title: string; rows: ListRow[]; prompt: string }
+
+export type LineRange = [from: number, to: number]
+
+export type View = {
+  repo: string
+  base: string
+  screen: 'tree' | 'file' | 'graph' | 'list'
+  file: string
+  // The first line the file screen's window shows, 1-based.
+  top: number
+  cursor: number
+  isExpanded: boolean
+  layout: 'tree' | 'list'
+  // Folders whose open or closed state the person flipped from its default.
+  toggled: string[]
+  // The commit whose actions the graph screen shows; '' for none.
+  selected: string
+  // Whether the file screen interleaves what the base had (a diff) or shows
+  // the file as it is.
+  isDiff: boolean
+  // The commit the file screen shows the file at; '' for the working tree.
+  commit: string
+  // The uncommitted and untracked files ticked for a commit or a stash.
+  checked: string[]
+  // The screen a commit's or stash's file was opened from, where back returns.
+  origin: 'tree' | 'graph'
+  // The first line the picked commit's body box shows, 0-based.
+  bodyTop: number
+  // The first line the graph screen's window shows, 0-based.
+  graphTop: number
+  // The commit compared against the base in place of the working tree; ''
+  // while it is the working tree that is compared.
+  target: string
+  // The pull or merge request the target is the head of, as a label for the
+  // header ("PR #12 → main · its title"); '' when the target is not one.
+  request: string
+  // What was typed to open that request ("#12", its link), by which the
+  // forge is asked for its comments; whether a line number now picks a line
+  // to comment on; and the line picked (0 for none yet).
+  requestTyped: string
+  isCommenting: boolean
+  commentLine: number
+  // Whether a markdown file is drawn rendered (the default) or as its source.
+  isPreview: boolean
+  // The file screen's search: whether its field shows, what is typed in it,
+  // and which of the matches the person is on.
+  isFinding: boolean
+  find: string
+  findAt: number
+  // Whether the commit box is asking to confirm a discard.
+  isDiscarding: boolean
+  // Whether the list of keys is showing in place of the screen.
+  isHelp: boolean
+  // The name last looked up in a file: what the language server said of it,
+  // and where it is defined (`path` '' when the server could not say; a path
+  // outside the folder under review is absolute). `file` '' is none.
+  symbol: Lookup
+  // Whether the file screen draws the server's inlay hints inside the code.
+  isHinting: boolean
+  // The screen the list screen was opened from, where its back returns.
+  listBack: 'tree' | 'file'
+  // Whether the box of less-used keys is open under the main row of buttons.
+  isMore: boolean
+  // The breadcrumb part whose list is open.
+  crumb: Crumb
+  // Whether the graph is asking to confirm undoing the last commit, and what
+  // it found out about that commit being pushed.
+  isUndoing: boolean
+  undoNote: string
+  // Whether the file screen shows who last changed each line.
+  isBlame: boolean
+  // The file the graph was opened from by pressing a line's blame, the commit
+  // it was shown at, and its first line then: where the graph's back button
+  // returns to. `backFile` is '' when the graph was opened from the file tree.
+  backFile: string
+  backCommit: string
+  backTop: number
+  // Whether the file tree also lists every tracked file, and the unchanged
+  // files opened from that list, which are checked along with the changed.
+  isBrowsing: boolean
+  extra: string[]
+  // Whether Claude is told, after its own edits, what new problems they brought.
+  isTelling: boolean
+  // The graph's compare panel: whether it is open, what each of its two
+  // fields holds, and which field the suggestions are for.
+  isPicking: boolean
+  pickA: string
+  pickB: string
+  pickField: 'a' | 'b'
+}
+
+// The commit picked on the graph screen and the files it changed.
+export type Picked = {
+  hash: string
+  files: ChangedFile[]
+  stats: Record<string, LineStat>
+  // The commit message: its first line, and what follows it ('' for none).
+  subject: string
+  body: string
+}
+
+export type Scan = {
+  status: 'idle' | 'running' | 'done'
+  files: ChangedFile[]
+  diags: Diag[]
+  changed: Record<string, LineRange[]>
+  notes: string[]
+  isProjectChecked: boolean
+  // Lines added and deleted per changed file, against the base.
+  stats: Record<string, LineStat>
+  // The graph's rows live in the module; `graph` stays empty and the count
+  // changing is what redraws the graph.
+  graph: GraphRow[]
+  graphCount: number
+  // The repo's local branches: the refs a press may check out by name.
+  branches: string[]
+  // The branch checked out ("HEAD" when detached) and its commit's short hash.
+  head: string
+  headHash: string
+  // The tracked files edited since the last commit, whatever the base is.
+  dirty: string[]
+  // `git stash list`: each stash's name (stash@{0}) and what it says it holds.
+  // `base` is the short hash of the commit it was made on, `when` how long ago.
+  stashes: { ref: string; subject: string; base: string; when: string }[]
+  // The tools a scan under way is still waiting on, by name and project.
+  pending: string[]
+  // Hints that code is never used: they fade that code, and are not counted
+  // or listed among the problems.
+  faded: Diag[]
+  // How many of the files a scan has to check it has checked: they go a
+  // batch at a time, the file the person has open first.
+  checked: number
+  toCheck: number
+}
+
+export type LineStat = [added: number, deleted: number]
+
+// A repo reviewed before, as the store keeps it between sessions: where it
+// is, what was being compared (`requestTyped` when that was a pull or merge
+// request, which is fetched again), how the file tree was laid out, and when.
+export type Recent = {
+  repo: string
+  base: string
+  target: string
+  request: string
+  requestTyped: string
+  layout: 'tree' | 'list'
+  isBrowsing: boolean
+  at: number
+}
+
+export type Commit = {
+  hash: string
+  parents: string[]
+  refs: string[]
+  subject: string
+  when: string
+  author: string
+}
+
+// One commit as the graph draws it: its row of lane cells as coloured spans
+// (two characters per lane), and the lane the commit's own dot sits in.
+export type GraphRow = Commit & {
+  cells: Span[]
+  // The row under the commit: a line down each lane still open after it.
+  below: Span[]
+  width: number
+  lane: number
+}
+
+export type Span = [color: string, text: string]
+
+// Which file the module holds coloured lines for. The lines themselves stay
+// in the module (a whole file is too much to keep as state); `stamp` changes
+// when they are loaded again, which redraws the readers.
+export type Source = {
+  path: string
+  lineCount: number
+  note: string
+  stamp: number
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'lens': {
+      recents: Recent[]
+      view: View
+      scan: Scan
+      source: Source
+      picked: Picked
+      spin: number
+      listing: Listing
+    }
+  }
+}
