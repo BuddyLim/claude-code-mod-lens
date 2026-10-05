@@ -62,8 +62,90 @@ type BridgeAnswer = {
   notes?: string[]
 }
 
-// The files the bridge has a server for: Python, TypeScript and Terraform.
+// The files the bridge has a server for whatever else is installed: Python,
+// TypeScript and Terraform. `isServed` adds what its table of servers reads.
 export const LSP_FILE = /\.(pyi?|[cm]?tsx?|tf|tfvars)$/i
+
+// One server of the bridge's table (the built-in ones, and the person's own
+// from ~/.claude/lens/servers.json), as its `served` answer lists them.
+export type ServedBy = {
+  // Also the tool its diagnostics carry.
+  name: string
+  // What a person calls the language, for a note.
+  language: string
+  // In lower case, each with its dot.
+  extensions: string[]
+  // Whole file names, `*` and `?` standing for anything.
+  filenames: string[]
+  isInstalled: boolean
+  // How to get the server; '' when the table does not say.
+  install: string
+}
+
+// The table as the bridge last listed it, in the order a file is matched.
+// The screens ask about a file as they draw, with nothing to await, so the
+// answer is kept here and a scan asks again (`lspServed`). Empty until the
+// first answer: `LSP_FILE` alone is then what is served, as it was before
+// there was a table.
+let table: { server: ServedBy; names: RegExp[] }[] = []
+
+// A whole file name with `*` and `?` in it, as the bridge reads one.
+const namePattern = (name: string): RegExp =>
+  new RegExp(
+    `^${name
+      .replace(/[.+^$()|[\]{}\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.')}$`,
+  )
+
+// The server that reads a file, as the bridge picks it: one that is installed
+// before one that is not, a file's whole name before its extension.
+const serverOf = (path: string): ServedBy | undefined => {
+  const name = path.slice(path.lastIndexOf('/') + 1)
+  const lower = name.toLowerCase()
+
+  for (const group of [table.filter(one => one.server.isInstalled), table]) {
+    const found =
+      group.find(one => one.names.some(pattern => pattern.test(name))) ??
+      group.find(one => one.server.extensions.some(extension => lower.endsWith(extension)))
+
+    if (found !== undefined) {
+      return found.server
+    }
+  }
+
+  return undefined
+}
+
+// Whether a file that is not Python, TypeScript or Terraform is read by a
+// server of the table that is installed.
+export const isOtherServed = (path: string): boolean =>
+  !LSP_FILE.test(path) && serverOf(path)?.isInstalled === true
+
+// Whether the bridge has a server for a file.
+export const isServed = (path: string): boolean => LSP_FILE.test(path) || isOtherServed(path)
+
+// The names of the table's installed servers: the tools their diagnostics carry.
+export const servedTools = (): string[] =>
+  table.filter(one => one.server.isInstalled).map(one => one.server.name)
+
+// For the files a server of the table would read were it installed: one line
+// for each such server, saying what to install.
+export const unservedNotes = (paths: readonly string[]): string[] => {
+  const notes = new Set<string>()
+
+  for (const path of paths) {
+    const server = LSP_FILE.test(path) ? undefined : serverOf(path)
+
+    if (server !== undefined && !server.isInstalled) {
+      notes.add(
+        `${server.language} is not checked: ${server.name} is not installed${server.install === '' ? '' : ` (${server.install})`}`,
+      )
+    }
+  }
+
+  return [...notes]
+}
 
 // DiagnosticTag.Unnecessary.
 const UNNECESSARY = 1
@@ -193,7 +275,7 @@ const install = (run: Run): Promise<string> => {
 
 const bridge = async (
   run: Run,
-  mode: 'query' | 'symbol' | 'ask' | 'stop',
+  mode: 'query' | 'symbol' | 'ask' | 'served' | 'stop',
   request: object,
   timeoutMs: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
@@ -215,7 +297,7 @@ export const lspDiagnostics = async (
   files: readonly string[],
   options: LspOptions = {},
 ): Promise<LspResult> => {
-  const wanted = files.filter(file => LSP_FILE.test(file))
+  const wanted = files.filter(isServed)
 
   if (wanted.length === 0) {
     return { diags: [], covered: [], notes: [] }
@@ -235,6 +317,63 @@ export const lspDiagnostics = async (
     return parseBridge(ran.stdout, ran.stderr)
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const stringsOf = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string') : []
+
+// What the bridge's client printed for `served`: its table and its notes, or
+// undefined for anything but its JSON answer.
+export const parseServed = (stdout: string): { servers: ServedBy[]; notes: string[] } | undefined => {
+  let answer: { ok?: unknown; servers?: unknown; notes?: unknown } | null | undefined
+
+  try {
+    answer = JSON.parse(stdout) as typeof answer
+  } catch {
+    answer = undefined
+  }
+
+  if (answer === undefined || answer === null || answer.ok !== true || !Array.isArray(answer.servers)) {
+    return undefined
+  }
+
+  const servers: ServedBy[] = []
+
+  for (const one of answer.servers as Partial<Record<keyof ServedBy, unknown>>[]) {
+    if (one !== null && typeof one === 'object' && typeof one.name === 'string' && one.name !== '') {
+      servers.push({
+        name: one.name,
+        language: typeof one.language === 'string' && one.language !== '' ? one.language : one.name,
+        extensions: stringsOf(one.extensions).map(extension => extension.toLowerCase()),
+        filenames: stringsOf(one.filenames),
+        isInstalled: one.isInstalled === true,
+        install: typeof one.install === 'string' ? one.install : '',
+      })
+    }
+  }
+
+  return { servers, notes: stringsOf(answer.notes) }
+}
+
+// Asks the bridge for its table of servers and keeps it, for `isServed` and
+// the rest above to answer from. Resolves with what is wrong with the
+// person's config file, one line for each entry left out. Never rejects: a
+// bridge that cannot answer leaves the table as it was, and says nothing
+// (the next thing asked of it says why).
+export const lspServed = async (run: Run): Promise<string[]> => {
+  try {
+    const answer = parseServed((await bridge(run, 'served', {}, 20_000)).stdout)
+
+    if (answer === undefined) {
+      return []
+    }
+
+    table = answer.servers.map(server => ({ server, names: server.filenames.map(namePattern) }))
+
+    return answer.notes
+  } catch {
+    return []
   }
 }
 
@@ -423,7 +562,7 @@ export const lspSymbol = async (
   col: number,
   options: LspOptions = {},
 ): Promise<LspSymbol> => {
-  if (!LSP_FILE.test(file)) {
+  if (!isServed(file)) {
     return { text: '', notes: ['no language server for this kind of file'] }
   }
 
@@ -484,7 +623,7 @@ const ask = async (
   request: object,
   options: LspOptions,
 ): Promise<Asked> => {
-  if (!LSP_FILE.test(file)) {
+  if (!isServed(file)) {
     return { answer: {}, notes: ['no language server for this kind of file'] }
   }
 

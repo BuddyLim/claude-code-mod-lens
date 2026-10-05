@@ -2,18 +2,24 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   LSP_FILE,
+  isOtherServed,
+  isServed,
   lspCalls,
   lspDiagnostics,
   lspInlayHints,
   lspOutline,
   lspReferences,
   lspSemanticTokens,
+  lspServed,
   lspSymbol,
   lspWorkspaceSymbols,
   parseBridge,
+  parseServed,
   parseSymbol,
+  servedTools,
   stopLsp,
   toDiag,
+  unservedNotes,
   type Run,
 } from './lsp'
 import { LSP_BRIDGE_PY } from './lsp-bridge'
@@ -683,4 +689,92 @@ test('the embedded script answers the lookups', async () => {
   expect(LSP_BRIDGE_PY.includes('def ask(self, request):')).toBe(true)
   expect(LSP_BRIDGE_PY.includes('elif mode == "ask":')).toBe(true)
   expect(LSP_BRIDGE_PY.includes('encodedSemanticClassifications-full')).toBe(true)
+})
+
+// The bridge's table with Go installed, and C# and Pulumi YAML known but not.
+const TABLE = JSON.stringify({
+  ok: true,
+  servers: [
+    { name: 'gopls', language: 'Go', extensions: ['.go'], filenames: [], isInstalled: true, install: 'go install gopls' },
+    { name: 'csharp-ls', language: 'C#', extensions: ['.cs'], filenames: [], isInstalled: false, install: 'dotnet tool install --global csharp-ls' },
+    { name: 'pulumi-lsp', language: 'Pulumi YAML', extensions: [], filenames: ['Pulumi.yaml', 'Pulumi.*.yaml'], isInstalled: false, install: '' },
+    { name: 'yaml-ls', language: 'YAML', extensions: ['.yaml'], filenames: [], isInstalled: true, install: '' },
+  ],
+  notes: ['servers.json: "broken" is ignored: it needs a "command"'],
+})
+const NO_TABLE = '{"ok": true, "servers": [], "notes": []}'
+
+test('the table the bridge lists says which other files a server reads', async () => {
+  // Before any answer: Python, TypeScript and Terraform, as ever.
+  expect(isServed('a.py') && isServed('b.tsx') && isServed('c.tf')).toBe(true)
+  expect(isServed('cmd/main.go')).toBe(false)
+  expect(servedTools()).toEqual([])
+
+  const calls: Call[] = []
+
+  expect(await lspServed(fakeRun(TABLE, calls))).toEqual([
+    'servers.json: "broken" is ignored: it needs a "command"',
+  ])
+  expect(calls.at(-1)?.argv.slice(-2)).toEqual(['/tmp/lens-lsp-501/bridge.py', 'served'])
+
+  expect(isServed('cmd/main.go') && isServed('cmd/MAIN.GO') && isOtherServed('cmd/main.go')).toBe(true)
+  expect(isServed('a.py') && !isOtherServed('a.py')).toBe(true)
+  // Known to the table, and not installed: not served.
+  expect(isServed('app/Program.cs')).toBe(false)
+  expect(isServed('README.md') || isServed('go') || isServed('main.gox')).toBe(false)
+  // A whole name counts before an extension, unless only the extension's server is installed.
+  expect(isServed('infra/Pulumi.dev.yaml') && isServed('infra/other.yaml')).toBe(true)
+  expect(servedTools()).toEqual(['gopls', 'yaml-ls'])
+  expect(unservedNotes(['app/Program.cs', 'app/Other.cs', 'cmd/main.go', 'README.md', 'a.py'])).toEqual([
+    'C# is not checked: csharp-ls is not installed (dotnet tool install --global csharp-ls)',
+  ])
+
+  // The files it reads are now asked about, and looked up in.
+  const asked: Call[] = []
+  const out = '{"ok": true, "files": {"cmd/main.go": {"tool": "gopls", "diagnostics": [{"message": "m"}]}}}'
+  const found = await lspDiagnostics(fakeRun(out, asked), '/repo', ['cmd/main.go', 'app/Program.cs', 'a.md'])
+
+  expect(JSON.parse(asked.at(-1)?.stdin ?? '{}').files).toEqual(['cmd/main.go'])
+  expect(found.diags.map(diag => [diag.path, diag.tool, diag.message])).toEqual([['cmd/main.go', 'gopls', 'm']])
+  expect((await lspSymbol(fakeRun('{"ok": true, "text": "func main()"}'), '/repo', 'cmd/main.go', 1, 1)).text).toBe(
+    'func main()',
+  )
+  expect((await lspOutline(fakeRun('{}'), '/repo', 'app/Program.cs')).notes).toEqual([
+    'no language server for this kind of file',
+  ])
+
+  // A bridge that cannot answer leaves the table as it was.
+  expect(await lspServed(fakeRun('Traceback'))).toEqual([])
+  expect(await lspServed(fakeRun('{"ok": false, "error": "boom"}'))).toEqual([])
+  expect(await lspServed(fakeRun(() => { throw new Error('boom') }))).toEqual([])
+  expect(isServed('cmd/main.go')).toBe(true)
+
+  expect(await lspServed(fakeRun(NO_TABLE))).toEqual([])
+  expect(isServed('cmd/main.go')).toBe(false)
+})
+
+test('a table answer keeps the servers that are whole', async () => {
+  expect(parseServed('not json')).toBe(undefined)
+  expect(parseServed('{"ok": true}')).toBe(undefined)
+  expect(
+    parseServed(
+      JSON.stringify({
+        ok: true,
+        servers: [null, 'x', { name: '' }, { name: 'zls', extensions: ['.ZIG', 3], isInstalled: 'yes' }],
+        notes: ['a', 3],
+      }),
+    ),
+  ).toEqual({
+    servers: [{ name: 'zls', language: 'zls', extensions: ['.zig'], filenames: [], isInstalled: false, install: '' }],
+    notes: ['a'],
+  })
+})
+
+test('the embedded script holds the table of servers and its config file', async () => {
+  expect(LSP_BRIDGE_PY.includes('elif mode == "served":')).toBe(true)
+  expect(LSP_BRIDGE_PY.includes('"~/.claude/lens/servers.json"')).toBe(true)
+
+  for (const name of ['pyright', 'tsserver', 'terraform-ls', 'clangd', 'csharp-ls', 'gopls', 'rust-analyzer', 'pulumi-lsp']) {
+    expect(LSP_BRIDGE_PY.includes(`    "${name}": {`)).toBe(true)
+  }
 })

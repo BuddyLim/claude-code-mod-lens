@@ -25,7 +25,7 @@ import {
 } from './lists'
 import type { Run as ServerRun } from './lsp'
 import {
-  LSP_FILE,
+  isServed,
   lspCalls,
   lspInlayHints,
   lspOutline,
@@ -411,7 +411,7 @@ const serverRun = ($: EngineInterface): ServerRun => (servers ??= runOf($))
 // four), and, when they are switched on, its inlay hints. A file outside the
 // folder under review, or of a kind no server reads, has none.
 const loadInsight = async ($: EngineInterface, repo: string, path: string): Promise<void> => {
-  if (path.startsWith('/') || !LSP_FILE.test(path)) {
+  if (path.startsWith('/') || !isServed(path)) {
     insight = undefined
 
     return

@@ -4,6 +4,7 @@ import type { Scan } from '../types'
 import type { Ports } from './scan'
 import { allFilesOf, historyOf, isQueued, scanRepo } from './scan'
 import { ALL_CHECKERS } from './settings'
+import { LSP_BRIDGE_PY } from './lsp-bridge'
 import { NO_SCAN } from './state'
 
 // Ports over a world where every command succeeds and prints nothing but
@@ -123,4 +124,76 @@ test('a long scan gives way to one asked for meanwhile', async () => {
   expect(scan()).toMatchObject({ status: 'running', checked: 100, toCheck: 650 })
   expect(isQueued('/repo', 'src/f649.py')).toBe(true)
   expect(isQueued('/repo', 'src/f0.py')).toBe(false)
+})
+
+test('another language is checked by its server alone, and a missing server is named', async () => {
+  const { ports, scan } = world({
+    '--name-status': 'A\tcmd/main.go\nA\tapp/Program.cs\nM\tREADME.md\n',
+    '--abbrev-ref': 'main\n',
+    '--short': 'abc1234\n',
+  })
+  const table = {
+    ok: true,
+    servers: [
+      { name: 'gopls', language: 'Go', extensions: ['.go'], filenames: [], isInstalled: true, install: '' },
+      { name: 'csharp-ls', language: 'C#', extensions: ['.cs'], filenames: [], isInstalled: false, install: 'dotnet tool install --global csharp-ls' },
+    ],
+    notes: [],
+  }
+  const queried: string[][] = []
+  const commands: string[] = []
+  const run = ports.run
+
+  ports.run = async (argv, init) => {
+    commands.push(argv.join(' '))
+
+    return run(argv, init)
+  }
+  ports.servers = async (argv, init) => {
+    if (init?.stdin === LSP_BRIDGE_PY) {
+      return { exitCode: 0, stdout: '/tmp/lens-lsp-501/bridge.py', stderr: '' }
+    }
+
+    if (argv.at(-1) === 'served') {
+      return { exitCode: 0, stdout: JSON.stringify(table), stderr: '' }
+    }
+
+    if (argv.at(-1) === 'query') {
+      queried.push((JSON.parse(init?.stdin ?? '{}') as { files: string[] }).files)
+
+      const diagnostics = [{ range: { start: { line: 4, character: 1 } }, severity: 1, message: 'undefined: missing' }]
+
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ ok: true, files: { 'cmd/main.go': { tool: 'gopls', diagnostics } }, notes: [] }),
+        stderr: '',
+      }
+    }
+
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+
+  await scanRepo(ports, subject, { isProject: false })
+
+  expect(queried).toEqual([['cmd/main.go']])
+  expect(scan()).toMatchObject({
+    status: 'done',
+    checked: 1,
+    toCheck: 1,
+    diags: [{ path: 'cmd/main.go', line: 5, col: 2, tool: 'gopls', message: 'undefined: missing', isNew: true }],
+    notes: ['C# is not checked: csharp-ls is not installed (dotnet tool install --global csharp-ls)'],
+  })
+  // No command-line checker has anything to read.
+  expect(commands.filter(command => /\b(ruff|pyright|tsc|eslint|terraform)\b/.test(command))).toEqual([])
+
+  // With the servers switched off, nothing is asked and nothing is said.
+  queried.length = 0
+  await scanRepo(ports, { ...subject, use: { ...ALL_CHECKERS, servers: false } }, { isProject: false })
+  expect(queried).toEqual([])
+  expect(scan()).toMatchObject({ status: 'done', toCheck: 0, diags: [], notes: [] })
+
+  // The table is the module's: left as the other tests expect it.
+  table.servers = []
+  await scanRepo(ports, subject, { isProject: false })
+  expect(scan()).toMatchObject({ toCheck: 0, notes: [] })
 })

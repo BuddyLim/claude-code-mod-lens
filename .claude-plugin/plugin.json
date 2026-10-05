@@ -8,7 +8,7 @@
     "languageServers": {
       "type": "boolean",
       "title": "Language servers first",
-      "description": "Ask the language servers (pyright, tsserver, terraform-ls) before the command-line checkers: answers come in milliseconds once they are warm. Off uses the command-line checkers alone.",
+      "description": "Ask the language servers (pyright, tsserver, terraform-ls) before the command-line checkers: answers come in milliseconds once they are warm. Off uses the command-line checkers alone, and leaves the languages only a server reads (C/C++, C#, Go, Rust and your own) unchecked.",
       "default": true
     },
     "ruff": {

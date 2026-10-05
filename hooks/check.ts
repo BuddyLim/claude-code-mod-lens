@@ -3,7 +3,9 @@
 //
 // Which tools exist is this module's own business. The language servers are
 // asked first and the command-line checkers (ruff, pyright, tsc, eslint,
-// terraform) cover what they could not; each tool is run in the project its
+// terraform) cover what they could not; a file of any other language is
+// checked by its language server alone, when the bridge has one that is
+// installed. Each tool is run in the project its
 // files belong to, and the base's version of a file is checked in an export
 // of that commit, which git.ts makes. A caller sees diagnostics, notes on what could not run,
 // and the names of the tools still out, and nothing of how any of it is done.
@@ -12,7 +14,14 @@
 import type { ChangedFile, Diag, Severity } from '../types'
 import { exportCommit, trackedFiles } from './git'
 import type { Run as ServerRun } from './lsp'
-import { lspDiagnostics, lspIsRunning } from './lsp'
+import {
+  isOtherServed,
+  lspDiagnostics,
+  lspIsRunning,
+  lspServed,
+  servedTools,
+  unservedNotes,
+} from './lsp'
 import type { Run } from './run'
 import { FILE_LIMIT, tail } from './run'
 import type { Checkers } from './settings'
@@ -49,13 +58,39 @@ for f in "$@"; do
   printf '%s\\t.\\n' "$f"
 done`
 
+// Whether the language servers are switched on, as the last scan had it: a
+// file of another language has no checker but its server.
+let areServersUsed = true
+
+// Whether a file of another language than the three above is checked: by its
+// language server, when one is installed and the servers are switched on.
+const isOther = (path: string): boolean => areServersUsed && isOtherServed(path)
+
+// Asks the bridge again which other languages it has an installed server for
+// (the screens ask `isCheckable` as they draw, and cannot wait for it), and
+// notes whether the servers are switched on. Resolves with what is wrong
+// with the person's config file; never rejects.
+export const refreshServed = async (servers: ServerRun, isUsed: boolean): Promise<string[]> => {
+  areServersUsed = isUsed
+
+  const notes = await lspServed(servers)
+
+  return isUsed ? notes : []
+}
+
+// One line for each language among `wanted` that would be checked were its
+// server installed, saying what to install.
+export const uncheckedNotes = (wanted: readonly string[]): string[] =>
+  areServersUsed ? unservedNotes(wanted) : []
+
 // Whether a file is of a kind some checker reads; one that is not has
 // nothing to say, which is not the same as being clean.
 export const isCheckable = (path: string): boolean =>
-  PYTHON.test(path) || TYPESCRIPT.test(path) || TERRAFORM.test(path)
+  PYTHON.test(path) || TYPESCRIPT.test(path) || TERRAFORM.test(path) || isOther(path)
 
 // Whether a file is of a language whose server can search the project's names.
-export const hasNameSearch = (path: string): boolean => PYTHON.test(path) || TYPESCRIPT.test(path)
+export const hasNameSearch = (path: string): boolean =>
+  PYTHON.test(path) || TYPESCRIPT.test(path) || isOtherServed(path)
 
 // Whether a file's own checkers are among those still out: `pending` is the
 // tools a check has started and not finished, as `Progress` named them.
@@ -74,7 +109,9 @@ export const isAwaited = (path: string, pending: readonly string[]): boolean =>
 // ones will bring: what they found last time is not yet replaced.
 export const toolsAwaited = (pending: readonly string[]): Set<string> =>
   new Set(
-    pending.flatMap(tool => (tool.startsWith(SERVERS) ? SERVER_TOOLS : [tool.split(' ')[0] ?? ''])),
+    pending.flatMap(tool =>
+      tool.startsWith(SERVERS) ? [...SERVER_TOOLS, ...servedTools()] : [tool.split(' ')[0] ?? ''],
+    ),
   )
 
 // Told as each tool starts and finishes, with everything found so far, so a
@@ -137,6 +174,7 @@ export const checkChange = async (
       FILE_LIMIT,
     ),
     terraform: (use.terraform ? wanted.filter(path => TERRAFORM.test(path)) : []).slice(0, FILE_LIMIT),
+    other: (use.servers ? wanted.filter(isOther) : []).slice(0, FILE_LIMIT),
   }
   // A whole-project check wants every file, which the command-line checkers
   // give; anything else asks the language servers first.
@@ -149,7 +187,7 @@ export const checkChange = async (
   if (target.ref === '') {
     checked = await checkTree(ports, repo, repo, asked, isProject, useServers, use, notes, progress)
   } else {
-    const sideKey = `${repo}\n${target.short}\n${JSON.stringify(use)}\n${[...asked.python, ...asked.typescript, ...asked.terraform].join('\n')}`
+    const sideKey = `${repo}\n${target.short}\n${JSON.stringify(use)}\n${[...asked.python, ...asked.typescript, ...asked.terraform, ...asked.other].join('\n')}`
     const exported = await exportCommit(ports.run, repo, target.ref, target.short, base.short)
 
     if (exported.dir === '') {
@@ -226,6 +264,7 @@ export const checkChange = async (
           python: troubled.filter(path => PYTHON.test(path)),
           typescript: troubled.filter(path => TYPESCRIPT.test(path)),
           terraform: troubled.filter(path => TERRAFORM.test(path)),
+          other: use.servers ? troubled.filter(isOther) : [],
         },
         false,
         useServers,
@@ -248,7 +287,9 @@ export const checkChange = async (
   }
 }
 
-type Files = { python: string[]; typescript: string[]; terraform: string[] }
+// The files to check, by what checks them. `other` is every other language
+// the bridge has an installed server for: nothing but that server reads it.
+type Files = { python: string[]; typescript: string[]; terraform: string[]; other: string[] }
 
 // Runs the checkers over one tree of the repo's files: the working tree
 // itself, or an export of a commit. Projects, virtualenvs and node_modules
@@ -256,12 +297,13 @@ type Files = { python: string[]; typescript: string[]; terraform: string[] }
 // what git tracks; `sink` takes a line for each tool that could not run.
 // `isWhole` checks every file of every project with the command-line
 // checkers; otherwise, with `useServers`, the language servers are asked
-// first: they answer for the files given, in milliseconds once warm.
+// first: they answer for the files given, in milliseconds once warm. The
+// `other` files are asked of the servers either way.
 const checkTree = async (
   ports: Ports,
   repo: string,
   tree: string,
-  { python, typescript, terraform }: Files,
+  { python, typescript, terraform, other }: Files,
   isWhole: boolean,
   useServers: boolean,
   use: Checkers,
@@ -366,9 +408,9 @@ const checkTree = async (
   // the command-line type checkers again; what they could not cover (a
   // server not installed, a file outside any project) still is.
   const served = new Set<string>()
-  const asked = [...python, ...typescript, ...terraform]
+  const asked = useServers && !isWhole ? [...python, ...typescript, ...terraform, ...other] : other
 
-  if (useServers && !isWhole && asked.length > 0) {
+  if (asked.length > 0) {
     // Servers not yet running take their time over the first answer (the
     // very first run fetches them), which is said while it lasts.
     const servers = (await lspIsRunning(ports.servers))

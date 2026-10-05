@@ -4,6 +4,7 @@ import type { Diag } from '../types'
 import {
   explain,
   groupByRoot,
+  hasNameSearch,
   isAwaited,
   isCheckable,
   labelNew,
@@ -11,8 +12,11 @@ import {
   parseRuff,
   parseTerraform,
   parseTsc,
+  refreshServed,
   toolsAwaited,
+  uncheckedNotes,
 } from './check'
+import type { Run as ServerRun } from './lsp'
 
 const diag = (line: number, severity: Diag['severity'] = 'error'): Diag => ({
   path: 'a.py',
@@ -166,4 +170,61 @@ test('a tool that could not run says what to do about it', () => {
   expect(explain('ruff', 'boom')).toBe(
     'ruff did not run: boom. Switch it off in /config if this project does not use it',
   )
+})
+
+// A bridge whose table is `servers`, each reading one extension.
+const bridgeWith =
+  (servers: { name: string; extension: string; isInstalled: boolean }[], notes: string[] = []): ServerRun =>
+  async argv => ({
+    exitCode: 0,
+    stdout:
+      argv.at(-1) === 'served'
+        ? JSON.stringify({
+            ok: true,
+            servers: servers.map(one => ({
+              name: one.name,
+              language: one.name.toUpperCase(),
+              extensions: [one.extension],
+              filenames: [],
+              isInstalled: one.isInstalled,
+              install: `get ${one.name}`,
+            })),
+            notes,
+          })
+        : '/tmp/lens-lsp-501/bridge.py',
+    stderr: '',
+  })
+
+test('a file of another language is checked when its server is installed and servers are on', async () => {
+  const bridge = bridgeWith(
+    [
+      { name: 'gopls', extension: '.go', isInstalled: true },
+      { name: 'clangd', extension: '.c', isInstalled: false },
+    ],
+    ['servers.json: "x" is ignored: it must be an object'],
+  )
+
+  expect(isCheckable('cmd/main.go')).toBe(false)
+  expect(await refreshServed(bridge, true)).toEqual(['servers.json: "x" is ignored: it must be an object'])
+
+  expect(isCheckable('cmd/main.go') && hasNameSearch('cmd/main.go')).toBe(true)
+  expect(isCheckable('src/a.c') || hasNameSearch('src/a.c') || hasNameSearch('main.tf')).toBe(false)
+  expect(isCheckable('a.py') && isCheckable('main.tf')).toBe(true)
+  // It waits on the servers, and on no command-line checker.
+  expect(isAwaited('cmd/main.go', ['language servers (starting: the first answer can take a minute)'])).toBe(true)
+  expect(isAwaited('cmd/main.go', ['ruff', 'pyright (.)', 'tsc (web)', 'terraform (.)'])).toBe(false)
+  expect([...toolsAwaited(['language servers'])]).toEqual(['pyright', 'tsserver', 'terraform-ls', 'terraform', 'gopls'])
+  expect(uncheckedNotes(['src/a.c', 'src/b.c', 'cmd/main.go', 'a.py'])).toEqual([
+    'CLANGD is not checked: clangd is not installed (get clangd)',
+  ])
+
+  // With the servers switched off nothing checks it, though it can still be looked up in.
+  expect(await refreshServed(bridge, false)).toEqual([])
+  expect(isCheckable('cmd/main.go')).toBe(false)
+  expect(hasNameSearch('cmd/main.go')).toBe(true)
+  expect(uncheckedNotes(['src/a.c'])).toEqual([])
+  expect(isCheckable('a.py')).toBe(true)
+
+  await refreshServed(bridgeWith([]), true)
+  expect(isCheckable('cmd/main.go') || hasNameSearch('cmd/main.go')).toBe(false)
 })

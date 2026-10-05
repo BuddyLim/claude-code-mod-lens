@@ -12,7 +12,8 @@ export type Checkers = {
   tsc: boolean
   eslint: boolean
   terraform: boolean
-  // Whether the language servers are asked before the command-line checkers.
+  // Whether the language servers are asked before the command-line checkers
+  // (and at all, for a language that has no command-line checker here).
   servers: boolean
 }
 

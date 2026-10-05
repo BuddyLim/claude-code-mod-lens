@@ -5,7 +5,7 @@
 
 import type { Diag, GraphRow, Scan } from '../types'
 import type { Progress } from './check'
-import { checkChange, isCheckable, toolsAwaited } from './check'
+import { checkChange, isCheckable, refreshServed, toolsAwaited, uncheckedNotes } from './check'
 import { isFadeOnly } from './diags'
 import * as git from './git'
 import type { Run as ServerRun } from './lsp'
@@ -127,16 +127,26 @@ export const scanRepo = async (
   await ports.writeScan((last): Scan => ({ ...last, status: 'running' }))
 
   const notes: string[] = []
-  const changes = await git.readChanges(ports.run, repo, base, target)
+  // Which languages have a server is asked while git answers: a server
+  // installed, or added to the person's config file, since the last scan
+  // counts from this one on.
+  const [changes, misconfigured] = await Promise.all([
+    git.readChanges(ports.run, repo, base, target),
+    refreshServed(ports.servers, use.servers),
+  ])
 
   if (changes.refusal !== undefined) {
     notes.push(explainDiff(base, changes.refusal))
   }
 
+  notes.push(...misconfigured)
+
   const live = changes.files.filter(one => one.status !== 'D').map(one => one.path)
   // The files to check: what differs, and the unchanged files the person
   // opened from the tree of every file.
   const wanted = [...live, ...(target === '' ? extra : []).filter(path => !live.includes(path))]
+
+  notes.push(...uncheckedNotes(wanted))
 
   if (isBrowsing) {
     allFiles = { repo, paths: await git.trackedFiles(ports.run, repo) }

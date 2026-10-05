@@ -1,8 +1,9 @@
 // The language-server bridge the pane runs through `uv run --no-project python`:
 // one standard-library script that is both the daemon keeping the language
-// servers (pyright, tsserver, terraform-ls) running behind a unix socket, and
-// the short-lived client that asks it for diagnostics. hooks/lsp.ts writes it
-// to a temp folder and calls it; its own docstring has the protocol.
+// servers (pyright, tsserver, terraform-ls and the rest of its table of
+// servers) running behind a unix socket, and the short-lived client that asks
+// it for diagnostics. hooks/lsp.ts writes it to a temp folder and calls it;
+// its own docstring has the protocol and the table's config file.
 //
 // String.raw: no backtick and no dollar-brace may appear in the script.
 export const LSP_BRIDGE_PY = String.raw`
@@ -12,6 +13,7 @@ export const LSP_BRIDGE_PY = String.raw`
   python bridge.py query    read one JSON request on stdin, print one JSON answer on stdout
   python bridge.py symbol   the same, for what a server knows of the symbol at one place
   python bridge.py ask      the same, for one of the lookups listed below
+  python bridge.py served   print the table of servers: what each reads, and whether it is installed
   python bridge.py status   print what the daemon is running
   python bridge.py stop     stop the daemon and its servers (a JSON {"root": dir} on stdin
                             stops only the servers of projects at or under that folder)
@@ -39,6 +41,30 @@ result, which is missing when there is none to give (the notes say why, when it 
   symbols     "query", "near" (not "file"), "limit"
                                           -> "hits": [{"name", "kind", "container", "place"}]
   hints       "fromLine", "toLine"        -> "hints": [{"line", "col", "label", "kind"}]
+
+Which server reads a file is a table: BUILTIN_SERVERS below, with the user's own file laid over
+it (~/.claude/lens/servers.json; LENS_SERVERS_CONFIG names another). The file is
+{"servers": {name: entry}}: a name the table has changes that server, any other adds one. An
+entry holds
+  "extensions"   [".go"]: the file extensions it reads, any case
+  "filenames"    ["Pulumi.*.yaml"]: whole file names it reads (* and ? stand for anything), which
+                 count before any extension
+  "languageId"   what the protocol calls the language: "go", or {".c": "c", ".cc": "cpp"} per
+                 extension (an extension's own letters when not given)
+  "command"      ["gopls"], or candidates [["csharp-ls"], ["OmniSharp", "-lsp"]]: the first
+                 whose program is on PATH is started, and speaks the protocol on its stdin/stdout
+  "rootMarkers"  ["go.work", "go.mod"]: tried in order, each for the nearest folder at or above
+                 the file that holds it (* allowed), which is the project the server is started
+                 for; the folder asked about when none is found, the file's own when none given
+  "language"     what a person calls it ("Go"), and "install", how to get the server: for notes
+  "disabled"     true takes the server out of the table
+A new entry needs a command and something to read. An entry that is wrong is left out (a
+built-in then stays as it was) and "served" says which and why in its notes; nothing in the
+folder under review is ever read for this, since an entry names a command to run.
+
+"served" answers {"ok": true, "servers": [{"name", "language", "extensions", "filenames",
+"isInstalled", "install"}], "notes": [...]}, in the order a file is matched: a user's entries
+before the built-in ones. It asks nothing of the daemon.
 """
 import bisect
 import collections
@@ -88,10 +114,80 @@ ASKS = ("references", "calls", "outline", "tokens", "symbols", "hints")
 with open(os.path.abspath(__file__), "rb") as _source:
     VERSION = hashlib.sha1(_source.read()).hexdigest()[:12]
 
-PYTHON_EXT = (".py", ".pyi")
-TYPESCRIPT_EXT = (".ts", ".tsx", ".mts", ".cts")
-TERRAFORM_EXT = (".tf", ".tfvars")
-TOOLS = {"python": "pyright", "typescript": "tsserver", "terraform": "terraform-ls"}
+# The user's own servers. Read from their home folder alone, never from the folder under
+# review: an entry names a command to run, and a repo must not get to choose one.
+CONFIG = os.environ.get("LENS_SERVERS_CONFIG") or os.path.expanduser("~/.claude/lens/servers.json")
+
+# The servers known without being told, spelled as the config file spells its entries (the
+# docstring has the fields). A server's name is also the tool its diagnostics carry. The
+# entries after terraform-ls are kept to what each server's documentation says it needs:
+# clangd and gopls have been run through this bridge; rust-analyzer, csharp-ls, OmniSharp
+# and pulumi-lsp have not.
+BUILTIN_SERVERS = {
+    "pyright": {
+        "language": "Python",
+        "extensions": [".py", ".pyi"],
+        "languageId": "python",
+        "install": "install uv: https://docs.astral.sh/uv/",
+    },
+    "tsserver": {
+        "language": "TypeScript",
+        "extensions": [".ts", ".tsx", ".mts", ".cts"],
+        "install": "npm install typescript, in the project",
+    },
+    # No markers: a folder of Terraform files is one configuration.
+    "terraform-ls": {
+        "language": "Terraform",
+        "extensions": [".tfvars", ".tf"],
+        "languageId": {".tfvars": "terraform-vars", ".tf": "terraform"},
+        "command": ["terraform-ls", "serve"],
+        "install": "brew install hashicorp/tap/terraform-ls",
+    },
+    "clangd": {
+        "language": "C/C++",
+        "extensions": [".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"],
+        "languageId": {".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hh": "cpp", ".hpp": "cpp", ".hxx": "cpp"},
+        "command": ["clangd"],
+        "rootMarkers": ["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt"],
+        "install": "brew install llvm",
+    },
+    "csharp-ls": {
+        "language": "C#",
+        "extensions": [".cs"],
+        "languageId": "csharp",
+        "command": [["csharp-ls"], ["OmniSharp", "-lsp"]],
+        "rootMarkers": ["*.sln", "*.csproj"],
+        "install": "dotnet tool install --global csharp-ls",
+    },
+    "gopls": {
+        "language": "Go",
+        "extensions": [".go"],
+        "languageId": "go",
+        "command": ["gopls"],
+        "rootMarkers": ["go.work", "go.mod"],
+        "install": "go install golang.org/x/tools/gopls@latest",
+    },
+    "rust-analyzer": {
+        "language": "Rust",
+        "extensions": [".rs"],
+        "languageId": "rust",
+        "command": ["rust-analyzer"],
+        "rootMarkers": ["Cargo.toml"],
+        "install": "rustup component add rust-analyzer",
+    },
+    "pulumi-lsp": {
+        "language": "Pulumi YAML",
+        "filenames": ["Pulumi.yaml", "Pulumi.*.yaml"],
+        "languageId": "yaml",
+        "command": ["pulumi-lsp"],
+        "rootMarkers": ["Pulumi.yaml"],
+        "install": "https://github.com/pulumi/pulumi-lsp/releases",
+    },
+}
+# The servers found and started each in a way of its own (Daemon.make), not from a command.
+OWN_KINDS = {"pyright": "pyright", "tsserver": "tsserver"}
+ENTRY_FIELDS = ("language", "extensions", "filenames", "languageId", "command", "rootMarkers", "install", "disabled")
+SERVER_NAME = re.compile("[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
 def log(*parts):
@@ -118,6 +214,8 @@ def child_env():
     env = dict(os.environ)
     paths = [p for p in env.get("PATH", "").split(os.pathsep) if p]
     extra = ["/opt/homebrew/bin", "/usr/local/bin"]
+    # Where go, cargo and dotnet put the servers they install.
+    extra += [os.path.expanduser(folder) for folder in ("~/go/bin", "~/.cargo/bin", "~/.dotnet/tools")]
     if shutil.which("node", path=os.pathsep.join(paths + extra)) is None:
         extra = node_dirs()[:1] + extra
     for folder in extra:
@@ -142,15 +240,210 @@ def from_uri(uri):
     return os.path.realpath(unquote(urlparse(uri).path))
 
 
-def language_of(rel):
-    lower = rel.lower()
-    if lower.endswith(PYTHON_EXT):
-        return "python"
-    if lower.endswith(TYPESCRIPT_EXT):
-        return "typescript"
-    if lower.endswith(TERRAFORM_EXT):
-        return "terraform"
+def strings(value, field):
+    if not isinstance(value, list) or not all(isinstance(one, str) and one for one in value):
+        raise ValueError('"%s" must be a list of strings' % field)
+    return list(value)
+
+
+def name_pattern(name):
+    """A whole file name as a pattern: * is any run of characters and ? is any one."""
+    return re.compile(re.escape(name).replace("\\*", ".*").replace("\\?", ".") + "$")
+
+
+def parse_server(name, raw, base):
+    """One server of the table: an entry as the config file spells it, laid over base (the
+    server of that name the table already has, or None). Raises ValueError saying what is wrong."""
+    if not isinstance(raw, dict):
+        raise ValueError("it must be an object")
+    unknown = sorted(key for key in raw if key not in ENTRY_FIELDS)
+    if unknown:
+        raise ValueError('unknown field "%s"' % unknown[0])
+    server = dict(base) if base else {
+        "name": name,
+        "kind": OWN_KINDS.get(name, "lsp"),
+        "language": name,
+        "extensions": (),
+        "filenames": (),
+        "language_id": None,
+        "commands": [],
+        "root_markers": (),
+        "install": "",
+        "is_disabled": False,
+        "is_user": False,
+    }
+    if "disabled" in raw:
+        if not isinstance(raw["disabled"], bool):
+            raise ValueError('"disabled" must be true or false')
+        server["is_disabled"] = raw["disabled"]
+    if base and server["kind"] != "lsp" and any(key != "disabled" for key in raw):
+        raise ValueError('only "disabled" can be set: %s is found and started in a way of its own' % name)
+    for field in ("language", "install"):
+        if field in raw:
+            if not isinstance(raw[field], str):
+                raise ValueError('"%s" must be a string' % field)
+            server[field] = raw[field]
+    if "extensions" in raw:
+        extensions = strings(raw["extensions"], "extensions")
+        for one in extensions:
+            if not one.startswith(".") or len(one) < 2 or "/" in one:
+                raise ValueError('an extension starts with a dot: "%s"' % one)
+        server["extensions"] = tuple(one.lower() for one in extensions)
+    if "filenames" in raw:
+        filenames = strings(raw["filenames"], "filenames")
+        if any("/" in one for one in filenames):
+            raise ValueError('"filenames" are file names, not paths')
+        server["filenames"] = tuple(filenames)
+    if "languageId" in raw:
+        ident = raw["languageId"]
+        is_table = isinstance(ident, dict) and all(isinstance(one, str) and one for one in ident.values())
+        if not is_table and not (isinstance(ident, str) and ident):
+            raise ValueError('"languageId" must be a string, or one for each extension')
+        server["language_id"] = {key.lower(): one for key, one in ident.items()} if is_table else ident
+    if "command" in raw:
+        command = raw["command"]
+        if isinstance(command, list) and command and all(isinstance(one, list) for one in command):
+            server["commands"] = [strings(one, "command") for one in command]
+        else:
+            server["commands"] = [strings(command, "command")]
+        if not all(server["commands"]):
+            raise ValueError('"command" must name a program')
+    if "rootMarkers" in raw:
+        markers = strings(raw["rootMarkers"], "rootMarkers")
+        if any(os.path.isabs(one) or ".." in one.split("/") for one in markers):
+            raise ValueError('"rootMarkers" are names inside the project')
+        server["root_markers"] = tuple(markers)
+    if not server["extensions"] and not server["filenames"]:
+        raise ValueError('it needs "extensions" or "filenames" to read')
+    if server["kind"] == "lsp" and not server["commands"]:
+        raise ValueError('it needs a "command"')
+    # What the protocol calls each file's language: by its extension, and for any other
+    # file the entry's one language (the first extension's when each has its own).
+    known = server["language_id"]
+    pairs = [
+        (one, known.get(one, one[1:]) if isinstance(known, dict) else known or one[1:])
+        for one in server["extensions"]
+    ]
+    server["language_ids"] = pairs + [("", known if isinstance(known, str) else pairs[0][1] if pairs else name)]
+    server["patterns"] = [name_pattern(one) for one in server["filenames"]]
+    return server
+
+
+def read_servers(path):
+    """The table of servers: the built-in ones with the config file at path laid over them,
+    a user's own first. Returns (servers, notes); a note is an entry left out, and why."""
+    table = {name: parse_server(name, raw, None) for name, raw in BUILTIN_SERVERS.items()}
+    notes, entries = [], {}
+    shown = os.path.basename(path)
+    try:
+        with open(path, encoding="utf-8") as source:
+            found = json.loads(source.read())
+        entries = found.get("servers") if isinstance(found, dict) else None
+        if not isinstance(entries, dict):
+            notes.append('%s is ignored: it must be {"servers": {name: entry}}' % shown)
+            entries = {}
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as error:
+        notes.append("%s is ignored: %s" % (shown, str(error)[:200]))
+    for name, raw in entries.items():
+        try:
+            if not SERVER_NAME.match(name):
+                raise ValueError("a name is letters, digits and . _ + - alone")
+            table[name] = dict(parse_server(name, raw, table.get(name)), is_user=True)
+        except ValueError as error:
+            notes.append('%s: "%s" is ignored: %s' % (shown, name[:60], error))
+    servers = [server for server in table.values() if not server["is_disabled"]]
+    return sorted(servers, key=lambda server: not server["is_user"]), notes
+
+
+TABLE = {"stamp": None, "servers": [], "notes": []}
+TABLE_LOCK = threading.Lock()
+
+
+def servers_now():
+    """(servers, notes) of the table as the config file has it now: read again when it changed."""
+    try:
+        stat = os.stat(CONFIG)
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = ()
+    with TABLE_LOCK:
+        if TABLE["stamp"] != stamp:
+            TABLE["servers"], TABLE["notes"] = read_servers(CONFIG)
+            TABLE["stamp"] = stamp
+        return TABLE["servers"], TABLE["notes"]
+
+
+def command_of(server):
+    """The first of the server's commands whose program is installed, or None."""
+    for argv in server["commands"]:
+        program = which(os.path.expanduser(argv[0]))
+        if program:
+            return [program] + argv[1:]
     return None
+
+
+def is_installed_server(server):
+    if server["kind"] == "pyright":
+        return bool(which("uvx") or which("pyright-langserver"))
+    if server["kind"] == "tsserver":
+        # It is each project's own, in its node_modules: known only once a file is asked about.
+        return True
+    return command_of(server) is not None
+
+
+def reader():
+    """How a file's server is picked from the table as it is now: a function of the file's
+    path that answers the server, or None. One that is installed counts before one that is
+    not, a file's whole name before its extension, a user's entry before a built-in."""
+    servers, _ = servers_now()
+    installed = [server for server in servers if is_installed_server(server)]
+
+    def pick(rel):
+        name = os.path.basename(rel)
+        lower = name.lower()
+        for group in (installed, servers):
+            for server in group:
+                if any(pattern.match(name) for pattern in server["patterns"]):
+                    return server
+            for server in group:
+                if lower.endswith(server["extensions"]):
+                    return server
+        return None
+
+    return pick
+
+
+def language_of(rel):
+    return reader()(rel)
+
+
+def has_marker(folder, marker):
+    if any(sign in marker for sign in "*?["):
+        return bool(glob.glob(os.path.join(glob.escape(folder), marker)))
+    return os.path.exists(os.path.join(folder, marker))
+
+
+def served():
+    """The table as the pane needs it: what each server reads, and whether it is installed."""
+    servers, notes = servers_now()
+    return {
+        "ok": True,
+        "version": VERSION,
+        "servers": [
+            {
+                "name": server["name"],
+                "language": server["language"],
+                "extensions": list(server["extensions"]),
+                "filenames": list(server["filenames"]),
+                "isInstalled": is_installed_server(server),
+                "install": server["install"],
+            }
+            for server in servers
+        ],
+        "notes": list(notes),
+    }
 
 
 def venv_python(folder):
@@ -186,11 +479,18 @@ def nearest(repo, rel_dir, is_root):
 
 def root_of(repo, rel, language):
     rel_dir = os.path.dirname(rel) or "."
-    if language == "python":
+    if language["kind"] == "pyright":
         return nearest(repo, rel_dir, is_python_root) or "."
-    if language == "typescript":
+    if language["kind"] == "tsserver":
         return nearest(repo, rel_dir, is_typescript_root)
-    return rel_dir
+    if not language["root_markers"]:
+        return rel_dir
+    # In order: a marker of the whole workspace is listed before one of a part of it.
+    for marker in language["root_markers"]:
+        found = nearest(repo, rel_dir, lambda folder: has_marker(folder, marker))
+        if found is not None:
+            return found
+    return "."
 
 
 def find_up(folder, tail):
@@ -1805,8 +2105,8 @@ class Daemon:
         self.stopping = threading.Event()
 
     def make(self, language, root, env_dir, label):
-        tool = TOOLS[language]
-        if language == "python":
+        tool = language["name"]
+        if language["kind"] == "pyright":
             python = venv_python(root) or (venv_python(env_dir) if env_dir else None)
             if which("uvx"):
                 argv = [which("uvx"), "--from", "pyright", "pyright-langserver", "--stdio"]
@@ -1821,7 +2121,7 @@ class Daemon:
             watched = (".py", ".pyi", "pyproject.toml", "pyrightconfig.json")
             server = LspServer(tool, label, root, argv, ids, settings, not NO_PULL, watched)
             return server, python or ""
-        if language == "typescript":
+        if language["kind"] == "tsserver":
             node = which("node")
             if node is None:
                 raise Unavailable("node not found (PATH or ~/.nvm/versions/node)")
@@ -1831,15 +2131,21 @@ class Daemon:
                 raise Unavailable("no node_modules/typescript at or above " + root)
             argv = [node, tsserver, "--disableAutomaticTypingAcquisition", "--suppressDiagnosticEvents"]
             return TsServer(tool, label, root, argv), tsserver
-        binary = which("terraform-ls")
-        if binary is None:
-            raise Unavailable("terraform-ls not installed")
-        ids = [(".tfvars", "terraform-vars"), (".tf", "terraform")]
-        return LspServer(tool, label, root, [binary, "serve"], ids, {}, False, TERRAFORM_EXT), ""
+        argv = command_of(language)
+        if argv is None:
+            raise Unavailable("%s not installed" % tool)
+        ids = language["language_ids"]
+        # The files whose changes on disk the server is told of: its sources, and what
+        # marks a project (a name with no * in it).
+        named = [one for one in language["root_markers"] + language["filenames"] if not set(one) & set("*?[")]
+        watched = language["extensions"] + tuple(named)
+        # A command or a language that the config file has since changed starts it over.
+        variant = json.dumps([argv, ids])
+        return LspServer(tool, label, root, argv, ids, {}, False, watched), variant
 
     def server(self, language, root, env_dir, label):
         """The running server for (language, root), started on first use. Returns (server, state)."""
-        key = (language, root)
+        key = (language["name"], root)
         with self.lock:
             gate = self.starting.setdefault(key, threading.Lock())
         with gate:
@@ -1879,25 +2185,27 @@ class Daemon:
         env_root = request.get("envRoot")
         deadline = time.time() + float(request.get("timeout") or 120)
         groups, notes, answered, used = {}, [], {}, []
+        # What is installed is looked up once for the whole request, not for each file.
+        pick = reader()
         for rel in request.get("files") or []:
-            language = language_of(rel)
+            language = pick(rel)
             if language is None:
                 continue
             if not os.path.exists(os.path.join(repo, rel)):
                 # A file that is gone has nothing wrong with it; a server that had it open
                 # drops it the next time it is asked anything.
-                answered[rel] = {"tool": TOOLS[language], "diagnostics": []}
+                answered[rel] = {"tool": language["name"], "diagnostics": []}
                 continue
             root = root_of(repo, rel, language)
             if root is None:
-                note = "%s: no tsconfig.json at or above some files" % TOOLS[language]
+                note = "%s: no tsconfig.json at or above some files" % language["name"]
                 if note not in notes:
                     notes.append(note)
                 continue
-            groups.setdefault((language, root), []).append(rel)
+            groups.setdefault((language["name"], root), (language, []))[1].append(rel)
 
         def run(language, root, rels):
-            tool = TOOLS[language]
+            tool = language["name"]
             label = "%s (%s)" % (tool, root)
             folder = os.path.normpath(os.path.join(repo, root))
             env_dir = os.path.normpath(os.path.join(env_root, root)) if env_root else None
@@ -1939,7 +2247,7 @@ class Daemon:
 
         threads = [
             threading.Thread(target=run, args=(language, root, rels))
-            for (language, root), rels in groups.items()
+            for (_, root), (language, rels) in groups.items()
         ]
         for thread in threads:
             thread.start()
@@ -1967,7 +2275,7 @@ class Daemon:
         language = language_of(rel)
         if language is None:
             return nothing("no language server for %s" % (os.path.splitext(rel)[1] or rel))
-        tool = TOOLS[language]
+        tool = language["name"]
         path = os.path.normpath(os.path.join(repo, rel))
         if not os.path.isfile(path):
             return nothing("%s: no such file" % rel)
@@ -2051,7 +2359,7 @@ class Daemon:
         language = language_of(rel)
         if language is None:
             raise Nothing("no language server for %s" % (os.path.splitext(rel)[1] or rel or "no file"))
-        tool = TOOLS[language]
+        tool = language["name"]
         path = os.path.normpath(os.path.join(repo, rel))
         if not os.path.isfile(path):
             raise Nothing("%s: no such file" % rel)
@@ -2349,12 +2657,14 @@ def main():
             request = stdin_json()
             request["op"] = "ask"
             answer = call(request, float(request.get("timeout") or SYMBOL_SECONDS) + 30)
+        elif mode == "served":
+            answer = served()
         elif mode == "status":
             answer = call({"op": "status"}, 10, may_start=False)
         elif mode == "stop":
             answer = call(dict(stdin_json(), op="stop"), 30, may_start=False)
         else:
-            answer = {"ok": False, "error": "usage: bridge.py daemon|query|symbol|ask|status|stop"}
+            answer = {"ok": False, "error": "usage: bridge.py daemon|query|symbol|ask|served|status|stop"}
     except Exception as error:
         answer = {"ok": False, "error": repr(error)}
     sys.stdout.write(json.dumps(answer))
