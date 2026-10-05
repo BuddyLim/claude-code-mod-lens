@@ -55,6 +55,9 @@ export type Shell = {
   padding: number
   // The folder under review, by its own name.
   repoName: string
+  // The repo the folder under review is a worktree of, by name; '' when it
+  // is the repo's main checkout (or its only one).
+  worktreeOf: string
   // What is checked out, by branch name where there is one.
   headName: string
   // The side the comparison is read from (the target, or what is checked
@@ -93,6 +96,9 @@ export const STATUS_WORD: Record<string, [word: string, color: string]> = {
   '?': ['new', '#73c991'],
 }
 export const CARD_BACKGROUND = '#1f1f1f'
+// A worktree's mark and colour, on the graph's badges and the first line.
+export const WORKTREE_ICON = '\u{f07c}'
+export const WORKTREE_COLOR = '#4ec9b0'
 export const COMMIT_BOX = '#3794ff'
 export const STASH_ICON = '\u{f187}'
 export const STASH_COLOR = '#a371f7'
@@ -114,6 +120,15 @@ export const said = (one: Comment): string =>
 // scan runs, what it is waiting on.
 export const statusLine = ({ Text }: Kit, shell: Shell) => (
   <Text dimColor wrap="truncate-end">
+    {/* A worktree says so first and in colour: its files are not the main
+        checkout's, which is easy to forget once inside it. */}
+    {shell.worktreeOf === '' ? (
+      ''
+    ) : (
+      <Text color={WORKTREE_COLOR} dimColor={false} bold>
+        {WORKTREE_ICON} worktree of {shell.worktreeOf} ·{' '}
+      </Text>
+    )}
     {shell.repoName} · {shell.request === '' ? shell.side : shell.request}
     {shell.request !== ''
       ? ''

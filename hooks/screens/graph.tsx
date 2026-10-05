@@ -21,6 +21,8 @@ import {
   STASH_COLOR,
   STASH_ICON,
   STATUS_WORD,
+  WORKTREE_COLOR,
+  WORKTREE_ICON,
   helpButton,
   statusLine,
 } from './frame'
@@ -29,9 +31,6 @@ import {
 const BRANCH_ICON = '\u{e725}'
 const TAG_ICON = '\u{f02b}'
 const BADGE_GROUND = '#2d333b'
-// A worktree's badge: its mark and the colour it sits on.
-const WORKTREE_ICON = '\u{f07c}'
-const WORKTREE_COLOR = '#4ec9b0'
 // The longest a branch's name is drawn on a graph row before it is cut.
 const BADGE_NAME = 18
 // The compare panel: how many names it offers under its fields, and the rows
@@ -49,6 +48,8 @@ export type GraphModel = {
   // The repo's worktrees: each other one is a badge on the commit it has
   // checked out, pressed to review it there.
   worktrees: readonly Worktree[]
+  // The repo's open pull or merge requests, once the forge has listed them.
+  requests: readonly { typed: string; title: string }[]
   // The local branches, the one checked out ("HEAD" when detached) and its
   // commit's short hash.
   branches: readonly string[]
@@ -521,16 +522,17 @@ export const graphScreen = (
   const offers = isPicking
     ? [
         ...(pickField === 'a' ? [{ value: '', label: 'working tree (your files as they are)' }] : []),
-        // Another worktree, as its files stand: its uncommitted work too.
-        ...(pickField === 'b'
-          ? model.worktrees
-              .filter(one => !one.isCurrent)
-              .map(one => {
-                const name = one.path.split('/').pop() ?? one.path
+        // Another worktree, as its files stand (its uncommitted work too), and
+        // the open requests: each is a comparison by itself, so either field
+        // takes one.
+        ...model.worktrees
+          .filter(one => !one.isCurrent)
+          .map(one => {
+            const name = one.path.split('/').pop() ?? one.path
 
-                return { value: `@${name}`, label: `@${name}  that worktree's files as they stand` }
-              })
-          : []),
+            return { value: `@${name}`, label: `@${name}  that worktree's files as they stand` }
+          }),
+        ...model.requests.map(one => ({ value: one.typed, label: `${one.typed}  ${one.title}` })),
         ...branches.map(name => ({ value: name, label: name })),
         ...graphRows
           .filter(row => row.hash !== UNCOMMITTED)
@@ -551,7 +553,7 @@ export const graphScreen = (
       <Input
         key="pick-a"
         label="compare"
-        placeholder="working tree, a branch or commit, or a request: #12"
+        placeholder="working tree, a branch, a commit, a request (#12) or @worktree"
         value={pickA}
         submitLabel="compare"
         onInput={value => actions.typeCompare('a', value)}

@@ -866,6 +866,42 @@ const gitlabPost = async (
 
 // Every comment on the request, oldest first: review comments on lines, and the general conversation.
 // `typed` is what the person typed to open the request ("#12", a URL, ...), as resolveRequest takes.
+// The repo's open pull or merge requests, newest first, each by what a person
+// would type to open it ("#12", "!34") and its title. None where there is no
+// forge to ask, or it does not answer: a list to offer, never an error.
+export const listRequests = async (run: Run): Promise<{ typed: string; title: string }[]> => {
+  const place = await locate(run, '1')
+
+  if ('error' in place) {
+    return []
+  }
+
+  const listed = await call(
+    run,
+    place.forge === 'gitlab'
+      ? glab(place, `projects/${encodeURIComponent(place.repo)}/merge_requests?state=opened&per_page=30`)
+      : gh(place, `repos/${place.repo}/pulls?state=open&per_page=30`),
+    20_000,
+  )
+
+  if (listed.exitCode !== 0) {
+    return []
+  }
+
+  try {
+    return values(listed.stdout).flatMap(raw => {
+      const one = record(raw)
+      const number = whole(place.forge === 'gitlab' ? one.iid : one.number)
+
+      return number === 0
+        ? []
+        : [{ typed: `${place.forge === 'gitlab' ? '!' : '#'}${number}`, title: text(one.title) }]
+    })
+  } catch {
+    return []
+  }
+}
+
 export const fetchComments = async (run: Run, typed: string): Promise<{ comments: Comment[] } | { error: string }> => {
   const place = await locate(run, typed)
 

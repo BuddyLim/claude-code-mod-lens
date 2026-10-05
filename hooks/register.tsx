@@ -42,6 +42,7 @@ import {
   fetchComments,
   parseRequest,
   postComment,
+  listRequests,
   replyComment,
   repoPrefix,
   resolveRequest,
@@ -163,6 +164,10 @@ let insightFor: string | undefined
 // them, with the folder under review's place in the repo (`prefix`). Written
 // by `loadComments`; `postReview` adds the comment it posted.
 let commentsCache: { key: string; prefix: string; comments: Comment[] } | undefined
+
+// The repo's open pull or merge requests, for the compare panel to offer.
+// Written by `loadRequests`, when the panel opens.
+let requestsCache: { repo: string; list: { typed: string; title: string }[] } | undefined
 
 // What the folder the breadcrumb last opened holds, written by `loadCrumb`.
 let crumbCache: { dir: string; entries: string[] } | undefined
@@ -352,7 +357,7 @@ const runScan = async ($: EngineInterface, taken: Job): Promise<void> => {
       },
       readComments: typed => loadComments($, now.repo, typed),
       showStatus: text => {
-        $.ui.status(text)
+        $.ui.status(text === '' ? undefined : text)
       },
       tellClaude: text =>
         $.session
@@ -736,6 +741,13 @@ const forgeRun =
   (argv, timeoutMs = 60_000) =>
     run(argv, { cwd: repo, timeoutMs })
 
+// Asks the forge for the repo's open requests and has the compare panel,
+// which is already open, drawn again with them.
+const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => {
+  requestsCache = { repo, list: await listRequests(forgeRun(runOf($), repo)) }
+  await update($, view, (last): View => ({ ...last }))
+}
+
 // Starts a comparison between two things the person named: `side` is what is
 // read (a branch or commit, or '' for the working tree) and `against` is what
 // it is compared with. Each name is checked with git first, so a typo is said
@@ -763,6 +775,9 @@ const startCompare = async (
     ;[from, to] = ['', from]
   } else if (await isRequest(to)) {
     from = ''
+  } else if (from.startsWith('@')) {
+    // A worktree, likewise, whichever field it was typed in.
+    ;[from, to] = ['', from]
   }
 
   if (to === '') {
@@ -1297,6 +1312,11 @@ export const register: Register = (on, options) => {
       inset,
       padding: settings.sidePadding,
       repoName: repo.split('/').pop() ?? '',
+      // git lists the main checkout first; any other is a worktree of it.
+      worktreeOf:
+        found.worktrees.length > 1 && found.worktrees[0]?.isCurrent === false
+          ? (found.worktrees[0].path.split('/').pop() ?? '')
+          : '',
       headName: compared.headName,
       side: compared.side,
       against: compared.against,
@@ -1422,6 +1442,7 @@ export const register: Register = (on, options) => {
           rows: history,
           stashes: found.stashes,
           worktrees: found.worktrees,
+          requests: requestsCache?.repo === repo ? requestsCache.list : [],
           branches: found.branches,
           head: found.head,
           headHash: found.headHash,
@@ -1481,7 +1502,11 @@ export const register: Register = (on, options) => {
           askUndo: () => void askUndo($, repo),
           undo: () => void undoCommit($, repo),
           keepCommit: () => set(last => ({ ...last, isUndoing: false })),
-          toggleCompare: () =>
+          toggleCompare: () => {
+            if (!now.isPicking) {
+              void loadRequests($, repo)
+            }
+
             set(
               (last): View => ({
                 ...last,
@@ -1491,7 +1516,8 @@ export const register: Register = (on, options) => {
                 pickB: isComparing ? last.base : '',
                 pickField: 'b',
               }),
-            ),
+            )
+          },
           cancelCompare: () => set((last): View => ({ ...last, isPicking: false })),
           typeCompare: (field, text) =>
             set(
@@ -1508,7 +1534,10 @@ export const register: Register = (on, options) => {
                   : { ...last, pickB: value },
             ),
           compare: (side, against) => void startCompare($, repo, side, against),
-          switchWorktree: path => void openReview($, path, undefined),
+          switchWorktree: path => {
+            $.ui.toast(`Now reviewing the worktree ${path.split('/').pop() ?? ''}`, { timeoutMs: 5000 })
+            void openReview($, path, undefined)
+          },
         },
       )
 
@@ -1616,7 +1645,8 @@ export const register: Register = (on, options) => {
                   origin: 'tree',
                   top: 1,
                   cursor: -1,
-                  isDiff: target === '' ? last.isDiff : true,
+                  // In a comparison a file opens on what differs.
+                  isDiff: isComparing ? true : last.isDiff,
                 }),
               )
             },

@@ -61,7 +61,7 @@ test('a scan lists what differs before the checkers run, then says the count', a
 
   await scanRepo(ports, { ...subject, isBrowsing: true }, { isProject: false })
 
-  expect(said).toEqual(['listed 1 while running', 'lens ✓'])
+  expect(said).toEqual(['listed 1 while running', ''])
   expect(scan()).toMatchObject({
     status: 'done',
     files: [{ path: 'README.md', status: 'M' }],

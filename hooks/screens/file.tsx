@@ -1139,14 +1139,14 @@ export const fileScreen = (
         {isDiff && (
           <Box columnGap={2}>
             <Text color="red">
-              − removed · was in{' '}
+              − removed ·{' '}
               {!model.isChecked
                 ? `${shortRef(commit)}^`
                 : shell.isComparing
                   ? shell.against
                   : 'your last commit'}
             </Text>
-            <Text color="green">+ added · in {commit !== '' ? shortRef(commit) : shell.headName}</Text>
+            <Text color="green">+ added · {commit !== '' ? shortRef(commit) : shell.headName}</Text>
           </Box>
         )}
         {lines === undefined && <Text dimColor>Loading…</Text>}

@@ -58,7 +58,7 @@ export type Ports = {
   onListed: () => Promise<void>
   // Reads the request's comments again; answers '' or why it could not.
   readComments: (typed: string) => Promise<string>
-  // The one-line summary for the status line.
+  // The one-line summary for the status line; '' clears it.
   showStatus: (text: string) => void
   // A note to Claude, in the conversation.
   tellClaude: (text: string) => Promise<unknown>
@@ -352,7 +352,9 @@ export const scanRepo = async (
   const errorCount = mine.filter(diag => diag.severity === 'error').length
 
   ports.showStatus(
-    mine.length === 0 ? 'lens ✓' : `lens ✖ ${errorCount} ⚠ ${mine.length - errorCount}`,
+    // The engine writes the mod's name before its entry, so the entry is the count alone.
+    // A clean change has nothing to say: '' takes the entry off the status line.
+    mine.length === 0 ? '' : `✖ ${errorCount} ⚠ ${mine.length - errorCount}`,
   )
 
   // Where the person asked for it, Claude is told what its own edits broke:

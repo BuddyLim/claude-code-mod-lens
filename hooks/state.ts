@@ -158,7 +158,8 @@ export const comparisonOf = (now: View, found: Scan, history: readonly GraphRow[
     side: now.target === '' ? headName : shortRef(now.target),
     against:
       (now.baseWorktree ?? '') !== ''
-        ? `${now.baseWorktree.split('/').pop() ?? ''} (worktree, as it stands)`
+        ? // As it is typed in the compare panel: the worktree's files as they stand.
+          `@${now.baseWorktree.split('/').pop() ?? ''}`
         : (baseBranch ?? shortRef(now.base)),
     isComparing:
       now.target !== '' ||
