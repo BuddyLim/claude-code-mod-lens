@@ -373,11 +373,19 @@ export const findRepo = async (run: Run, folder: string): Promise<string> => {
   return resolved.exitCode !== 0 ? '' : resolved.stdout.trim()
 }
 
-// The history as the graph draws it: the uncommitted row first, then the
-// commits, laid out in lanes. The uncommitted row's lane is drawn grey down
+// The history as the graph draws it: the uncommitted row first (where there
+// is anything uncommitted: `hasPending`), then the commits, laid out in lanes. The uncommitted row's lane is drawn grey down
 // to the commit checked out, where the branch's own colour takes over: its
 // cell is the first of each row until then.
-export const layoutHistory = (commits: readonly Commit[], checkedOut: string): GraphRow[] => {
+export const layoutHistory = (
+  commits: readonly Commit[],
+  checkedOut: string,
+  hasPending = true,
+): GraphRow[] => {
+  if (!hasPending) {
+    return layoutGraph([...commits])
+  }
+
   const laidOut = layoutGraph([
     {
       hash: UNCOMMITTED,
@@ -510,7 +518,17 @@ export const readChanges = async (
       return { ref, subject, base: parents.split(' ')[0] ?? '', when }
     }),
     worktrees,
-    history: layoutHistory(parseCommits(log.stdout), headHash.stdout.trim()),
+    history: layoutHistory(
+      parseCommits(log.stdout),
+      headHash.stdout.trim(),
+      // A working tree with nothing edited and nothing new has no row of its own.
+      lines(dirty.stdout).length > 0 ||
+        parseUntracked(untracked.stdout).some(one => {
+          const whole = `${repo}/${one.path}`.replace(/\/$/, '')
+
+          return !nested.some(path => whole === path || whole.startsWith(`${path}/`))
+        }),
+    ),
     ...(named.exitCode !== 0 ? { refusal: tail(named.stderr) } : {}),
   }
 }
@@ -588,6 +606,22 @@ export const requestChanges = async (
   ])
 
   return { base, files: parseNameStatus(named.stdout), stats: parseNumstat(numstat.stdout) }
+}
+
+// A short mark of how the repo stands: what is checked out, what is edited,
+// staged or new, the stashes and the worktrees. It changes when any of them
+// does, whoever made the change; '' where git does not answer.
+export const repoMark = async (run: Run, repo: string): Promise<string> => {
+  const asked = await run(
+    [
+      'sh',
+      '-c',
+      '{ git rev-parse HEAD; git symbolic-ref -q HEAD; git status --porcelain; git diff --numstat HEAD; git stash list; git worktree list; } 2>/dev/null | cksum',
+    ],
+    { cwd: repo, timeoutMs: 15_000 },
+  )
+
+  return asked.exitCode === 0 ? asked.stdout.trim() : ''
 }
 
 // The files git tracks in the repo, or only those matching the patterns.

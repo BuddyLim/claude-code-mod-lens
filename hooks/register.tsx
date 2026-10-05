@@ -120,6 +120,14 @@ const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', 
 // (a change in the config menu loads the module again with the new ones).
 let settings: Settings = DEFAULTS
 
+// How the repo stood when it was last looked at (see `git.repoMark`), and
+// the timer's count of ticks: every so many, `watchRepo` looks again.
+let repoMarked: { repo: string; mark: string } | undefined
+let ticks = 0
+let isWatching = false
+// Ticks of the 400 ms timer between two looks at the repo: about 4 seconds.
+const WATCH_TICKS = 10
+
 // The scan queue, written by anything that wants a scan and taken by the
 // timer: a reload drops a waiting scan, and the next refresh asks again.
 let job: Job | undefined
@@ -349,6 +357,38 @@ const openReview = async (
   job = { isProject: false }
 
   return `Reviewing ${repo}: ${kept.target === '' ? 'the working tree' : kept.target} against ${kept.base}, as you left it.`
+}
+
+// Scans again when the repo has changed under the pane: a commit, a
+// checkout, a merge, an edit or a stash made anywhere (Claude's own shell,
+// another terminal, an editor). Only while the pane is open, and never
+// while a scan is running or waiting.
+const watchRepo = async ($: EngineInterface): Promise<void> => {
+  const { repo } = await read($, view)
+
+  if (repo === '' || isBusy || job !== undefined) {
+    return
+  }
+
+  const open = await $.ui.panes().catch(() => [])
+
+  if (!open.some(one => one.id === PANE)) {
+    return
+  }
+
+  const mark = await git.repoMark(runOf($), repo)
+
+  if (mark === '') {
+    return
+  }
+
+  // The first look only notes how things stand: the scan that opened the
+  // review has just read them.
+  if (repoMarked !== undefined && repoMarked.repo === repo && repoMarked.mark !== mark) {
+    job ??= { isProject: false }
+  }
+
+  repoMarked = { repo, mark }
 }
 
 // Runs one scan with this handle. The pipeline itself is in scan.ts; what
@@ -1219,6 +1259,17 @@ export const register: Register = (on, options) => {
       // While a scan runs the busy mark turns: each step redraws its readers.
       if (isBusy) {
         void update($, spin, frame => (frame + 1) % SPINNER.length)
+      }
+
+      ticks += 1
+
+      if (ticks % WATCH_TICKS === 0 && !isWatching) {
+        isWatching = true
+        void watchRepo($)
+          .catch(() => undefined)
+          .finally(() => {
+            isWatching = false
+          })
       }
 
       if (job === undefined || isBusy) {
