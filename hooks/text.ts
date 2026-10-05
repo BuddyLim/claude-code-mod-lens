@@ -147,3 +147,103 @@ export const foldEnd = (texts: readonly string[], n: number): number => {
 
   return end
 }
+
+// A markdown table as its cells: the header's, then each row's. A cell keeps
+// its text without the marks of emphasis; `isCode` says it was written as
+// code, to be coloured as such.
+export type TableCell = { text: string; isCode: boolean }
+export type MarkdownPiece =
+  | { kind: 'text'; text: string }
+  | { kind: 'table'; header: TableCell[]; rows: TableCell[][] }
+
+const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
+
+const cellsOf = (line: string): TableCell[] =>
+  line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    // A bar written as \| is part of a cell, not its end.
+    .split(/(?<!\\)\|/)
+    .map(cell => cell.trim().replace(/\\\|/g, '|'))
+    .map(cell => ({
+      text: cell
+        .replace(/`([^`]*)`/g, '$1')
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'),
+      isCode: cell.includes('`'),
+    }))
+
+// Markdown cut where its tables are: a table is a row of cells with a rule
+// of dashes under it, outside any code fence. The rest stays as text, to be
+// rendered as markdown; the tables are drawn by the pane, to the room it has.
+export const splitMarkdown = (text: string): MarkdownPiece[] => {
+  const pieces: MarkdownPiece[] = []
+  const lines = text.split('\n')
+  let held: string[] = []
+  let isFenced = false
+  const flush = (): void => {
+    if (held.some(line => line.trim() !== '')) {
+      pieces.push({ kind: 'text', text: held.join('\n') })
+    }
+
+    held = []
+  }
+
+  for (let at = 0; at < lines.length; at += 1) {
+    const line = lines[at] ?? ''
+
+    if (/^\s*(```|~~~)/.test(line)) {
+      isFenced = !isFenced
+    }
+
+    if (!isFenced && line.includes('|') && TABLE_RULE.test(lines[at + 1] ?? '')) {
+      const rows: TableCell[][] = []
+      let next = at + 2
+
+      while (next < lines.length && (lines[next] ?? '').includes('|') && (lines[next] ?? '').trim() !== '') {
+        rows.push(cellsOf(lines[next] ?? ''))
+        next += 1
+      }
+
+      flush()
+      pieces.push({ kind: 'table', header: cellsOf(line), rows })
+      at = next - 1
+    } else {
+      held.push(line)
+    }
+  }
+
+  flush()
+
+  return pieces
+}
+
+// How wide each column of a table is drawn in `room` cells, with `gap`
+// between columns: as wide as its longest cell where there is room for all,
+// else the widest columns give way first, down to a floor a word still fits.
+export const tableWidths = (
+  rows: readonly (readonly TableCell[])[],
+  room: number,
+  gap: number,
+): number[] => {
+  const count = Math.max(0, ...rows.map(row => row.length))
+  const widths = Array.from({ length: count }, (_, column) =>
+    Math.max(3, ...rows.map(row => (row[column]?.text ?? '').length)),
+  )
+  const floor = 8
+  let over = widths.reduce((sum, width) => sum + width, 0) + gap * Math.max(0, count - 1) - room
+
+  while (over > 0) {
+    const widest = widths.indexOf(Math.max(...widths))
+
+    if ((widths[widest] ?? 0) <= floor) {
+      break
+    }
+
+    widths[widest] = (widths[widest] ?? 0) - 1
+    over -= 1
+  }
+
+  return widths
+}

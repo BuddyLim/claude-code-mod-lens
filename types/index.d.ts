@@ -66,7 +66,9 @@ export type ListRow = {
   color?: string
   tail?: string
 }
-export type Listing = { title: string; rows: ListRow[]; prompt: string }
+// `commit` is the commit the rows' files are opened at, when it is not the
+// working tree's: a request's review threads sit on its head.
+export type Listing = { title: string; rows: ListRow[]; prompt: string; commit?: string }
 
 export type LineRange = [from: number, to: number]
 
@@ -113,6 +115,14 @@ export type View = {
   requestTyped: string
   isCommenting: boolean
   commentLine: number
+  // A working-tree file whose diff is read against a commit other than
+  // `base`: a file of the checked-out branch's request, against where the
+  // request forked from its target. `path` '' is none.
+  diffBase: { path: string; base: string; name: string }
+  // Whether threads that are resolved are left out of the file screen, and
+  // whether the file tree's box for submitting a review is open.
+  hidesResolved: boolean
+  isReviewing: boolean
   // The first comment of the thread being answered, by its id; '' while the
   // comment being typed starts a thread of its own.
   replyTo: string

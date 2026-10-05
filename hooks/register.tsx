@@ -10,7 +10,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { LineRange, Listing, Lookup, Recent, Scan, Span, View } from '../types'
+import type { LineRange, Listing, Lookup, Recent, Scan, Span, View, ChangedFile, LineStat } from '../types'
 import { hasNameSearch } from './check'
 import { diagsByLine, diagsOf } from './diags'
 import * as git from './git'
@@ -22,6 +22,7 @@ import {
   lookupOf,
   namesList,
   usesList,
+  threadsList,
 } from './lists'
 import type { Run as ServerRun } from './lsp'
 import {
@@ -44,9 +45,11 @@ import {
   postComment,
   listRequests,
   replyComment,
+  requestOfBranch,
   repoPrefix,
   resolveRequest,
   resolveThread,
+  submitReview,
 } from './review'
 import type { Run } from './run'
 import { tail } from './run'
@@ -148,6 +151,9 @@ let draftBody = ''
 let commentDraft = ''
 // How many comments have been sent or dropped: see `FileModel.commentRound`.
 let commentRound = 0
+// The same for the review being written in the file tree's box.
+let reviewDraft = ''
+let reviewRound = 0
 
 // How the language-server bridge runs its commands, made by `serverRun` from
 // the first handle that needs it.
@@ -164,6 +170,28 @@ let insightFor: string | undefined
 // them, with the folder under review's place in the repo (`prefix`). Written
 // by `loadComments`; `postReview` adds the comment it posted.
 let commentsCache: { key: string; prefix: string; comments: Comment[] } | undefined
+
+// The open request of the branch checked out, where it has one: its comments
+// show on the working tree's files without a comparison being set up.
+// Written by `findBranchRequest`, with each scan of the working tree.
+let branchRequest:
+  | {
+      repo: string
+      branch: string
+      typed: string
+      label: string
+      // What it is called, the branch it targets, and when the forge said so.
+      title: string
+      baseRef: string
+      url: string
+      at: number
+      // What the branch changes since it forked from that target, read
+      // again with every scan: the commit it forked at, and the files.
+      base: string
+      files: ChangedFile[]
+      stats: Record<string, LineStat>
+    }
+  | undefined
 
 // The repo's open pull or merge requests, for the compare panel to offer.
 // Written by `loadRequests`, when the panel opens.
@@ -226,8 +254,10 @@ const loadSource = async (
     path,
     committed,
   )
-  const { base, target } = await read($, view)
-  const diff = await git.fileDiff(run, repo, path, commit, base, target ?? '')
+  const { base, target, diffBase } = await read($, view)
+  // A file of the branch's request is read against where the request forked.
+  const own = commit === '' && diffBase?.path === path && diffBase.base !== '' ? diffBase.base : ''
+  const diff = await git.fileDiff(run, repo, path, commit, own || base, target ?? '', own !== '')
 
   cache = { path, commit, lines, removed: diff.removed, changed: diff.changed }
   const stamp = await $.clock.now()
@@ -330,6 +360,15 @@ const runScan = async ($: EngineInterface, taken: Job): Promise<void> => {
   // review is kept for next time.
   void rememberReview($)
 
+  // With no request under review, the branch checked out may have one open:
+  // its comments are then read as a request's are.
+  const requestTyped =
+    (now.target ?? '') !== '' && (now.requestTyped ?? '') !== ''
+      ? now.requestTyped
+      : (now.target ?? '') === ''
+        ? await findBranchRequest($, now.repo)
+        : ''
+
   // A comparison with another worktree is with its files as they stand now:
   // they are read again, and the scan runs against that.
   let base = now.base
@@ -378,7 +417,7 @@ const runScan = async ($: EngineInterface, taken: Job): Promise<void> => {
       extra: now.extra ?? [],
       isBrowsing: now.isBrowsing ?? false,
       isTelling: now.isTelling ?? false,
-      requestTyped: now.requestTyped ?? '',
+      requestTyped,
       use: settings.checkers,
       marksNew: settings.marksNew,
     },
@@ -463,7 +502,7 @@ const loadInsight = async ($: EngineInterface, repo: string, path: string): Prom
 // (`notes`) where it gave one.
 const showList = async (
   $: EngineInterface,
-  { title, rows, prompt }: Listing,
+  { title, rows, prompt, commit }: Listing,
   notes: readonly string[],
 ): Promise<void> => {
   if (rows.length === 0) {
@@ -472,7 +511,12 @@ const showList = async (
     return
   }
 
-  await update($, listing, () => ({ title, rows: rows.slice(0, LIST_ROWS), prompt }))
+  await update($, listing, () => ({
+    title,
+    rows: rows.slice(0, LIST_ROWS),
+    prompt,
+    ...(commit === undefined ? {} : { commit }),
+  }))
   // Back from the list returns to the screen it was asked for on.
   await update(
     $,
@@ -741,6 +785,48 @@ const forgeRun =
   (argv, timeoutMs = 60_000) =>
     run(argv, { cwd: repo, timeoutMs })
 
+// How long what the forge said of a branch's request is taken as still so.
+const BRANCH_REQUEST_MS = 5 * 60_000
+
+// Finds the open request of the branch checked out, asking the forge at most
+// once in a while for the same branch; '' when it has none.
+const findBranchRequest = async ($: EngineInterface, repo: string): Promise<string> => {
+  const run = runOf($)
+  const branch = (await run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo })).stdout.trim()
+  const at = await $.clock.now()
+
+  if (
+    branchRequest === undefined ||
+    branchRequest.repo !== repo ||
+    branchRequest.branch !== branch ||
+    at - branchRequest.at > BRANCH_REQUEST_MS
+  ) {
+    const found = await requestOfBranch(forgeRun(run, repo), branch)
+
+    branchRequest = {
+      repo,
+      branch,
+      typed: found?.typed ?? '',
+      label: found?.label ?? '',
+      title: found?.title ?? '',
+      baseRef: found?.baseRef ?? '',
+      url: found?.url ?? '',
+      at,
+      base: '',
+      files: [],
+      stats: {},
+    }
+  }
+
+  // The forge's word is kept a while; what the branch changes is git's to
+  // say, and a commit made since changes it.
+  if (branchRequest.typed !== '' && branchRequest.baseRef !== '') {
+    Object.assign(branchRequest, await git.requestChanges(run, repo, branchRequest.baseRef))
+  }
+
+  return branchRequest.typed
+}
+
 // Asks the forge for the repo's open requests and has the compare panel,
 // which is already open, drawn again with them.
 const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => {
@@ -952,7 +1038,11 @@ const postReview = async (
   }
 
   const run = forgeRun(runOf($), repo)
-  const [head, prefix] = await Promise.all([git.fullHash(runOf($), repo, target), repoPrefix(run)])
+  // With no target, the request is the checked-out branch's: its head is HEAD.
+  const [head, prefix] = await Promise.all([
+    git.fullHash(runOf($), repo, target === '' ? 'HEAD' : target),
+    repoPrefix(run),
+  ])
   const answer = await postComment(
     run,
     typed,
@@ -1037,6 +1127,32 @@ const settleThread = async (
   $.ui.toast(isResolved ? 'Thread resolved' : 'Thread reopened')
   // The file screen reads the source's stamp: a new one redraws it.
   await update($, source, last => ({ ...last, stamp: last.stamp + 1 }))
+}
+
+// Submits a review of the request under review, and says how it went.
+const sendReview = async (
+  $: EngineInterface,
+  repo: string,
+  typed: string,
+  verdict: 'approve' | 'request-changes' | 'comment',
+  summary: string,
+): Promise<void> => {
+  const refusal = await submitReview(forgeRun(runOf($), repo), typed, verdict, summary)
+
+  if (refusal !== '') {
+    $.ui.toast(refusal, { timeoutMs: 10_000 })
+
+    return
+  }
+
+  reviewDraft = ''
+  reviewRound += 1
+  $.ui.toast(
+    verdict === 'approve' ? 'Approved' : verdict === 'comment' ? 'Review comment sent' : 'Changes requested',
+  )
+  await update($, view, last => ({ ...last, isReviewing: false }))
+  // What was said shows among the request's comments on the next scan.
+  job = { isProject: false }
 }
 
 // Loads the file the pane asked for, when the module does not hold its lines.
@@ -1275,7 +1391,15 @@ export const register: Register = (on, options) => {
     const { repo, target } = now
     const history = historyOf(repo)
     const compared = comparisonOf(now, found, history)
-    const { isComparing, requestTyped } = compared
+    const { isComparing } = compared
+    // The request whose comments show: the one under review, or else the
+    // open request of the branch checked out.
+    const ofBranch =
+      target === '' && branchRequest?.repo === repo && branchRequest.branch === found.head
+        ? branchRequest
+        : undefined
+    const requestTyped = compared.requestTyped || (ofBranch?.typed ?? '')
+    const requestLabel = (compared.request.split(' → ')[0] ?? '') || (ofBranch?.label ?? '')
     // The request's comments, as the forge has them, on the files of the
     // folder under review: a forge's paths are from the repo's root, the
     // pane's from that folder. A comment on the request as a whole keeps its
@@ -1321,6 +1445,7 @@ export const register: Register = (on, options) => {
       side: compared.side,
       against: compared.against,
       request: compared.request,
+      reviewing: requestLabel,
       isComparing,
       isScanning: found.status === 'running',
       busyMark,
@@ -1387,6 +1512,33 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // Opens a file as a commit left it, at a line, on its diff.
+    const openCommitAt = async (id: string, path: string, line: number): Promise<void> => {
+      await loadSource($, repo, path, id)
+      await update(
+        $,
+        view,
+        (last): View => ({
+          ...last,
+          screen: 'file',
+          file: path,
+          commit: id,
+          origin: 'tree',
+          top: Math.max(1, line - 3),
+          cursor: -1,
+          isDiff: true,
+          isPreview: false,
+        }),
+      )
+    }
+    // Every thread of the request under review, on the list screen.
+    const listThreads = (): void =>
+      void showList(
+        $,
+        { ...threadsList(requestLabel, comments), commit: target },
+        ['This request has no review comments yet'],
+      )
+
     if (now.screen === 'list') {
       const shown = await read($, listing)
 
@@ -1394,7 +1546,12 @@ export const register: Register = (on, options) => {
         listScreen(kit, shell, shown, {
           back: () => set((last): View => ({ ...last, screen: last.listBack ?? 'file' })),
           sendList: () => void sendToComposer($, shown.prompt),
-          open: (path, line) => void openAt(path, line),
+          // A request's threads sit on its head commit; anything else is a
+          // place in the working tree.
+          open: (path, line) =>
+            void ((shown.commit ?? '') === ''
+              ? openAt(path, line)
+              : openCommitAt(shown.commit ?? '', path, line)),
           help,
         }),
       )
@@ -1576,12 +1733,79 @@ export const register: Register = (on, options) => {
             issuesToSend: sendable.length,
             comments,
             stashes: found.stashes,
+            isReviewing: now.isReviewing,
+            reviewRound,
+            request:
+              ofBranch === undefined || ofBranch.files.length === 0
+                ? undefined
+                : {
+                    isGitlab: ofBranch.label.startsWith('MR'),
+                    typed: ofBranch.typed,
+                    url: ofBranch.url,
+                    title: ofBranch.title,
+                    files: ofBranch.files,
+                    stats: ofBranch.stats,
+                  },
             selected: now.selected,
             picked: chosen,
             bodyTop: now.bodyTop,
           },
           {
             refresh: rescan,
+            listThreads,
+            // A file of the branch's request opens as the working tree has
+            // it, on what the request changes in it; one not edited here is
+            // checked along with the rest from then on.
+            openRequestFile: async path => {
+              if (ofBranch === undefined) {
+                return
+              }
+
+              const isListed = found.files.some(one => one.path === path)
+
+              await update(
+                $,
+                view,
+                (last): View => ({
+                  ...last,
+                  diffBase: { path, base: ofBranch.base, name: ofBranch.baseRef },
+                  extra: isListed
+                    ? (last.extra ?? [])
+                    : [path, ...(last.extra ?? []).filter(one => one !== path)].slice(0, EXTRA_FILES),
+                }),
+              )
+
+              if (!isListed) {
+                rescan()
+              }
+
+              await loadSource($, repo, path)
+              await update(
+                $,
+                view,
+                (last): View => ({
+                  ...last,
+                  screen: 'file',
+                  file: path,
+                  commit: '',
+                  origin: 'tree',
+                  top: 1,
+                  cursor: -1,
+                  isDiff: !isMarkdownFile(path),
+                  isPreview: isMarkdownFile(path),
+                }),
+              )
+            },
+            toggleReviewing: () => {
+              reviewDraft = ''
+              reviewRound += 1
+              set(last => ({ ...last, isReviewing: !now.isReviewing }))
+            },
+            typeReview: text => {
+              reviewDraft = text
+            },
+            submitReview: (verdict, entered) =>
+              void sendReview($, repo, requestTyped, verdict, entered ?? reviewDraft),
             checkProject: () => {
               job = { isProject: true }
             },
@@ -1633,6 +1857,7 @@ export const register: Register = (on, options) => {
                 rescan()
               }
 
+              await update($, view, (last): View => ({ ...last, diffBase: NO_VIEW.diffBase }))
               await loadSource($, repo, path, target)
               await update(
                 $,
@@ -1646,7 +1871,10 @@ export const register: Register = (on, options) => {
                   top: 1,
                   cursor: -1,
                   // In a comparison a file opens on what differs.
-                  isDiff: isComparing ? true : last.isDiff,
+                  // In a comparison a file opens on what differs; markdown
+                  // opens as it reads, its threads set into the page.
+                  isDiff: isMarkdownFile(path) ? false : isComparing ? true : last.isDiff,
+                  isPreview: isMarkdownFile(path) ? true : last.isPreview,
                 }),
               )
             },
@@ -1746,17 +1974,45 @@ export const register: Register = (on, options) => {
       )
     const { Markdown } = kit
 
+    // The request's threads on this file's lines, for the rendered page.
+    const pageTalk =
+      commit === target
+        ? comments.filter(
+            one =>
+              one.path === file &&
+              one.line > 0 &&
+              !(now.hidesResolved && one.isResolved === true),
+          )
+        : []
+
     // Markdown shows rendered unless the person asked for its source or its diff.
     if (Markdown !== undefined && isMarkdownFile(file) && now.isPreview && !now.isDiff && lines !== undefined) {
       return framed(
         markdownScreen(
           { ...kit, Markdown },
-          { shell, file, commit, text: texts.join('\n') },
+          { shell, file, commit, text: texts.join('\n'), talk: pageTalk },
           {
             back,
             help,
             showSource: () => set(was => ({ ...was, isPreview: false })),
             showDiff: () => set(was => ({ ...was, isDiff: true })),
+            sendTalk: n =>
+              void sendToComposer(
+                $,
+                talkBlock(
+                  requestLabel,
+                  file,
+                  n,
+                  pageTalk.filter(one => one.line === n),
+                  Math.max(1, n - 3),
+                  Math.min(lineCount, n + 3),
+                  texts,
+                ),
+              ),
+            // The source at the thread's line, on the diff, where the
+            // thread's card has reply and resolve.
+            openSource: n =>
+              set(was => ({ ...was, isPreview: false, isDiff: true, top: Math.max(1, n - 3) })),
             sendSelection: () =>
               void $.ui.selection().then(selected =>
                 selected === undefined || selected.text.trim() === ''
@@ -1786,7 +2042,18 @@ export const register: Register = (on, options) => {
     const canComment = reviewed !== undefined && commit === target
     const isCommenting = now.isCommenting && canComment
     const symbol = now.symbol.file === file ? now.symbol : undefined
-    const talk = commit === target ? comments.filter(one => one.path === file && one.line > 0) : []
+    // Whether the file's diff is against a base of its own (see `View.diffBase`).
+    const isOwnDiff = commit === '' && now.diffBase.path === file && now.diffBase.base !== ''
+    const talk =
+      commit === target
+        ? comments.filter(
+            one =>
+              one.path === file &&
+              one.line > 0 &&
+              // A resolved thread is left out where the person asked for that.
+              !(now.hidesResolved && one.isResolved === true),
+          )
+        : []
     // The first comment of the thread on a line: what a reply answers and
     // what resolving settles. A reply is listed under the comment it answers.
     const rootOn = (n: number): Comment | undefined => {
@@ -1807,7 +2074,9 @@ export const register: Register = (on, options) => {
         texts,
         note: shown.note,
         removed: held?.removed ?? {},
-        changed: commit === '' ? (found.changed[file] ?? []) : (held?.changed ?? []),
+        changed:
+          commit === '' && !isOwnDiff ? (found.changed[file] ?? []) : (held?.changed ?? []),
+        diffAgainst: isOwnDiff ? now.diffBase.name : '',
         isNewFile: fileStatus === '?' || fileStatus === 'A',
         diags,
         faded: commit === '' ? found.faded.filter(diag => diag.path === file) : [],
@@ -1826,6 +2095,7 @@ export const register: Register = (on, options) => {
         isCommenting,
         commentLine: now.commentLine,
         replyTo: now.replyTo,
+        hidesResolved: now.hidesResolved,
         commentRound,
         talk,
         crumb: now.crumb,
@@ -1902,7 +2172,7 @@ export const register: Register = (on, options) => {
             $,
             // The request's label is what its header line starts with.
             talkBlock(
-              compared.request.split(' → ')[0] ?? '',
+              requestLabel,
               file,
               n,
               talk.filter(one => one.line === n),
@@ -2017,6 +2287,8 @@ export const register: Register = (on, options) => {
             void settleThread($, repo, requestTyped, root, isResolved)
           }
         },
+        toggleResolved: () => set(was => ({ ...was, hidesResolved: !now.hidesResolved })),
+        listThreads,
         cancelComment: () => {
           commentDraft = ''
           commentRound += 1

@@ -20,6 +20,7 @@ export type Kit = {
   Input: Elements['terminal']['Input'] | undefined
   Markdown: Elements['terminal']['Markdown'] | undefined
   Raster: Elements['terminal']['Raster'] | undefined
+  Link: Elements['terminal']['Link'] | undefined
 }
 
 export const kitOf = (table: ElementTable): Kit => ({
@@ -29,6 +30,7 @@ export const kitOf = (table: ElementTable): Kit => ({
   Input: 'Input' in table ? table.Input : undefined,
   Markdown: 'Markdown' in table ? table.Markdown : undefined,
   Raster: 'Raster' in table ? table.Raster : undefined,
+  Link: 'Link' in table ? table.Link : undefined,
 })
 
 // The changed files in one row of numbers: lines added and deleted across
@@ -66,6 +68,9 @@ export type Shell = {
   against: string
   // The pull or merge request under review, as a label; '' for none.
   request: string
+  // The request whose comments the pane shows, by name ("PR #12"): the one
+  // under review, or the open one of the branch checked out. '' for none.
+  reviewing: string
   // Whether anything but the uncommitted changes is being compared.
   isComparing: boolean
   // While a scan runs: the mark that turns, and the tools still out.
@@ -105,6 +110,12 @@ export const STASH_COLOR = '#a371f7'
 // A request's review comments: their mark and their colour.
 export const COMMENT_ICON = '\u{f075}'
 export const COMMENT_COLOR = '#c586c0'
+// The forges' own marks, and GitLab's own colour.
+export const GITHUB_ICON = '\u{f09b}'
+export const GITLAB_ICON = '\u{f296}'
+export const GITLAB_COLOR = '#fc6d26'
+// The colour of a review thread that has been resolved.
+export const RESOLVED_COLOR = '#9a8444'
 // How many lines of a commit's body show at once.
 export const BODY_ROWS = 12
 // The most files listed under a commit or a stash.
@@ -135,6 +146,7 @@ export const statusLine = ({ Text }: Kit, shell: Shell) => (
       : shell.isComparing
         ? ` vs ${shell.against}`
         : ' · uncommitted changes'}
+    {shell.request === '' && shell.reviewing !== '' ? ` · ${shell.reviewing}` : ''}
     {shell.isScanning
       ? ` · ${shell.busyMark} ${shell.pending.length === 0 ? 'reading changes' : `checking: ${shell.pending.join(', ')}`}`
       : ''}

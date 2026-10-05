@@ -15,6 +15,8 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['t', 'switch between the folder tree and a flat list'],
         ['w', 'also list every tracked file, to open one the change does not touch'],
         ['g', 'open the git graph'],
+        ['c', 'list the threads of the request under review'],
+        ['v', 'submit a review of it: approve, request changes or comment'],
         ['x', 'stop comparing (while a comparison is on)'],
         ['press a file', 'open it'],
         ['press a folder', 'open or close it'],

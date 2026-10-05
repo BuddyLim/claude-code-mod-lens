@@ -2,6 +2,7 @@
 // for the list screen (uses of a name, callers, implementations, names that
 // match), and the card of a looked-up name.
 
+import type { Comment } from './review'
 import type { Listing, ListRow, Lookup } from '../types'
 import type { LspSymbol } from './lsp'
 import type { CallNode, Place, PlaceLine, SymbolHit } from './lsp-types'
@@ -111,3 +112,52 @@ export const lookupOf = (
         ? answer.signature.label
         : `(${answer.signature.parameters.map((one, index) => (index === answer.signature?.active ? `[${one}]` : one)).join(', ')})`,
 })
+
+// A review comment in one line, for a list: where, who, and how it starts.
+const threadLine = (one: Comment, replies: number): string =>
+  `${one.path === '' ? '' : `${one.path}${one.line > 0 ? `:${one.line}` : ''}  `}${one.author}: ${one.body.trim().replace(/\s+/g, ' ').slice(0, 90)}${replies > 0 ? `  (+${replies})` : ''}`
+
+// Every thread of a pull or merge request: the open ones first, then the
+// resolved, then what was said of the request as a whole. A thread is its
+// first comment; its replies are counted. The form for the prompt is the open
+// threads in full, replies and all: what is still to be answered.
+export const threadsList = (request: string, comments: readonly Comment[]): Listing => {
+  const roots = comments.filter(one => one.replyTo === undefined)
+  const repliesTo = (root: Comment): Comment[] => comments.filter(one => one.replyTo === root.id)
+  const placed = roots.filter(one => one.path !== '')
+  const open = placed.filter(one => one.isResolved !== true)
+  const settled = placed.filter(one => one.isResolved === true)
+  const general = roots.filter(one => one.path === '')
+  const rowsOf = (threads: readonly Comment[], mark: string): ListRow[] =>
+    threads.map(one => ({
+      label: `${mark}${threadLine(one, repliesTo(one).length)}`,
+      path: one.path,
+      line: Math.max(1, one.line),
+    }))
+
+  return {
+    title: `${request === '' ? 'Review' : request}: ${open.length} open, ${settled.length} resolved`,
+    rows: [
+      ...(open.length > 0 ? [{ label: `Open (${open.length})`, path: '', line: 0 }] : []),
+      ...rowsOf(open, ''),
+      ...(settled.length > 0 ? [{ label: `Resolved (${settled.length})`, path: '', line: 0 }] : []),
+      ...rowsOf(settled, '✓ '),
+      ...(general.length > 0
+        ? [{ label: `On the request as a whole (${general.length})`, path: '', line: 0 }]
+        : []),
+      ...general.map(one => ({ label: `  ${threadLine(one, 0)}`, path: '', line: 0 })),
+    ],
+    prompt:
+      open.length === 0
+        ? ''
+        : [
+            `Open review comments${request === '' ? '' : ` in ${request}`} (${open.length}):`,
+            ...open.flatMap(one => [
+              `- ${one.path}${one.line > 0 ? `:${one.line}` : ''} ${one.author}: ${one.body.trim().replace(/\s*\n\s*/g, ' ')}`,
+              ...repliesTo(one).map(
+                reply => `  - ${reply.author}: ${reply.body.trim().replace(/\s*\n\s*/g, ' ')}`,
+              ),
+            ]),
+          ].join('\n'),
+  }
+}

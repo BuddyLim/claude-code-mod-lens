@@ -564,6 +564,32 @@ export const mainRepoOf = async (run: Run, repo: string): Promise<string> => {
   return asked.exitCode === 0 ? asked.stdout.trim().replace(/\/\.git\/?$/, '') : ''
 }
 
+// What the branch checked out has changed since it forked from the branch
+// its request targets: the commit it forked at ('' when git cannot say),
+// the files, and their line counts.
+export const requestChanges = async (
+  run: Run,
+  repo: string,
+  baseRef: string,
+): Promise<{ base: string; files: ChangedFile[]; stats: Record<string, LineStat> }> => {
+  const git = (argv: string[]) => run(['git', ...argv], { cwd: repo, timeoutMs: 60_000 })
+  // The remote's copy of the target is the truer one; a local branch may lag.
+  const remote = await git(['merge-base', 'HEAD', `origin/${baseRef}`])
+  const forked = remote.exitCode === 0 ? remote : await git(['merge-base', 'HEAD', baseRef])
+  const base = forked.exitCode === 0 ? forked.stdout.trim() : ''
+
+  if (base === '') {
+    return { base, files: [], stats: {} }
+  }
+
+  const [named, numstat] = await Promise.all([
+    git(['diff', '--name-status', '--relative', base, 'HEAD']),
+    git(['diff', '--numstat', '--no-renames', '--relative', base, 'HEAD']),
+  ])
+
+  return { base, files: parseNameStatus(named.stdout), stats: parseNumstat(numstat.stdout) }
+}
+
 // The files git tracks in the repo, or only those matching the patterns.
 export const trackedFiles = async (
   run: Run,
@@ -648,6 +674,9 @@ export const fileDiff = async (
   commit: string,
   base: string,
   target: string,
+  // Whether the working tree's file wants its changed lines from this diff
+  // too: its base is then not the one the scan compared with.
+  isOwn = false,
 ): Promise<{ removed: Record<number, string[]>; changed: LineRange[] | undefined }> => {
   const diff = await run(
     commit === ''
@@ -671,7 +700,8 @@ export const fileDiff = async (
 
   return {
     removed: parseRemoved(diff.stdout),
-    changed: commit === '' ? undefined : (parseChangedLines(diff.stdout)[path] ?? []),
+    changed:
+      commit === '' && !isOwn ? undefined : (parseChangedLines(diff.stdout)[path] ?? []),
   }
 }
 

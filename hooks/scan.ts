@@ -320,7 +320,7 @@ export const scanRepo = async (
 
   // A request under review has its comments read with every scan, so a
   // refresh picks up what was said since.
-  if (target !== '' && requestTyped !== '') {
+  if (requestTyped !== '') {
     const refusal = await ports.readComments(requestTyped)
 
     if (refusal !== '') {

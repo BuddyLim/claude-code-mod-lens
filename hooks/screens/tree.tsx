@@ -18,6 +18,10 @@ import {
   COMMENT_ICON,
   COMMIT_BOX,
   COMMIT_FILES,
+  GITHUB_ICON,
+  GITLAB_COLOR,
+  GITLAB_ICON,
+  RESOLVED_COLOR,
   STASH_COLOR,
   STASH_ICON,
   STATUS_WORD,
@@ -34,6 +38,12 @@ const LIST_LIMIT = 300
 const CONVERSATION_ROWS = 15
 // How far an arrow moves an opened stash's body.
 const BODY_STEP = 8
+
+// What keeps the rows and folders of a request's files apart from the same
+// files and folders listed above them.
+const REQUEST_SPACE = 'pr:'
+// The mark of a link that opens a page elsewhere.
+const LINK_ICON = '\u{f08e}'
 
 export type TreeModel = {
   shell: Shell
@@ -66,6 +76,24 @@ export type TreeModel = {
   // The comments of the request under review, on files of this folder.
   comments: readonly Comment[]
   stashes: readonly Stash[]
+  // The open request of the branch checked out, where it has one and no
+  // comparison is on: what to call it, and what it changes.
+  request:
+    | {
+        // Which forge it is on, what it is typed as ("#12", "!34"), its page
+        // there ('' when the forge gave none) and what it is called.
+        isGitlab: boolean
+        typed: string
+        url: string
+        title: string
+        files: readonly ChangedFile[]
+        stats: Readonly<Record<string, LineStat>>
+      }
+    | undefined
+  // The review box: whether it is open, and a number that changes with each
+  // review sent or dropped, so its field starts empty.
+  isReviewing: boolean
+  reviewRound: number
   // The stash opened ('' for none), what it holds once that is read, and the
   // first line of its body in view.
   selected: string
@@ -75,6 +103,15 @@ export type TreeModel = {
 
 export type TreeActions = {
   refresh: () => void
+  // While a request is under review: lists its threads, opens or closes the
+  // box a review is submitted from, and submits one. Only the box's buttons
+  // (or Enter in its field, as a comment) send anything to the forge.
+  listThreads: () => void
+  // Opens a file of the branch's request on what the request changes in it.
+  openRequestFile: (path: string) => void
+  toggleReviewing: () => void
+  typeReview: (text: string) => void
+  submitReview: (verdict: 'approve' | 'request-changes' | 'comment', entered?: string) => void
   // Checks every file of every project, changed or not.
   checkProject: () => void
   switchLayout: () => void
@@ -115,7 +152,7 @@ export type TreeActions = {
 }
 
 export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => {
-  const { Box, Button, Text, Input } = kit
+  const { Box, Button, Text, Input, Link } = kit
   const { shell, files, stats, diags, layout, toggled, comments, stashes, isBrowsing } = model
   const { picked: chosen } = model
   const { totals } = shell
@@ -168,6 +205,11 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
     scope = '',
   ) => {
     const counts = countLabel(diagsOf(diags, path))
+    // A request's file is counted by what the request changes in it.
+    const counted = scope === REQUEST_SPACE ? (model.request?.stats ?? {}) : stats
+    const threads = comments.filter(one => one.path === path && one.replyTo === undefined)
+    const settled = threads.filter(one => one.isResolved === true).length
+    const open = threads.length - settled
     const isChecked = isCheckable(path)
     const icon = iconOf(path)
     // What happened to the file, in a word and git's usual colour for it.
@@ -200,19 +242,22 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           // A file still being checked shows the busy mark beside what
           // has been found in it so far; its tick waits for the last tool.
           label={`${name}  ${[counts, !shell.isScanning ? '' : model.isQueued(path) ? '⋯ queued' : isAwaited(path, shell.pending) ? shell.busyMark : ''].filter(part => part !== '').join(' ') || (isChecked ? '✓' : '·')}`}
-          onPress={() => actions.open(path)}
+          onPress={() => (scope === REQUEST_SPACE ? actions.openRequestFile(path) : actions.open(path))}
         />
         {change !== undefined && <Text color={change[1]}>  {change[0]}</Text>}
-        {comments.some(one => one.path === path) && (
+        {/* The file's review threads (a thread is its first comment): those
+            still open in the comments' colour, those resolved in gold. */}
+        {open > 0 && (
           <Text color={COMMENT_COLOR}>
             {'  '}
-            {COMMENT_ICON} {comments.filter(one => one.path === path).length}
+            {COMMENT_ICON} {open}
           </Text>
         )}
-        {stats[path] !== undefined && (
-          <Text color="green">  +{stats[path]?.[0] ?? 0}</Text>
+        {settled > 0 && <Text color={RESOLVED_COLOR}>  ✓ {settled}</Text>}
+        {counted[path] !== undefined && (
+          <Text color="green">  +{counted[path]?.[0] ?? 0}</Text>
         )}
-        {stats[path] !== undefined && <Text color="red"> −{stats[path]?.[1] ?? 0}</Text>}
+        {counted[path] !== undefined && <Text color="red"> −{counted[path]?.[1] ?? 0}</Text>}
       </Box>
     )
   }
@@ -308,6 +353,27 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
                 ),
         )
       : group.files.map(one => fileRow(one.path, one.status, one.path, 0, group.isPickable))
+
+  // The request's own files, in the layout the rest are in. Its folders keep
+  // their open-or-closed state apart from the same folders above.
+  const asked = model.request
+  const requested = asked?.files ?? []
+  // Whether the conversation is drawn as part of the request's section.
+  const isInSection = asked !== undefined && requested.length > 0
+  const requestStatus = new Map(requested.map(one => [one.path, one.status]))
+  const requestRows =
+    layout === 'tree'
+      ? visibleTree(
+          buildTree(requested.map(one => one.path)),
+          toggled
+            .filter(path => path.startsWith(REQUEST_SPACE))
+            .map(path => path.slice(REQUEST_SPACE.length)),
+        ).map(({ row, isClosed }) =>
+          row.kind === 'dir'
+            ? folderRow(row, isClosed, 98, [], REQUEST_SPACE)
+            : fileRow(row.path, requestStatus.get(row.path) ?? ' ', row.name, row.depth, false, REQUEST_SPACE),
+        )
+      : requested.map(one => fileRow(one.path, one.status, one.path, 0, false, REQUEST_SPACE))
 
   // What a commit or a stash would take: the ticked files still listed.
   const pickable = groups
@@ -550,6 +616,24 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           onPress={actions.switchLayout}
         />
         <Button plain key="graph" hotkey="g" label="git graph" onPress={actions.openGraph} />
+        {shell.reviewing !== '' && (
+          <Button
+            plain
+            key="threads"
+            hotkey="c"
+            label={`threads (${comments.filter(one => one.replyTo === undefined && one.path !== '').length})`}
+            onPress={actions.listThreads}
+          />
+        )}
+        {shell.reviewing !== '' && (
+          <Button
+            plain
+            key="review"
+            hotkey="v"
+            label={model.isReviewing ? 'close review' : 'submit review'}
+            onPress={actions.toggleReviewing}
+          />
+        )}
         {shell.isComparing && (
           <Button
             plain
@@ -618,6 +702,27 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         </Box>
       )}
       {notesOf(kit, shell.notes)}
+      {/* The review box: a summary, then what the review says of the
+          request. Nothing is sent until one of its buttons is pressed. */}
+      {model.isReviewing && Input !== undefined && shell.reviewing !== '' && (
+        <Box flexDirection="column" borderStyle="round" borderColor={COMMIT_BOX} paddingX={1}>
+          <Input
+            key={`review-text:${model.reviewRound}`}
+            label="review"
+            placeholder="a summary of your review (needed to comment or request changes)"
+            submitLabel="comment"
+            autoFocus
+            onInput={actions.typeReview}
+            onSubmit={value => actions.submitReview('comment', value)}
+          />
+          <Box columnGap={2}>
+            <Button key="review-approve" variant="primary" label="✓ approve" onPress={() => actions.submitReview('approve')} />
+            <Button key="review-changes" label="✎ request changes" onPress={() => actions.submitReview('request-changes')} />
+            <Button key="review-comment" label="comment only" onPress={() => actions.submitReview('comment')} />
+            <Button key="review-cancel" label="cancel" onPress={actions.toggleReviewing} />
+          </Box>
+        </Box>
+      )}
       {summary}
       {gitBar}
       {files.length === 0 && model.isScanned && (
@@ -638,16 +743,47 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           ),
         ]
       })}
+      {/* The request of the branch checked out: every file it changes, with
+          the threads on each, whether or not the file is edited here. */}
+      {/* A clear row sets the request apart from the working tree's files. */}
+      {asked !== undefined && requestRows.length > 0 && <Text> </Text>}
+      {asked !== undefined && requestRows.length > 0 && (
+        // The forge's mark, then the request: its number is a link to its
+        // page there, where the surface draws links.
+        <Text bold wrap="truncate-end">
+          <Text color={asked.isGitlab ? GITLAB_COLOR : undefined}>
+            {asked.isGitlab ? GITLAB_ICON : GITHUB_ICON}
+          </Text>{' '}
+          {asked.isGitlab ? 'MR' : 'PR'}{' '}
+          {Link !== undefined && asked.url.startsWith('https://') ? (
+            // In a link's colour, underlined, with the mark of a page that
+            // opens elsewhere: a number alone does not look pressable.
+            <Text color={COMMIT_BOX} underline>
+              <Link href={asked.url}>
+                {asked.typed} {LINK_ICON}
+              </Link>
+            </Text>
+          ) : (
+            asked.typed
+          )}
+          {asked.title === '' ? '' : `: ${asked.title}`} ({asked.files.length})
+        </Text>
+      )}
+      {requestRows.slice(0, LIST_LIMIT)}
       {/* What was said on the request as a whole, and the comments that
-          no longer sit on a line (the code under them has changed). */}
+          no longer sit on a line (the code under them has changed). Under
+          the request's own heading it is part of that section. */}
       {comments.some(one => one.line === 0) && (
-        <Text bold>Conversation ({comments.filter(one => one.line === 0).length})</Text>
+        <Text bold={!isInSection} dimColor={isInSection}>
+          {isInSection ? '  ' : ''}Conversation ({comments.filter(one => one.line === 0).length})
+        </Text>
       )}
       {comments
         .filter(one => one.line === 0)
         .slice(-CONVERSATION_ROWS)
         .map(one => (
           <Text color={one.path === '' ? undefined : COMMENT_COLOR} wrap="truncate-end">
+            {isInSection ? '  ' : ''}
             {COMMENT_ICON} {one.path === '' ? '' : `${one.path} (outdated) · `}
             {said(one)}
           </Text>

@@ -27,6 +27,7 @@ import {
   COLOR,
   COMMENT_COLOR,
   COMMENT_ICON,
+  RESOLVED_COLOR,
   COMMIT_BOX,
   MARK,
   helpButton,
@@ -66,8 +67,6 @@ export type Insight = {
 
 // How many lines of a comment show while the file is not expanded.
 const TALK_FOLDED = 3
-// The colour of a review thread that has been resolved.
-const RESOLVED_COLOR = '#9a8444'
 
 export type FileModel = {
   shell: Shell
@@ -114,6 +113,11 @@ export type FileModel = {
   commentLine: number
   // The thread being answered, by its first comment's id; '' for none.
   replyTo: string
+  // What the diff is against, by name, when that is not the comparison's
+  // base: the branch a request targets. '' otherwise.
+  diffAgainst: string
+  // Whether resolved threads are being left out (they are then not in `talk`).
+  hidesResolved: boolean
   // Counts the comments sent or dropped: the field keeps its own text under
   // its key, so each new comment gets a field of its own, empty.
   commentRound: number
@@ -164,6 +168,9 @@ export type FileActions = {
   replyOn: (line: number) => void
   resolveOn: (line: number, isResolved: boolean) => void
   cancelComment: () => void
+  // Leaves resolved threads out, or shows them again; lists every thread.
+  toggleResolved: () => void
+  listThreads: () => void
   // Puts what was dragged over into the prompt.
   sendSelection: () => void
   // Looks up the name dragged over, among the lines `from`..`to` on screen.
@@ -281,6 +288,20 @@ export const fileScreen = (
   let maxTop = Math.max(1, lineCount)
 
   const moveTo = (line: number) => actions.scrollTo(clamp(line, 1, maxTop))
+  // The next commented line below the window's first lines, or the one
+  // above; from the last it goes round to the first.
+  const stepTalk = (way: 1 | -1) => {
+    const lines = [...new Set(model.talk.map(one => one.line))].sort((one, other) => one - other)
+    const here = top + 2
+    const next =
+      way === 1
+        ? (lines.find(line => line > here) ?? lines[0])
+        : ([...lines].reverse().find(line => line < here) ?? lines[lines.length - 1])
+
+    if (next !== undefined) {
+      moveTo(next - 2)
+    }
+  }
 
   const stepIssue = (by: number): void => {
     if (diags.length === 0) {
@@ -930,6 +951,10 @@ export const fileScreen = (
             onPress={actions.toggleDiff}
           />
           <Button plain key="find" hotkey="f" label="find" onPress={actions.find} />
+          {/* A markdown file's way back to how it reads is always at hand. */}
+          {isMarkdownFile(file) && (
+            <Button plain key="rendered" hotkey="m" label="rendered" onPress={actions.showRendered} />
+          )}
           <Button
             plain
             key="more"
@@ -966,15 +991,6 @@ export const fileScreen = (
                 actions.nextChange(line === undefined ? undefined : clamp(line - 2, 1, maxTop))
               }}
             />
-            {isMarkdownFile(file) && (
-              <Button
-                plain
-                key="rendered"
-                hotkey="m"
-                label="rendered"
-                onPress={actions.showRendered}
-              />
-            )}
             <Button
               plain
               key="blame"
@@ -1015,6 +1031,24 @@ export const fileScreen = (
                 label={isCommenting ? 'stop commenting' : 'comment'}
                 onPress={actions.toggleCommenting}
               />
+            )}
+            {model.canComment && (
+              <Button plain key="talk-next" hotkey="w" label="next comment" onPress={() => stepTalk(1)} />
+            )}
+            {model.canComment && (
+              <Button plain key="talk-prev" hotkey="q" label="prev comment" onPress={() => stepTalk(-1)} />
+            )}
+            {model.canComment && (
+              <Button
+                plain
+                key="talk-resolved"
+                hotkey="z"
+                label={model.hidesResolved ? 'show resolved' : 'hide resolved'}
+                onPress={actions.toggleResolved}
+              />
+            )}
+            {model.canComment && (
+              <Button plain key="talk-all" hotkey="y" label="all threads" onPress={actions.listThreads} />
             )}
             <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
           </Box>
@@ -1142,9 +1176,11 @@ export const fileScreen = (
               − removed ·{' '}
               {!model.isChecked
                 ? `${shortRef(commit)}^`
-                : shell.isComparing
-                  ? shell.against
-                  : 'your last commit'}
+                : model.diffAgainst !== ''
+                  ? model.diffAgainst
+                  : shell.isComparing
+                    ? shell.against
+                    : 'your last commit'}
             </Text>
             <Text color="green">+ added · {commit !== '' ? shortRef(commit) : shell.headName}</Text>
           </Box>

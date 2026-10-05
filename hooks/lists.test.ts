@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { callsList, lookupOf, namesList, usesList } from './lists'
+import { callsList, lookupOf, namesList, usesList, threadsList } from './lists'
 
 const place = (path: string, line: number) => ({ path, line, col: 1, isInRepo: true })
 
@@ -53,4 +53,33 @@ test('a looked-up name keeps where it is defined and marks the argument being gi
     hasImplementations: false,
     signature: '(items, [start])',
   })
+})
+
+test('the threads of a request list the open ones first, with their replies counted', () => {
+  const said = (id: string, extra: object) => ({
+    id,
+    path: 'a.ts',
+    line: 3,
+    author: 'ana',
+    body: 'Why?',
+    when: '2026-01-01',
+    ...extra,
+  })
+  const listed = threadsList('PR #12', [
+    said('1', { isResolved: true }),
+    said('2', { line: 9, isResolved: false }),
+    said('3', { replyTo: '2', author: 'ben', body: 'Because.' }),
+    said('4', { path: '', line: 0, body: 'Looks good' }),
+  ])
+
+  expect(listed.title).toBe('PR #12: 1 open, 1 resolved')
+  expect(listed.rows.map(row => row.label)).toEqual([
+    'Open (1)',
+    'a.ts:9  ana: Why?  (+1)',
+    'Resolved (1)',
+    '✓ a.ts:3  ana: Why?',
+    'On the request as a whole (1)',
+    '  ana: Looks good',
+  ])
+  expect(listed.prompt).toBe('Open review comments in PR #12 (1):\n- a.ts:9 ana: Why?\n  - ben: Because.')
 })

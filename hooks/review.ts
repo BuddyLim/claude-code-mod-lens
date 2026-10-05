@@ -866,6 +866,64 @@ const gitlabPost = async (
 
 // Every comment on the request, oldest first: review comments on lines, and the general conversation.
 // `typed` is what the person typed to open the request ("#12", a URL, ...), as resolveRequest takes.
+// The open pull or merge request whose head is a branch of this repo, by
+// what a person would type to open it ("#12") and how it is spoken of
+// ("PR #12"); undefined when there is none, or no forge to ask.
+export const requestOfBranch = async (
+  run: Run,
+  branch: string,
+): Promise<
+  { typed: string; label: string; title: string; baseRef: string; url: string } | undefined
+> => {
+  if (branch === '' || branch === 'HEAD') {
+    return undefined
+  }
+
+  const place = await locate(run, '1')
+
+  if ('error' in place) {
+    return undefined
+  }
+
+  const isGitlab = place.forge === 'gitlab'
+  const asked = await call(
+    run,
+    isGitlab
+      ? glab(
+          place,
+          `projects/${encodeURIComponent(place.repo)}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`,
+        )
+      : gh(
+          place,
+          `repos/${place.repo}/pulls?state=open&head=${encodeURIComponent(`${place.repo.split('/')[0] ?? ''}:${branch}`)}`,
+        ),
+    20_000,
+  )
+
+  if (asked.exitCode !== 0) {
+    return undefined
+  }
+
+  try {
+    const first = record(values(asked.stdout)[0])
+    const number = whole(isGitlab ? first.iid : first.number)
+
+    // What it is called, and the branch it asks to be merged into.
+    const title = text(first.title)
+    const baseRef = isGitlab ? text(first.target_branch) : text(record(first.base).ref)
+    // Its page on the forge.
+    const url = isGitlab ? text(first.web_url) : text(first.html_url)
+
+    return number === 0
+      ? undefined
+      : isGitlab
+        ? { typed: `!${number}`, label: `MR !${number}`, title, baseRef, url }
+        : { typed: `#${number}`, label: `PR #${number}`, title, baseRef, url }
+  } catch {
+    return undefined
+  }
+}
+
 // The repo's open pull or merge requests, newest first, each by what a person
 // would type to open it ("#12", "!34") and its title. None where there is no
 // forge to ask, or it does not answer: a list to offer, never an error.
@@ -1067,6 +1125,68 @@ export const resolveThread = async (
   )
 
   return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'comment on')
+}
+
+// Submits a review of the request: an approval, a request for changes, or a
+// comment, with a summary. Answers '' when the forge took it, else why not.
+export const submitReview = async (
+  run: Run,
+  typed: string,
+  verdict: 'approve' | 'request-changes' | 'comment',
+  summary: string,
+): Promise<string> => {
+  const body = summary.trim()
+
+  if (verdict !== 'approve' && body === '') {
+    return 'Write a summary first: it is what the review says'
+  }
+
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  if (place.forge === 'gitlab') {
+    if (verdict === 'request-changes') {
+      return 'GitLab has no call for requesting changes here: submit a comment saying what to change'
+    }
+
+    if (verdict === 'approve') {
+      const approved = await call(run, glab(place, '-X', 'POST', `${gitlabRequest(place)}/approve`))
+
+      if (approved.exitCode !== 0) {
+        return whyFailed(place, approved, 'comment on')
+      }
+    }
+
+    if (body === '') {
+      return ''
+    }
+
+    const noted = await call(
+      run,
+      glab(place, '-X', 'POST', `${gitlabRequest(place)}/notes`, '-f', `body=${body}`),
+    )
+
+    return noted.exitCode === 0 ? '' : whyFailed(place, noted, 'comment on')
+  }
+
+  const event = verdict === 'approve' ? 'APPROVE' : verdict === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
+  const sent = await call(
+    run,
+    gh(
+      place,
+      '-X',
+      'POST',
+      `repos/${place.repo}/pulls/${place.number}/reviews`,
+      '-f',
+      `event=${event}`,
+      ...(body === '' ? [] : ['-f', `body=${body}`]),
+    ),
+  )
+
+  return sent.exitCode === 0 ? '' : whyFailed(place, sent, 'comment on')
 }
 
 // The sub-folder of the repo that `run` executes in, as a prefix ('' at the root, 'frontend/' in a
