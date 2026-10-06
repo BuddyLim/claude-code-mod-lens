@@ -90,31 +90,7 @@ export const visibleTree = (
   return shown
 }
 
-export type Icon = { glyph: string; color: string }
-
-// Nerd Font glyphs, as a terminal file tree draws them, in each language's
-// usual colour. They need a Nerd Font, or a terminal that ships the symbols.
-const ICONS: [pattern: RegExp, glyph: string, color: string][] = [
-  [/\.pyi?$/, '\u{e73c}', '#ffd43b'],
-  [/\.[cm]?[tj]sx$/, '\u{e7ba}', '#20c2e3'],
-  [/\.[cm]?ts$/, '\u{e628}', '#519aba'],
-  [/\.[cm]?js$/, '\u{e74e}', '#cbcb41'],
-  [/\.json$/, '\u{e60b}', '#cbcb41'],
-  [/\.(tf|tfvars)$/, '\u{e69a}', '#7b42bc'],
-  [/\.(ya?ml|toml|ini|cfg|env)$/, '\u{e615}', '#6d8086'],
-  [/\.(md|mdx)$/, '\u{e73e}', '#dddddd'],
-  [/\.(sh|bash|zsh)$/, '\u{e795}', '#4d5a5e'],
-  [/\.(css|scss|less)$/, '\u{e749}', '#42a5f5'],
-  [/\.html?$/, '\u{e736}', '#e44d26'],
-  [/\.sql$/, '\u{e706}', '#dad8d8'],
-  [/\.(png|jpe?g|gif|svg|webp|ico)$/, '\u{f1c5}', '#a074c4'],
-  [/(^|\/)Dockerfile$/, '\u{f308}', '#458ee6'],
-  [/(^|\/)\.git(ignore|attributes)$/, '\u{e702}', '#f54d27'],
-  [/\.lock$/, '\u{f023}', '#bbbbbb'],
-]
-
-export const iconOf = (path: string): Icon => {
-  const hit = ICONS.find(([pattern]) => pattern.test(path))
-
-  return hit === undefined ? { glyph: '\u{f15b}', color: '#6d8086' } : { glyph: hit[1], color: hit[2] }
-}
+// The file-type glyphs and their colours are the kit's, shared with the parked
+// and ledger mods.
+export { iconOf } from './kit/icons'
+export type { Icon } from './kit/icons'

@@ -3,6 +3,8 @@
 // that is missing or of the wrong kind is its default, so nothing downstream
 // has to doubt one.
 
+import { PAD } from './kit/layout'
+
 // Which checkers a scan may use. A language server answers in the name of
 // its command-line twin (pyright for Python, tsc for TypeScript, terraform),
 // so switching a checker off silences both.
@@ -43,7 +45,7 @@ export const ALL_CHECKERS: Checkers = {
 export const DEFAULTS: Settings = {
   checkers: ALL_CHECKERS,
   marksNew: true,
-  sidePadding: 2,
+  sidePadding: PAD,
   showsAllKeys: false,
   remembers: true,
   cleansUp: true,

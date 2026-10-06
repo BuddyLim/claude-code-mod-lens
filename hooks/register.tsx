@@ -38,6 +38,7 @@ import {
 import type { InlayHint, SemanticToken } from './lsp-types'
 import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
+import { findingComments, isFinding, placeOf } from './ledger'
 import type { Comment, Run as ForgeRun } from './review'
 import {
   fetchComments,
@@ -173,6 +174,57 @@ let servers: ServerRun | undefined
 let insight: ({ path: string } & Insight) | undefined
 // The file `loadInsight` is reading for, while it is: the screen says so.
 let insightFor: string | undefined
+
+// Opens the pane on a file at a line, for another mod that names the place: a
+// path that is absolute, or from the session's folder. The repository the
+// file is in becomes the one under review, unless the folder under review
+// already holds the file.
+const showPlace = async ($: EngineInterface, named: string, line: number): Promise<void> => {
+  const run = runOf($)
+  const root = await $.session.cwd().catch(() => '')
+  const full = placeOf(named, root)
+  const now = await read($, view)
+  let repo = now.repo !== '' && full.startsWith(`${now.repo}/`) ? now.repo : ''
+
+  if (repo === '') {
+    const top = await run(['git', '-C', full.replace(/\/[^/]*$/, ''), 'rev-parse', '--show-toplevel'])
+    repo = top.exitCode === 0 ? top.stdout.trim() : ''
+
+    if (repo === '' || !full.startsWith(`${repo}/`)) {
+      $.ui.toast(`Lens: ${named} is not in a git repository`)
+
+      return
+    }
+
+    await openReview($, repo, undefined)
+  }
+
+  const path = full.slice(repo.length + 1)
+
+  await loadSource($, repo, path)
+  await update(
+    $,
+    view,
+    (last): View => ({
+      ...last,
+      screen: 'file',
+      file: path,
+      commit: '',
+      origin: 'tree',
+      top: Math.max(1, line - 3),
+      cursor: -1,
+      isDiff: false,
+      isPreview: false,
+      symbol: NO_SYMBOL,
+      crumb: NO_CRUMB,
+    }),
+  )
+  await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+}
+
+// The ledger mod's run, where that mod is loaded: its findings are drawn with
+// a request's comments.
+const LEDGER_RUN = { plugin: 'ledger', key: 'run' } as const
 
 // The comments on the pull or merge request under review, as the forge gave
 // them, with the folder under review's place in the repo (`prefix`). Written
@@ -1114,6 +1166,12 @@ const postReply = async (
   root: Comment,
   body: string,
 ): Promise<void> => {
+  if (isFinding(root)) {
+    $.ui.toast('A ledger finding has no thread to answer: send it to the prompt instead')
+
+    return
+  }
+
   if (body.trim() === '') {
     $.ui.toast('Type the reply first')
 
@@ -1148,6 +1206,12 @@ const settleThread = async (
   root: Comment,
   isResolved: boolean,
 ): Promise<void> => {
+  if (isFinding(root)) {
+    $.ui.toast('A ledger finding is closed in the ledger, once it is fixed')
+
+    return
+  }
+
   const refusal = await resolveThread(forgeRun(runOf($), repo), typed, root.thread ?? '', isResolved)
 
   if (refusal !== '') {
@@ -1333,6 +1397,32 @@ export const register: Register = (on, options) => {
     }
   })
 
+  // The parked mod, where it is loaded, asks for a place to be shown (a file
+  // reference pressed on one of its items): the pane opens on that file at
+  // that line, reviewing the repository the file is in.
+  on('state.set', { plugin: 'parked', key: 'jump' }, async ($, e, next) => {
+    const written = await next(e)
+    const asked = e.value
+
+    if (asked !== null && asked !== undefined && asked.path !== '') {
+      void showPlace($, asked.path, asked.line).catch(() => undefined)
+    }
+
+    return written
+  })
+
+  // The ledger mod asks the same way, for the place of a finding.
+  on('state.set', { plugin: 'ledger', key: 'jump' }, async ($, e, next) => {
+    const written = await next(e)
+    const asked = e.value
+
+    if (asked !== null && asked !== undefined && asked.path !== '') {
+      void showPlace($, asked.path, asked.line).catch(() => undefined)
+    }
+
+    return written
+  })
+
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const ran = await next(e)
     await noteEdit($, e.file_path)
@@ -1459,13 +1549,30 @@ export const register: Register = (on, options) => {
       requestTyped !== '' && commentsCache?.key === `${repo}\n${requestTyped}`
         ? commentsCache
         : undefined
-    const comments = (reviewed?.comments ?? []).flatMap(one =>
+    const requestComments = (reviewed?.comments ?? []).flatMap(one =>
       one.path === ''
         ? [one]
         : one.path.startsWith(reviewed?.prefix ?? '')
           ? [{ ...one, path: one.path.slice((reviewed?.prefix ?? '').length) }]
           : [],
     )
+    // The ledger mod's review findings, where it is loaded and has a run, join
+    // them: each shows on its line as a thread does. Reading the run here
+    // draws the pane again when it changes.
+    const ledgerRun = await $.state.get(LEDGER_RUN).then(
+      got => got.value,
+      () => undefined,
+    )
+    const sessionRoot = await $.session.cwd().catch(() => '')
+    const comments = [
+      ...requestComments,
+      ...findingComments(
+        ledgerRun,
+        repo,
+        sessionRoot,
+        found.files.map(one => one.path),
+      ),
+    ]
     // The comparison border takes a cell on each side, which the screens that
     // size their own window leave out of their width and height.
     const inset = isComparing ? 2 : 0

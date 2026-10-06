@@ -39,6 +39,11 @@ the problem or it was already there.
   has checked out; press it to review that worktree where you left it.
   Compare with `@name` to read your files against another worktree's as they
   stand, uncommitted work included.
+- **Review findings from the ledger mod, where it is installed.** Each finding
+  a reviewing agent records shows on its line as a thread does, counts among
+  the file's threads, and is listed with them; a fixed one shows as resolved.
+  They cannot be answered or resolved from here: the ledger closes them.
+  Without the ledger, nothing changes.
 - **Hand things to Claude.** Send a line's problems, a function, your
   selection or every new issue to the prompt (appended, never submitted), or
   have Claude told automatically what its own edits broke.
