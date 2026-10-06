@@ -354,7 +354,9 @@ export const fileScreen = (
   }
 
   // One line of the file as elements, and how many rows they take.
-  const codeLine = (spans: readonly Span[], n: number) => {
+  // `offset` is the row of the window the line starts on, where it is being
+  // placed (not just measured): it decides which way the line's card opens.
+  const codeLine = (spans: readonly Span[], n: number, offset?: number) => {
     const here = byLine.get(n) ?? []
     const first = here[0]
     const isChanged = isNewFile || changed.some(range => n >= range[0] && n <= range[1])
@@ -623,10 +625,36 @@ export const fileScreen = (
       2,
     )
 
+    // The card opens above its line where the window has the rows for it,
+    // and below where it has not (the first lines of the window): there it
+    // would run off the top.
+    const isBelow = !isOpen && offset !== undefined && offset < cardRows
+    const cardBox = (place: { top: number } | { bottom: number }, scope?: string) => (
+      <Box
+        position="absolute"
+        {...place}
+        left={gutter + 2}
+        width={cardWidth}
+        display="none"
+        hover={scope === undefined ? { display: 'flex' } : { display: 'flex', scope }}
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={COLOR[worst]}
+        backgroundColor={CARD_BACKGROUND}
+        paddingX={1}
+      >
+        {card(here)}
+      </Box>
+    )
+
     return {
       rows: codeRows + (isOpen ? cardRows : isBeside ? 0 : 1) + talkHeight,
+      // A card that opens below is drawn after every row of the window, or
+      // the rows under its line would be painted over it; it and its line
+      // share a hover group, so the pointer on the line still reveals it.
+      overlay: isBelow ? cardBox({ top: (offset ?? 0) + codeRows }, `card:${n}`) : undefined,
       elements: [
-        <Box key={`line:${n}`}>
+        <Box key={`line:${n}`} {...(isBelow ? { hover: { scope: `card:${n}` } } : {})}>
           {number}
           <Box flexShrink={isBeside ? 0 : 1}>{code}</Box>
           {isBeside && (
@@ -634,25 +662,9 @@ export const fileScreen = (
               {brief}
             </Box>
           )}
-          {/* The card floats above its line: rows are painted top to bottom,
-              so one hanging below would be drawn over by the rows after it. */}
-          {!isOpen && (
-            <Box
-              position="absolute"
-              bottom={1}
-              left={gutter + 2}
-              width={cardWidth}
-              display="none"
-              hover={{ display: 'flex' }}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={COLOR[worst]}
-              backgroundColor={CARD_BACKGROUND}
-              paddingX={1}
-            >
-              {card(here)}
-            </Box>
-          )}
+          {/* Above its line the card can hang off the line itself: rows are
+              painted top to bottom, so nothing after it covers it there. */}
+          {!isOpen && !isBelow && cardBox({ bottom: 1 })}
         </Box>,
         !isBeside && !isOpen && <Box marginLeft={gutter + 2}>{brief}</Box>,
         isOpen && (
@@ -675,6 +687,8 @@ export const fileScreen = (
   // Only the lines the window has rows for are drawn, so the tree stays
   // small however long the file is.
   const windowRows = []
+  // The cards that open below their line, drawn after the rows (see `codeLine`).
+  const overlays: RenderChildren[] = []
   let used = 0
   let last = top - 1
 
@@ -724,9 +738,13 @@ export const fileScreen = (
   while (lines !== undefined && last < lineCount && used < room) {
     last += 1
     const gone = removedRows(last)
-    const drawn = codeLine(lines[last - 1] ?? [], last)
+    const drawn = codeLine(lines[last - 1] ?? [], last, used + gone.length)
     used += gone.length + drawn.rows
     windowRows.push(...gone, ...drawn.elements)
+
+    if (drawn.overlay !== undefined) {
+      overlays.push(drawn.overlay)
+    }
   }
 
   // Lines removed from the end of the file come before a line it no longer has.
@@ -1189,6 +1207,7 @@ export const fileScreen = (
         <Box height={room} overflow="hidden">
           <Box flexDirection="column" width={codeColumns + blameWidth} overflow="hidden">
             {windowRows}
+            {overlays}
           </Box>
           {Raster !== undefined && minimap !== undefined && (
             <Box marginLeft={1}>
