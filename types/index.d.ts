@@ -139,6 +139,9 @@ export type View = {
   // The first line of the comment being typed when it is on several lines
   // (`commentLine` is then the last); 0 when it is on one.
   commentFrom: number
+  // What the file tree's lists are narrowed by: only files whose path holds
+  // it are listed; '' lists them all.
+  filter: string
   // The comment of the person's own being changed in the field, and the one
   // being asked about before it is deleted, by id; '' for none.
   editing: string

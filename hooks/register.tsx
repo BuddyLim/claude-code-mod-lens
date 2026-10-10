@@ -2454,13 +2454,19 @@ export const register: Register = (on, options) => {
       const isFreshKnown = inChanged.some(diag => diag.isNew !== undefined)
       const sendable = isFreshKnown ? inChanged.filter(diag => diag.isNew === true) : inChanged
       const needTicks = () => $.ui.toast('Tick some files first (☐)')
+      // The files listed are those whose path holds what the person typed
+      // to narrow the lists by, whatever its case; all of them with nothing
+      // typed.
+      const wanted = now.filter.trim().toLowerCase()
+      const isListed = (path: string): boolean => wanted === '' || path.toLowerCase().includes(wanted)
 
       return framed(
         treeScreen(
           kit,
           {
             shell,
-            files: found.files,
+            files: found.files.filter(one => isListed(one.path)),
+            filter: now.filter,
             stats: found.stats,
             dirty: found.dirty,
             diags: found.diags,
@@ -2473,7 +2479,7 @@ export const register: Register = (on, options) => {
             isMore: now.isMore || settings.showsAllKeys,
             isPlain: found.isPlain,
             isBrowsing: now.isBrowsing || found.isPlain,
-            allFiles: now.isBrowsing || found.isPlain ? allFilesOf(repo) : [],
+            allFiles: now.isBrowsing || found.isPlain ? allFilesOf(repo).filter(isListed) : [],
             isTelling: now.isTelling,
             issuesToSend: sendable.length,
             comments,
@@ -2494,7 +2500,7 @@ export const register: Register = (on, options) => {
                     typed: ofBranch.typed,
                     url: ofBranch.url,
                     title: ofBranch.title,
-                    files: ofBranch.files,
+                    files: ofBranch.files.filter(one => isListed(one.path)),
                     stats: ofBranch.stats,
                   },
             selected: now.selected,
@@ -2586,6 +2592,7 @@ export const register: Register = (on, options) => {
                   ),
             toggleTelling: () => set(last => ({ ...last, isTelling: !(last.isTelling ?? false) })),
             // The language server of the first changed file it can read searches.
+            setFilter: text => set((last): View => ({ ...last, filter: text.trim().slice(0, 200) })),
             searchNames: query =>
               void searchSymbols(
                 $,

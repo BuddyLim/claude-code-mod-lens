@@ -75,6 +75,9 @@ export type TreeModel = {
   isDiscarding: boolean
   // Whether the box of less-used keys is open.
   isMore: boolean
+  // What the lists are narrowed by ('' for nothing): only files whose path
+  // holds it are in them.
+  filter: string
   // The files of the request under review ticked as reviewed; `canMark` is
   // whether a request is under review, so there is something to tick.
   canMark: boolean
@@ -155,6 +158,8 @@ export type TreeActions = {
   toggleTelling: () => void
   // Lists the project's names that match what was typed.
   searchNames: (query: string) => void
+  // Narrows the lists to the files whose path holds the text; '' lifts it.
+  setFilter: (text: string) => void
   open: (path: string) => void
   // Opens or closes a folder, by the key it is held under in `toggled`.
   toggleFolder: (key: string) => void
@@ -815,6 +820,19 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           </Box>
           {/* A name anywhere in the project, by typing part of it: the
               language server of the first changed file it can read searches. */}
+          {/* The lists narrowed to the files whose path holds what is typed. */}
+          {model.isMore && Input !== undefined && (
+            <Box height={1} overflow="hidden">
+              <Input
+                key="file-filter"
+                label="filter files"
+                placeholder="part of a path, then Enter; empty shows them all"
+                submitLabel="filter"
+                {...(model.filter === '' ? {} : { value: model.filter })}
+                onSubmit={actions.setFilter}
+              />
+            </Box>
+          )}
           {model.isMore && Input !== undefined && (
             <Box height={1} overflow="hidden">
               <Input
@@ -860,6 +878,16 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             <Button key="review-comment" label="comment only" onPress={() => actions.submitReview('comment')} />
             <Button key="review-cancel" label="cancel" onPress={actions.toggleReviewing} />
           </Box>
+        </Box>
+      )}
+      {/* A filter in force says so wherever the box it was typed in is, with
+          a way to lift it: lists that look short for no reason mislead. */}
+      {model.filter !== '' && (
+        <Box columnGap={2}>
+          <Text color="yellow" wrap="truncate-end">
+            Only files with “{model.filter}” in their path are listed.
+          </Text>
+          <Button plain key="filter-clear" label="show all" onPress={() => actions.setFilter('')} />
         </Box>
       )}
       {summary}

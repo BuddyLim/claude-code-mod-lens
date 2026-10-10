@@ -22,6 +22,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['press a name', 'in Conversation: read that comment in full, and quote-reply to it'],
         ['e', 'the request under review at a glance: description, checks, reviews, commits'],
         ['p', 'list the open pull or merge requests, yours first, to review one'],
+        ['filter files', 'in the box of more keys: list only files whose path holds what you type'],
         ['d', 'every change on one page, to scroll through'],
         ['☐ on a request', 'tick a file as reviewed; it stays ticked between sessions'],
         ['press a file', 'open it'],

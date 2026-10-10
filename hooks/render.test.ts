@@ -279,3 +279,25 @@ test('the page of every change asks git again for more context, and without spac
   expect(diffs[diffs.length - 1]?.includes('-U10 -w')).toBe(true)
   await ui.unmount()
 })
+
+test('the file tree lists only the files a filter names, and says so', async ($, on) => {
+  const clock = host(on, { ...IN_REPO, '--name-status': 'M\tsrc/app.ts\nM\tsrc/util.ts\nM\tdocs/guide.md\n' })
+
+  await $.session.start({ cwd: REPO } as never)
+  await $.command.run(lens(REPO))
+  await clock.advance(2000)
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'layout' })
+  expect(await ui.find({ key: 'file:docs/guide.md' })).toBeDefined()
+  await ui.press({ key: 'more' })
+  await ui.input({ key: 'file-filter', text: 'SRC/' })
+  await ui.drawn()
+  expect(await ui.find({ key: 'file:src/app.ts' })).toBeDefined()
+  expect(await ui.find({ key: 'file:docs/guide.md' })).toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: /Only files with/ })).toBeDefined()
+  await ui.press({ key: 'filter-clear' })
+  expect(await ui.find({ key: 'file:docs/guide.md' })).toBeDefined()
+  await ui.unmount()
+})
