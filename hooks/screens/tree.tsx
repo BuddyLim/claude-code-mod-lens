@@ -1050,7 +1050,8 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             asked.typed
           )}
           {/* Its title is said above, with what it is about, where it has
-              a row to itself; this heading stays short enough for any pane. */}{' '}
+              a row to itself; this heading stays short enough for any pane. The
+              link's mark is a wide one, so it is given room before what follows. */}{'  · '}
           {FILES_ICON} {asked.files.length}
           {model.canMark ? ` · ☑ ${asked.files.filter(one => seen.has(one.path)).length}` : ''}
         </Text>
