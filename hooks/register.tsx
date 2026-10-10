@@ -313,6 +313,8 @@ const nudged = (last: View): View => ({ ...last, redraws: (last.redraws ?? 0) + 
 const REVIEWED_KEPT = 40
 // And how many ticked files of each.
 const REVIEWED_PATHS = 2000
+// The most lines a suggested replacement may hold to be applied from here.
+const SUGGESTION_LINES = 500
 // The most comments one review holds unsent.
 const DRAFTS_KEPT = 200
 
@@ -2905,6 +2907,7 @@ export const register: Register = (on, options) => {
         me: meCache?.repo === repo ? meCache.me : '',
         editing: now.editing,
         deleting: now.deleting,
+        applying: now.applying,
         draft: now.editing === '' ? '' : commentDraft,
         // A suggestion is applied to the person's own files: the working
         // tree's, where the request is the branch checked out.
@@ -3196,11 +3199,25 @@ export const register: Register = (on, options) => {
         // Puts a suggested replacement into the file: only where the file
         // open is the working tree's, which is then the request's own
         // branch. The lines the comment is on give way to the suggestion's.
+        askApply: id => set(was => ({ ...was, applying: id })),
         applySuggestion: async id => {
           const one = comments.find(held => held.id === id)
           const lines = one === undefined ? undefined : suggestedLines(one.body)
 
-          if (one === undefined || lines === undefined) {
+          // Written only from its own question's yes: the comment must be
+          // the one asked about. What it holds is another person's text.
+          if (one === undefined || lines === undefined || now.applying !== id) {
+            return
+          }
+
+          set(was => ({ ...was, applying: '' }))
+
+          // The file is the one open, inside the folder under review, by a
+          // path with no way out of it; and the replacement is of a size a
+          // suggestion has.
+          if (file.startsWith('/') || file.split('/').includes('..') || lines.length > SUGGESTION_LINES) {
+            $.ui.toast('That suggestion is not one lens applies: make the change by hand')
+
             return
           }
 

@@ -146,6 +146,9 @@ export type View = {
   // being asked about before it is deleted, by id; '' for none.
   editing: string
   deleting: string
+  // The comment whose suggested replacement is being asked about before it
+  // is written into the file, by id; '' for none.
+  applying: string
   // A working-tree file whose diff is read against a commit other than
   // `base`: a file of the checked-out branch's request, against where the
   // request forked from its target. `path` '' is none.

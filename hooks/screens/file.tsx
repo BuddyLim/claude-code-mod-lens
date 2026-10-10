@@ -134,6 +134,8 @@ export type FileModel = {
   me: string
   editing: string
   deleting: string
+  // The comment whose suggestion is being asked about before it is applied.
+  applying: string
   draft: string
   canApply: boolean
   // The thread being answered, by its first comment's id; '' for none.
@@ -242,7 +244,10 @@ export type FileActions = {
   deleteComment: (id: string) => void
   likeComment: (id: string) => void
   // Puts the replacement a comment suggests into the file.
+  // It is asked about first (`askApply`; '' takes the question away), and
+  // done only for the comment asked about.
   applySuggestion: (id: string) => void
+  askApply: (id: string) => void
   // Drops comments written for the review and not sent, by their ids.
   discardDrafts: (ids: readonly string[]) => void
 }
@@ -718,13 +723,31 @@ export const fileScreen = (
                   <Button plain key={`delete-no:${n}`} label="no" onPress={() => actions.askDelete('')} />
                 )}
                 {/* A suggested replacement is put into the person's own file. */}
-                {suggesting !== undefined && model.canApply && (
+                {/* The replacement is someone else's words going into the
+                    person's file, so it is asked about first, in a question
+                    that says which lines give way and to how many. */}
+                {suggesting !== undefined && model.canApply && model.applying !== suggesting.id && (
                   <Button
                     plain
                     key={`apply:${n}`}
                     label="⇩ apply suggestion"
+                    onPress={() => actions.askApply(suggesting.id)}
+                  />
+                )}
+                {suggesting !== undefined && model.canApply && model.applying === suggesting.id && (
+                  <Button
+                    plain
+                    key={`apply-yes:${n}`}
+                    label={`replace ${
+                      suggesting.startLine === undefined
+                        ? `line ${suggesting.line}`
+                        : `lines ${suggesting.startLine}–${suggesting.line}`
+                    } of your file with its ${(suggestedLines(suggesting.body) ?? []).length} from ${suggesting.author}?  yes`}
                     onPress={() => actions.applySuggestion(suggesting.id)}
                   />
+                )}
+                {suggesting !== undefined && model.canApply && model.applying === suggesting.id && (
+                  <Button plain key={`apply-no:${n}`} label="no" onPress={() => actions.askApply('')} />
                 )}
                 {canSettle && (
                   <Button

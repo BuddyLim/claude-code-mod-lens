@@ -69,6 +69,7 @@ export const NO_VIEW: View = {
   filter: '',
   editing: '',
   deleting: '',
+  applying: '',
   replyTo: '',
   diffBase: { path: '', base: '', name: '' },
   hidesResolved: false,
