@@ -13,6 +13,9 @@ export type RequestsModel = {
   list: readonly Listed[] | undefined
   // The request under review now, as it is typed ("#12"); '' for none.
   current: string
+  // The request being opened, as it is typed; '' for none. While one is, the
+  // list gives way to the shape of its page, and nothing can be pressed.
+  opening: string
   // How many of each request's files are ticked as reviewed, by what it is
   // typed as.
   reviewed: Readonly<Record<string, number>>
@@ -99,6 +102,26 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
             </Text>
           </Box>
         )}
+      </Box>
+    )
+  }
+
+  // A request has been pressed: the page it opens on is drawn in bars, under
+  // what is known of it already (its number and title, from the list).
+  if (model.opening !== '') {
+    const opened = (list ?? []).find(one => one.typed === model.opening)
+
+    return (
+      <Box flexDirection="column">
+        {statusLine(kit, shell)}
+        <Text dimColor>Opening {model.opening}…</Text>
+        <Box height={1} overflow="hidden">
+          <Text bold wrap="truncate-end">
+            {isGitlab ? 'MR' : 'PR'} {model.opening}
+            {opened === undefined || opened.title === '' ? '' : `: ${opened.title}`}
+          </Text>
+        </Box>
+        {skeleton(kit, [0.8, 0.4, 0, 0.22, 0.5, 0.35, 0.45, 0, 0.18, 0.9, 0.95, 0.7, 0, 0.85, 0.6, 0.9, 0.3], shell.columns - 2)}
       </Box>
     )
   }

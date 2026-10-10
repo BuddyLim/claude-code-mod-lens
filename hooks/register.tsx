@@ -1050,6 +1050,8 @@ const loadMe = async ($: EngineInterface, repo: string): Promise<void> => {
 }
 // The action on a request the overview is asking about before it is done
 // (of which request, and which), and whether one is under way.
+// The request being opened from the list, as it is typed; '' for none.
+let requestOpening = ''
 let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
 let requestActing = false
 
@@ -2492,6 +2494,7 @@ export const register: Register = (on, options) => {
             shell,
             list: requestsCache?.repo === repo ? requestsCache.list : undefined,
             current: requestTyped,
+            opening: requestOpening,
             reviewed: Object.fromEntries(
               Object.entries(now.reviewed)
                 .filter(([key]) => key.startsWith(prefix))
@@ -2513,13 +2516,31 @@ export const register: Register = (on, options) => {
             // (its title, what it says of itself, where it stands): the
             // overview, from which its files and its changes are a key
             // away. Where the request could not be opened, the list stays.
-            open: typed =>
-              void startCompare($, repo, '', typed).then(async () => {
-                if ((await read($, view)).requestTyped === typed) {
-                  overviewCache = undefined
-                  await update($, view, (last): View => ({ ...last, screen: 'overview', overviewFrom: 'requests' }))
-                }
-              }),
+            //
+            // One is opened at a time: the list gives way to the shape of
+            // the page that is coming as soon as one is pressed, so there is
+            // nothing left to press twice, and a press that does arrive
+            // while one is being opened is dropped.
+            open: typed => {
+              if (requestOpening !== '') {
+                return
+              }
+
+              requestOpening = typed
+              set(nudged)
+              void startCompare($, repo, '', typed)
+                .then(async () => {
+                  if ((await read($, view)).requestTyped === typed) {
+                    overviewCache = undefined
+                    await update($, view, (last): View => ({ ...last, screen: 'overview', overviewFrom: 'requests' }))
+                  }
+                })
+                .finally(() => {
+                  requestOpening = ''
+
+                  return update($, view, nudged)
+                })
+            },
             help,
           },
         ),

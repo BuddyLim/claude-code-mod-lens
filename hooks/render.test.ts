@@ -502,7 +502,7 @@ test('the code view of a picture draws the picture, not its bytes', async ($, on
 test('the requests list gives a title and a description sample rows of their own, cut to a narrow pane', async ($, on) => {
   const title = 'A very long title that goes on well past what a narrow pane can show on one row'
 
-  host(on, {
+  const seen = host(on, {
     ...IN_REPO,
     'remote get-url origin': 'https://github.com/acme/app.git\n',
     'pulls?state=open&per_page': JSON.stringify([
@@ -535,5 +535,17 @@ test('the requests list gives a title and a description sample rows of their own
   // The title is its own button, cut to the pane with a mark that it goes on.
   expect(shown.length <= 36 && shown.endsWith('…') && title.startsWith(shown.slice(0, -1))).toBe(true)
   expect(await ui.find({ type: 'Text', text: /^Why · Because the old way was .*…$/ })).toBeDefined()
+
+  // Pressed twice in a hurry, a request is opened once: the second press
+  // finds the list gone, or is dropped.
+  const before = seen.asked.length
+
+  await Promise.all([
+    ui.press({ key: 'request:#7' }),
+    ui.press({ key: 'request-changes:#7' }).catch(() => undefined),
+  ])
+  await seen.advance(2000)
+  // (One opening asks git three times what "#7" is; two would ask six.)
+  expect(seen.asked.slice(before).filter(line => line.includes('--verify --quiet #7')).length).toBe(3)
   await ui.unmount()
 })
