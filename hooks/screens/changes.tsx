@@ -33,6 +33,7 @@ import {
   helpButton,
   notesOf,
   statusLine,
+  FILES_ICON,
 } from './frame'
 
 // The most lines of one comment shown.
@@ -729,7 +730,7 @@ export const changesScreen = (
         <Text bold>{model.title} </Text>
         {files !== undefined && (
           <Text dimColor>
-            {files.length} {files.length === 1 ? 'file' : 'files'} ·{' '}
+            {FILES_ICON} {files.length} ·{' '}
           </Text>
         )}
         {files !== undefined && <Text color="green">+{added} </Text>}

@@ -414,7 +414,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           plain
           dimColor
           key={`dir:${group}:${row.path}`}
-          label={`${row.name}/${isClosed ? `  ${row.size} files` : ''}${counts === '' ? '' : `  ${counts}`}`}
+          label={`${row.name}/${isClosed ? `  ${FILES_ICON} ${row.size}` : ''}${counts === '' ? '' : `  ${counts}`}`}
           onPress={() => actions.toggleFolder(held)}
         />
       </Box>
@@ -1017,7 +1017,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           <Text bold wrap="truncate-end">
             {group.title} ({group.files.length})
             {model.canMark && !group.isPickable
-              ? ` · ${group.files.filter(one => seen.has(one.path)).length} reviewed`
+              ? ` · ☑ ${group.files.filter(one => seen.has(one.path)).length}`
               : ''}
           </Text>,
           ...rows.slice(0, LIST_LIMIT),
@@ -1051,8 +1051,8 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           )}
           {/* Its title is said above, with what it is about, where it has
               a row to itself; this heading stays short enough for any pane. */}{' '}
-          ({asked.files.length} {asked.files.length === 1 ? 'file' : 'files'})
-          {model.canMark ? ` · ${asked.files.filter(one => seen.has(one.path)).length} reviewed` : ''}
+          {FILES_ICON} {asked.files.length}
+          {model.canMark ? ` · ☑ ${asked.files.filter(one => seen.has(one.path)).length}` : ''}
         </Text>
       )}
       {requestRows.slice(0, LIST_LIMIT)}
