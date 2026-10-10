@@ -206,13 +206,16 @@ export const frame = (
   padding: number,
   screen: RenderChildren,
   isOwn = false,
+  // The border's colour in place of the comparison's own: the comments',
+  // while a comment is being written.
+  color = COMPARE_COLOR,
 ) => {
   const framed = isComparing ? (
     <Box
       key="pin"
       flexDirection="column"
       borderStyle="round"
-      borderColor={COMPARE_COLOR}
+      borderColor={color}
       paddingX={padding}
     >
       {screen}

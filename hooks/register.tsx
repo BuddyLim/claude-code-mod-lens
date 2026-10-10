@@ -64,7 +64,7 @@ import { allFilesOf, historyOf, isQueued, noteTouched, scanRepo } from './scan'
 import type { FileWindow, Insight } from './screens/file'
 import { FILE_COMMENT, fileScreen } from './screens/file'
 import type { Shell } from './screens/frame'
-import { frame, kitOf } from './screens/frame'
+import { COMMENT_COLOR, frame, kitOf } from './screens/frame'
 import type { GraphWindow } from './screens/graph'
 import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
@@ -1860,12 +1860,12 @@ export const register: Register = (on, options) => {
     // A screen that draws its own window (`isOwn`) needs the pane held one
     // row down (see `frame`): asked for here, done by the timer once the
     // screen has been drawn.
-    const framed = (screen: RenderChildren, isOwn = false) => {
+    const framed = (screen: RenderChildren, isOwn = false, color?: string) => {
       if (isOwn) {
         wantPin = (e.props.scroll?.offset ?? 1) !== 1
       }
 
-      return frame(kit, isComparing, settings.sidePadding, screen, isOwn)
+      return frame(kit, isComparing, settings.sidePadding, screen, isOwn, color)
     }
 
     // What several screens' actions are made of.
@@ -2923,6 +2923,7 @@ export const register: Register = (on, options) => {
 
     fileWindow = drawn.window
 
-    return framed(drawn.tree, true)
+    // While commenting, the frame is in the comments' colour.
+    return framed(drawn.tree, true, isCommenting ? COMMENT_COLOR : undefined)
   })
 }

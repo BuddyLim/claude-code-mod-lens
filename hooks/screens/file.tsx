@@ -28,7 +28,6 @@ import {
   CARD_BACKGROUND,
   COLOR,
   COMMENT_COLOR,
-  COMMENT_ICON,
   RESOLVED_COLOR,
   COMMIT_BOX,
   talkColor as colorOfTalk,
@@ -300,8 +299,8 @@ export const fileScreen = (
     (symbol === undefined ? 0 : symbolLines.length + 5 + (symbol.signature === '' ? 0 : 1)) +
     (isDiff ? 1 : 0) +
     (isFinding ? 3 : 0) +
-    // The hint, and the row of the whole-file button under it.
-    (isCommenting ? 2 : 0) +
+    // The row of the whole-file button.
+    (isCommenting ? 1 : 0) +
     // The box a comment on the file as a whole is typed in.
     (isCommenting && commentLine === FILE_COMMENT ? 4 : 0) +
     // The main row of buttons, and the box of the rest when it is open.
@@ -654,7 +653,7 @@ export const fileScreen = (
               height={4}
               flexDirection="column"
               borderStyle="round"
-              borderColor={COMMIT_BOX}
+              borderColor={COMMENT_COLOR}
               paddingX={1}
               overflow="hidden"
             >
@@ -1284,20 +1283,8 @@ export const fileScreen = (
         )}
         {/* The comment row: a line number picks the line, and only Enter or
             the post button sends anything to the forge. */}
-        {isCommenting && Input !== undefined && (
-          <Box height={1} overflow="hidden">
-            <Text color={COMMENT_COLOR} wrap="truncate-end">
-              {COMMENT_ICON}{' '}
-              {commentLine === FILE_COMMENT
-                ? 'Writing on the file as a whole: Enter posts it.'
-                : commentLine === 0
-                  ? 'Commenting: press a line number to write on that line, or reply on a thread.'
-                  : model.commentFrom > 0 && commentLine > model.commentFrom
-                    ? `Writing on lines ${model.commentFrom}–${commentLine}: Enter posts it. Press another line number below ${model.commentFrom} to change where it ends.`
-                    : `Writing on line ${commentLine}: Enter posts it. Press a line number further down to cover several lines, one above to move.`}
-            </Text>
-          </Box>
-        )}
+        {/* Commenting is told by the frame's colour (see the hooks module),
+            not by a row of words here. */}
         {/* The file as a whole can be commented on too, on no line: its
             button has the row under the hint to itself. */}
         {isCommenting && Input !== undefined && (
@@ -1325,7 +1312,7 @@ export const fileScreen = (
             height={4}
             flexDirection="column"
             borderStyle="round"
-            borderColor={COMMIT_BOX}
+            borderColor={COMMENT_COLOR}
             paddingX={1}
             overflow="hidden"
           >
