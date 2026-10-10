@@ -119,8 +119,10 @@ export type ChangesActions = {
   setFind: (text: string) => void
   // One hunk of a file, by its place among the file's: staged, taken back
   // out of the index, or undone in the working tree. Undoing is asked about
-  // first (`ask`, with the hunk's name; '' takes the question away).
-  hunk: (path: string, index: number, how: 'stage' | 'unstage' | 'discard') => void
+  // first (`ask`, with the hunk's mark; '' takes the question away). `mark`
+  // is what the hunk was when its button was drawn: one that has changed
+  // since is left alone.
+  hunk: (path: string, index: number, how: 'stage' | 'unstage' | 'discard', mark: string) => void
   ask: (name: string) => void
   // Opens or closes the field for a commit's message, and commits what is
   // staged with one.
@@ -341,7 +343,10 @@ export const changesScreen = (
     for (const [index, hunk] of file.hunks.entries()) {
       const label = hunk.header === '' ? '' : ` ${hunk.header} `
       const name = `${path}:${index}`
-      const isStaged = model.canStage && model.staged.has(hunkMark(file, hunk))
+      // What the hunk is, whichever way the page is next read: what is asked
+      // about and acted on is this hunk, not whatever comes to hold its place.
+      const mark = hunkMark(file, hunk)
+      const isStaged = model.canStage && model.staged.has(mark)
 
       // The hunk's rule carries what can be done with it: more of the file
       // round it, and, where the change is the working tree's, staging it
@@ -355,12 +360,12 @@ export const changesScreen = (
           </Text>
         </Box>,
         <Box flexShrink={0} columnGap={2} marginLeft={1}>
-          {model.asking === name ? (
+          {model.asking === mark ? (
             [
               <Text color="red" bold>
                 undo this change in your file?
               </Text>,
-              <Button plain key={`hunk-yes:${name}`} label="yes" onPress={() => actions.hunk(path, index, 'discard')} />,
+              <Button plain key={`hunk-yes:${name}`} label="yes" onPress={() => actions.hunk(path, index, 'discard', mark)} />,
               <Button plain key={`hunk-no:${name}`} label="no" onPress={() => actions.ask('')} />,
             ]
           ) : (
@@ -368,13 +373,13 @@ export const changesScreen = (
               <Button plain key={`hunk-more:${name}`} label="⇕ more" onPress={() => actions.expand(path)} />,
               model.canStage && isStaged && <Text color="green">staged ✓</Text>,
               model.canStage && isStaged && (
-                <Button plain key={`hunk-unstage:${name}`} label="unstage" onPress={() => actions.hunk(path, index, 'unstage')} />
+                <Button plain key={`hunk-unstage:${name}`} label="unstage" onPress={() => actions.hunk(path, index, 'unstage', mark)} />
               ),
               model.canStage && !isStaged && (
-                <Button plain key={`hunk-stage:${name}`} label="stage" onPress={() => actions.hunk(path, index, 'stage')} />
+                <Button plain key={`hunk-stage:${name}`} label="stage" onPress={() => actions.hunk(path, index, 'stage', mark)} />
               ),
               model.canStage && !isStaged && (
-                <Button plain key={`hunk-discard:${name}`} label="discard" onPress={() => actions.ask(name)} />
+                <Button plain key={`hunk-discard:${name}`} label="discard" onPress={() => actions.ask(mark)} />
               ),
             ]
           )}

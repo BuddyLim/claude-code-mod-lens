@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { hunkPatch, parsePatch } from './patch'
+import { applyHunk, hunkPatch, isApplicable, parsePatch } from './patch'
 
 const DIFF = [
   'diff --git src/a.ts src/a.ts',
@@ -71,6 +71,23 @@ test('a diff is read into files, hunks and lines numbered on the new side', asyn
       ' return one',
       '',
     ].join('\n'),
+  )
+  // Only a whole hunk of a file with a plain name inside the folder is
+  // handed back to git: not one whose name climbs out, is quoted, or is git's
+  // own; not a link's; and not text that is no hunk.
+  const hunk = changed!.hunks[0]!
+
+  expect(isApplicable(changed!, hunk)).toBe(true)
+
+  for (const path of ['../outside.ts', '/etc/hosts', '.git/config', '"odd\\tname.ts"', 'a\nb.ts', '-flag']) {
+    expect(isApplicable({ ...changed!, path, oldPath: path, newPath: path }, hunk)).toBe(false)
+  }
+
+  expect(isApplicable({ ...changed!, isLink: true }, hunk)).toBe(false)
+  expect(isApplicable(changed!, { ...hunk, raw: [...hunk.raw, 'diff --git x y'] })).toBe(false)
+  expect(isApplicable(changed!, { ...hunk, raw: hunk.raw.slice(1) })).toBe(false)
+  expect(await applyHunk(async () => ({ exitCode: 0, stdout: '', stderr: '' }), '/repo', { ...changed!, path: '../x' }, hunk, 'discard')).toBe(
+    'that change is not one lens hands back to git: its file has a name it does not take, or the hunk is not whole',
   )
   // A renamed file is under its new name; a deleted one keeps its old.
   expect(renamed).toMatchObject({ path: 'new.md', added: 1, deleted: 1 })

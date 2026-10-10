@@ -57,7 +57,7 @@ const host = (
   on('ui.focus', async () => ({}))
   on('ui.panes', async () => answer([]))
   on('session.cwd', async () => answer(REPO))
-  on('fs.read', async () => answer(''))
+  on('fs.read', async () => answer(answers['fs.read'] ?? ''))
   on('process.run', async (_, e) => {
     const line = e.argv.join(' ')
     const hit = Object.keys(answers).find(word => line.includes(word))
@@ -349,5 +349,35 @@ test('the page of every change stages and undoes a hunk, finds text, and draws t
   await ui.press({ key: 'split' })
   await ui.drawn()
   expect(await ui.find({ type: 'Text', text: /^1 line$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the code view opens a changed file on its diff, with the rewritten words lit', async ($, on) => {
+  const clock = host(on, {
+    ...IN_REPO,
+    '--name-status': 'M\tsrc/a.ts\n',
+    '-U0': ['diff --git src/a.ts src/a.ts', '--- src/a.ts', '+++ src/a.ts', '@@ -2 +2 @@', '-const limit = 300', '+const limit = 3000', ''].join('\n'),
+    'fs.read': 'const first = 1\nconst limit = 3000\nconst last = 2\n',
+  })
+
+  await $.session.start({ cwd: REPO } as never)
+  await $.command.run(lens(REPO))
+  await clock.advance(2000)
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'layout' })
+  await ui.press({ key: 'file:src/a.ts' })
+  await ui.drawn()
+  expect(await ui.find({ key: 'ln:2' })).toBeDefined()
+  await ui.press({ key: 'diff' })
+  await ui.drawn()
+  // The removed line is drawn above the one that replaced it, and the word
+  // that differs is a piece of its own in each.
+  expect(await ui.find({ type: 'Text', text: '300' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '3000' })).toBeDefined()
+  // And cut down to the changes, the file still draws.
+  await ui.press({ key: 'diff' })
+  await ui.drawn()
   await ui.unmount()
 })

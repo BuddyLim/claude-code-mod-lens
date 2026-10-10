@@ -146,6 +146,39 @@ export const hunkPatch = (file: PatchFile, hunk: PatchHunk): string => {
 // is among the index's own is staged.
 export const hunkMark = (file: PatchFile, hunk: PatchHunk): string => `${file.path}\n${hunk.raw.slice(1).join('\n')}`
 
+// Whether a path is one a patch may name: of the folder, by a plain relative
+// path. git quotes a name with a control character, a quote or a backslash
+// in it (it then starts with `"`), and such a file is left to git itself.
+const isPlainPath = (path: string): boolean =>
+  path !== '' &&
+  path.length <= 1024 &&
+  !path.startsWith('/') &&
+  !path.startsWith('"') &&
+  !path.startsWith('-') &&
+  !path.split('/').some(part => part === '..' || part === '.git') &&
+  Array.from(path).every(char => {
+    const code = char.codePointAt(0) ?? 0
+
+    return code >= 32 && code !== 127 && char !== '"' && char !== '\\'
+  })
+
+// Whether a hunk can be handed back to git as a patch of its own: its file
+// by plain paths (or `/dev/null` on one side), and its text one `@@` line
+// followed by nothing but lines of a hunk.
+export const isApplicable = (file: PatchFile, hunk: PatchHunk): boolean => {
+  const sides = [file.oldPath || file.path, file.newPath || file.path]
+
+  return (
+    !file.isBinary &&
+    !file.isLink &&
+    isPlainPath(file.path) &&
+    sides.every(side => side === '/dev/null' || isPlainPath(side)) &&
+    !sides.every(side => side === '/dev/null') &&
+    /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(hunk.raw[0] ?? '') &&
+    hunk.raw.slice(1).every(line => /^[ +\-\\]/.test(line) && !line.includes('\n'))
+  )
+}
+
 // Applies one hunk to the index (`stage`), takes it back out of the index
 // (`unstage`), or undoes it in the working tree (`discard`). Answers '' when
 // git did it, else its reason. Run in the folder the diff was read in, whose
@@ -157,6 +190,13 @@ export const applyHunk = async (
   hunk: PatchHunk,
   how: 'stage' | 'unstage' | 'discard',
 ): Promise<string> => {
+  // The patch is built from what a diff said, so what goes into it is held
+  // to what a hunk of one file is before git is handed it: plain paths that
+  // stay inside the folder, and a body of nothing but a hunk's own lines.
+  if (!isApplicable(file, hunk)) {
+    return 'that change is not one lens hands back to git: its file has a name it does not take, or the hunk is not whole'
+  }
+
   const ran = await run(
     [
       'git',

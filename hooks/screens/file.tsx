@@ -24,6 +24,7 @@ import { draftId, isDraft } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
 import { clamp, findMatches, shortRef, wrapText } from '../text'
 import { iconOf } from '../tree'
+import { changedWords } from '../words'
 import type { Kit, Shell } from './frame'
 import {
   CARD_BACKGROUND,
@@ -54,6 +55,9 @@ const SYMBOL_LINES = 8
 // The narrowest the breadcrumb's popover is; it widens to its longest entry.
 const CRUMB_WIDTH = 46
 const ADDED_BACKGROUND = '#1f3a24'
+// The words that differ within a rewritten line, lit over the line's own.
+const ADDED_WORD = '#2f7d43'
+const REMOVED_WORD = '#9b2f2f'
 const FOUND_BACKGROUND = '#7a4a00'
 const REMOVED_BACKGROUND = '#4b1d1d'
 // The most removed lines drawn above one line; the window cannot scroll
@@ -430,6 +434,25 @@ export const fileScreen = (
   // One line of the file as elements, and how many rows they take.
   // `offset` is the row of the window the line starts on, where it is being
   // placed (not just measured): it decides which way the line's card opens.
+  // In the diff, the removed lines drawn above a changed line are taken as
+  // the lines it and those after it replaced, one for one in order: each
+  // such line, by its number, with the text it replaced.
+  const rewritten = new Map<number, string>()
+
+  if (isDiff && !isNewFile) {
+    for (const [before, gone] of Object.entries(removed)) {
+      for (const [at, text] of gone.entries()) {
+        const line = Number(before) + at
+
+        if (!changed.some(range => line >= range[0] && line <= range[1])) {
+          break
+        }
+
+        rewritten.set(line, text)
+      }
+    }
+  }
+
   const codeLine = (spans: readonly Span[], n: number, offset?: number) => {
     const here = byLine.get(n) ?? []
     const first = here[0]
@@ -455,6 +478,43 @@ export const fileScreen = (
       model.isHinting ? (info?.hints.get(n) ?? []) : [],
       info?.raw[n - 1],
     )
+    // In the diff, a line that replaced a removed one has the words that
+    // differ between the two lit: its parts are cut where those words start
+    // and end. A hint is the server's and takes up none of the file's text.
+    const lit = isAdded && rewritten.has(n) ? changedWords(rewritten.get(n) ?? '', texts[n - 1] ?? '').after : []
+    const litAt = new Set<number>()
+
+    if (lit.length > 0) {
+      const cut: typeof parts = []
+      let col = 0
+
+      for (const part of parts) {
+        if (part.isHint) {
+          cut.push(part)
+          continue
+        }
+
+        const edges = [
+          ...new Set(
+            [0, part.text.length, ...lit.flatMap(([from, to]) => [from - col, to - col])].filter(
+              edge => edge >= 0 && edge <= part.text.length,
+            ),
+          ),
+        ].sort((one, other) => one - other)
+
+        edges.slice(0, -1).forEach((edge, index) => {
+          if (lit.some(([from, to]) => col + edge >= from && col + edge < to)) {
+            litAt.add(cut.length)
+          }
+
+          cut.push({ ...part, text: part.text.slice(edge, edges[index + 1]) })
+        })
+        col += part.text.length
+      }
+
+      parts.splice(0, parts.length, ...cut)
+    }
+
     const length = parts.reduce((sum, part) => sum + part.text.length, 0)
     const isOpen = model.isExpanded || here.some(({ index }) => index === model.cursor)
     // The message rides on the code's own row when the code leaves it room.
@@ -507,8 +567,13 @@ export const fileScreen = (
     const code = (
       <Text backgroundColor={isAdded ? ADDED_BACKGROUND : undefined}>
         {parts.length === 0 ? ' ' : ''}
-        {parts.map(part =>
-          part.isHint ? (
+        {parts.map((part, at) =>
+          litAt.has(at) && !part.isFound && !part.isMarked ? (
+            // A word that differs from the line this one replaced.
+            <Text color={part.color === '' ? undefined : part.color} backgroundColor={ADDED_WORD} bold>
+              {part.text}
+            </Text>
+          ) : part.isHint ? (
             // An inlay hint is the server's aside, not the file's text.
             <Text color={part.color} italic dimColor>
               {part.text}
@@ -928,14 +993,35 @@ export const fileScreen = (
   // are drawn above the line they came before, as a diff interleaves them.
   const removedRows = (before: number) => {
     const gone = isDiff ? (removed[before] ?? []) : []
-    const rows = gone.slice(0, REMOVED_LINES).map(text => (
-      <Box>
-        <Text color="red">{`-${' '.repeat(gutter)} `}</Text>
-        <Text color="#f48771" backgroundColor={REMOVED_BACKGROUND} wrap="truncate-end">
-          {text === '' ? ' ' : text}
-        </Text>
-      </Box>
-    ))
+    const rows = gone.slice(0, REMOVED_LINES).map((text, at) => {
+      // Where the line was rewritten, not just removed, the words the new
+      // line does not have are lit.
+      const lit = rewritten.get(before + at) === text ? changedWords(text, texts[before + at - 1] ?? '').before : []
+      const edges = [...new Set([0, text.length, ...lit.flat()])]
+        .filter(edge => edge >= 0 && edge <= text.length)
+        .sort((one, other) => one - other)
+
+      return (
+        <Box>
+          <Text color="red">{`-${' '.repeat(gutter)} `}</Text>
+          <Text color="#f48771" backgroundColor={REMOVED_BACKGROUND} wrap="truncate-end">
+            {text === ''
+              ? ' '
+              : edges.slice(0, -1).map((edge, index) => {
+                  const piece = text.slice(edge, edges[index + 1])
+
+                  return lit.some(([from, to]) => edge >= from && edge < to) ? (
+                    <Text backgroundColor={REMOVED_WORD} bold>
+                      {piece}
+                    </Text>
+                  ) : (
+                    piece
+                  )
+                })}
+          </Text>
+        </Box>
+      )
+    })
 
     return gone.length > REMOVED_LINES
       ? [

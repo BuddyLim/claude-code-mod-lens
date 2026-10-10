@@ -2360,7 +2360,7 @@ export const register: Register = (on, options) => {
             // A hunk is handed back to git as git wrote it: into the index,
             // out of it, or undone in the file. Undoing is done only from
             // its own question's yes.
-            hunk: (path, index, how) => {
+            hunk: (path, index, how, mark) => {
               const file = page?.files.find(one => one.path === path)
               const hunk = file?.hunks[index]
 
@@ -2368,7 +2368,17 @@ export const register: Register = (on, options) => {
                 return
               }
 
-              if (how === 'discard' && hunkAsked !== `${path}:${index}`) {
+              // The hunk acted on is the one whose button was pressed: where
+              // the page has been read again since and that place holds
+              // another, nothing is done.
+              if (hunkMark(file, hunk) !== mark) {
+                $.ui.toast('That change has moved since it was drawn: look again, then press')
+
+                return
+              }
+
+              // And an undoing is of the very hunk that was asked about.
+              if (how === 'discard' && hunkAsked !== mark) {
                 return
               }
 
