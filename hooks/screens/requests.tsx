@@ -5,7 +5,7 @@
 import { ageOf } from '../git'
 import type { Listed } from '../review'
 import type { Kit, Shell } from './frame'
-import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksMark, checksWord, helpButton, stateOf, statusLine } from './frame'
+import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksMark, checksWord, helpButton, skeleton, stateOf, statusLine } from './frame'
 
 export type RequestsModel = {
   shell: Shell
@@ -117,7 +117,10 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
       <Text dimColor wrap="truncate-end">
         Press a request to see what it is, then its code: nothing is checked out.
       </Text>
-      {list === undefined && <Text dimColor>Asking the forge…</Text>}
+      {/* While the forge is asked, a few requests' worth of bars: a number
+          row, a title and a line of description each. */}
+      {list === undefined &&
+        skeleton(kit, [0, 0.35, 0.7, 0.55, 0, 0.3, 0.6, 0.45, 0, 0.4, 0.75, 0.5], shell.columns - 2, 'Asking the forge…')}
       {list !== undefined && list.length === 0 && (
         <Text dimColor>
           None are open, or the forge could not be asked (gh or glab installed and signed in?).

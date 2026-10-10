@@ -37,6 +37,7 @@ import {
   said,
   statusLine,
   FILES_ICON,
+  skeleton,
   checksMark,
   talkColor,
   talkIcon,
@@ -972,6 +973,11 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
               </Text>
             </Box>
           ))}
+          {/* While it is read, bars stand where its standing and its first
+              lines will be, so the rows under them do not jump when it comes. */}
+          {model.about.isLoading && (
+            <Box marginLeft={2}>{skeleton(kit, [0.45, 0.8, 0.65, 0.5], shell.columns - 4)}</Box>
+          )}
           <Box height={1} overflow="hidden" marginLeft={2}>
             <Text dimColor wrap="truncate-end">
               {model.about.isLoading

@@ -255,6 +255,33 @@ export const notesOf = ({ Text }: Kit, notes: readonly string[]) =>
     </Text>
   ))
 
+// Rows of grey bars where text is on its way: each as wide as its share of
+// the room (0 to 1; 0 is a clear row), so what is coming has a shape before
+// it has words. `label` says what is being waited for, on the first row,
+// for anyone who reads the pane rather than looks at it.
+export const SKELETON_COLOR = '#3a3a3a'
+export const skeleton = (
+  { Box, Text }: Kit,
+  shares: readonly number[],
+  columns: number,
+  label = '',
+) => (
+  <Box flexDirection="column">
+    {label !== '' && (
+      <Text dimColor wrap="truncate-end">
+        {label}
+      </Text>
+    )}
+    {shares.map(share => (
+      <Box height={1} overflow="hidden">
+        <Text color={SKELETON_COLOR}>
+          {share <= 0 ? ' ' : '█'.repeat(Math.max(1, Math.min(200, Math.round(Math.max(4, columns) * share))))}
+        </Text>
+      </Box>
+    ))}
+  </Box>
+)
+
 // Every screen has `h`: the keys that work on it, and what the marks mean.
 export const helpButton = ({ Button }: Kit, onPress: () => void) => (
   <Button plain key="help" hotkey="h" label="keys" onPress={onPress} />

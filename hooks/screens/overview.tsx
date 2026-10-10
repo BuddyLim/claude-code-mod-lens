@@ -12,7 +12,7 @@ import { cellsOf } from '../pictures'
 import type { Overview, RequestAct } from '../review'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMIT_BOX, FILES_ICON, LINK_ICON, helpButton, stateOf, statusLine } from './frame'
+import { COMMIT_BOX, FILES_ICON, LINK_ICON, helpButton, stateOf, skeleton, statusLine } from './frame'
 
 // The most of a description that is drawn, and the size of each piece of it:
 // an element's text is bounded, and so is the tree as a whole.
@@ -139,7 +139,16 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
         </Box>
       )}
       {model.isActing && <Text dimColor>Asking the forge to do it…</Text>}
-      {overview === undefined && model.refusal === '' && <Text dimColor>Asking the forge about {model.label}…</Text>}
+      {/* While the forge is asked, the page has its shape already: a title,
+          who and where, how it stands, and a description's paragraphs. */}
+      {overview === undefined &&
+        model.refusal === '' &&
+        skeleton(
+          kit,
+          [0.55, 0.8, 0.4, 0, 0.22, 0.5, 0.35, 0.45, 0, 0.18, 0.9, 0.95, 0.7, 0, 0.85, 0.6, 0.9, 0.3],
+          model.shell.columns - 2,
+          `Asking the forge about ${model.label}…`,
+        )}
       {model.refusal !== '' && (
         <Text color="yellow" wrap="truncate-end">
           ! {model.refusal}
