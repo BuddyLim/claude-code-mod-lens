@@ -57,6 +57,9 @@ export type Shell = {
   padding: number
   // The folder under review, by its own name.
   repoName: string
+  // Whether the folder is in no git repository: its files are listed as they
+  // stand, and nothing is compared.
+  isPlain: boolean
   // The repo the folder under review is a worktree of, by name; '' when it
   // is the repo's main checkout (or its only one).
   worktreeOf: string
@@ -91,14 +94,16 @@ export type Shell = {
 
 export const COLOR: Record<Severity, string> = { error: 'red', warning: 'yellow', info: 'cyan' }
 export const MARK: Record<Severity, string> = { error: '✖', warning: '⚠', info: 'ℹ' }
-// git's one-letter status as a word, in the colour VS Code gives it.
+// git's one-letter status as the letter a file's row shows (modified, added,
+// deleted, renamed, type changed, new: the help screen spells them out), in
+// the colour VS Code gives it.
 export const STATUS_WORD: Record<string, [word: string, color: string]> = {
-  M: ['modified', '#e2c08d'],
-  A: ['added', '#73c991'],
-  D: ['deleted', '#f14c4c'],
-  R: ['renamed', '#73c991'],
-  T: ['type changed', '#e2c08d'],
-  '?': ['new', '#73c991'],
+  M: ['m', '#e2c08d'],
+  A: ['a', '#73c991'],
+  D: ['d', '#f14c4c'],
+  R: ['r', '#73c991'],
+  T: ['t', '#e2c08d'],
+  '?': ['n', '#73c991'],
 }
 export const CARD_BACKGROUND = '#1f1f1f'
 // A worktree's mark and colour, on the graph's badges and the first line.
@@ -140,8 +145,9 @@ export const statusLine = ({ Text }: Kit, shell: Shell) => (
         {WORKTREE_ICON} worktree of {shell.worktreeOf} ·{' '}
       </Text>
     )}
-    {shell.repoName} · {shell.request === '' ? shell.side : shell.request}
-    {shell.request !== ''
+    {shell.repoName} ·{' '}
+    {shell.isPlain ? 'not a git repository' : shell.request === '' ? shell.side : shell.request}
+    {shell.request !== '' || shell.isPlain
       ? ''
       : shell.isComparing
         ? ` vs ${shell.against}`

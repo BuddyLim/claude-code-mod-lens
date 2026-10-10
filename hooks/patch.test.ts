@@ -1,0 +1,54 @@
+import { expect, test } from 'claude-code/testing'
+
+import { parsePatch } from './patch'
+
+const DIFF = [
+  'diff --git src/a.ts src/a.ts',
+  'index 1111111..2222222 100644',
+  '--- src/a.ts',
+  '+++ src/a.ts',
+  '@@ -10,4 +10,5 @@ export const a = () => {',
+  ' const one = 1',
+  '-const two = 3',
+  '+const two = 2',
+  '+const three = 3',
+  ' return one',
+  'diff --git old.md new.md',
+  'similarity index 90%',
+  'rename from old.md',
+  'rename to new.md',
+  '--- old.md',
+  '+++ new.md',
+  '@@ -1 +1 @@',
+  '-# Old',
+  '+# New',
+  'diff --git gone.txt gone.txt',
+  'deleted file mode 100644',
+  '--- gone.txt',
+  '+++ /dev/null',
+  '@@ -1,2 +0,0 @@',
+  '-one',
+  '-two',
+  'diff --git logo.png logo.png',
+  'Binary files logo.png and logo.png differ',
+  '',
+].join('\n')
+
+test('a diff is read into files, hunks and lines numbered on the new side', async () => {
+  const [changed, renamed, gone, binary] = parsePatch(DIFF)
+
+  expect(changed).toMatchObject({ path: 'src/a.ts', added: 2, deleted: 1, isBinary: false })
+  expect(changed?.hunks[0]?.header).toBe('export const a = () => {')
+  expect(changed?.hunks[0]?.lines).toEqual([
+    { kind: ' ', text: 'const one = 1', line: 10 },
+    { kind: '-', text: 'const two = 3', line: 0 },
+    { kind: '+', text: 'const two = 2', line: 11 },
+    { kind: '+', text: 'const three = 3', line: 12 },
+    { kind: ' ', text: 'return one', line: 13 },
+  ])
+  // A renamed file is under its new name; a deleted one keeps its old.
+  expect(renamed).toMatchObject({ path: 'new.md', added: 1, deleted: 1 })
+  expect(gone).toMatchObject({ path: 'gone.txt', added: 0, deleted: 2 })
+  expect(binary).toMatchObject({ path: 'logo.png', hunks: [], isBinary: true })
+  expect(parsePatch('')).toEqual([])
+})

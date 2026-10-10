@@ -373,6 +373,58 @@ export const findRepo = async (run: Run, folder: string): Promise<string> => {
   return resolved.exitCode !== 0 ? '' : resolved.stdout.trim()
 }
 
+// The real path of a folder a person named (`~` and all), whether or not git
+// knows it; '' when there is no such folder.
+export const findFolder = async (run: Run, folder: string): Promise<string> => {
+  const resolved = await run([
+    'sh',
+    '-c',
+    'case "$1" in "~"*) set -- "$HOME${1#\\~}";; esac; cd "$1" && pwd -P',
+    'sh',
+    folder,
+  ])
+
+  return resolved.exitCode !== 0 ? '' : resolved.stdout.trim()
+}
+
+// The most files listed of a folder git does not know.
+export const PLAIN_FILES = 5000
+
+// The folders left out of such a list: what tools make, never read by hand.
+const MADE_FOLDERS = [
+  '.git',
+  'node_modules',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.terraform',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.pytest_cache',
+  '.tox',
+  '.next',
+  '.cache',
+]
+
+const FIND_FILES = `find . \\( ${MADE_FOLDERS.map(name => `-name ${name}`).join(' -o ')} \\) -prune -o -type f ! -name .DS_Store -print`
+
+// Whether git's answer says the folder is in no repository, which is not the
+// same as git failing there.
+const isOutside = (ran: { exitCode: number; stderr: string }): boolean =>
+  ran.exitCode !== 0 && /not a git repository/i.test(ran.stderr)
+
+// The files of a folder git does not know, sorted, the folders tools make
+// left out; the first `PLAIN_FILES` of a larger folder.
+export const folderFiles = async (run: Run, folder: string): Promise<string[]> =>
+  lines(
+    (
+      await run(
+        ['sh', '-c', `${FIND_FILES} 2>/dev/null | head -n ${PLAIN_FILES} | sed 's|^\\./||' | sort`],
+        { cwd: folder, timeoutMs: 60_000 },
+      )
+    ).stdout,
+  )
+
 // The history as the graph draws it: the uncommitted row first (where there
 // is anything uncommitted: `hasPending`), then the commits, laid out in lanes. The uncommitted row's lane is drawn grey down
 // to the commit checked out, where the branch's own colour takes over: its
@@ -426,6 +478,9 @@ export type Changes = {
   stashes: Stash[]
   worktrees: Scan['worktrees']
   history: GraphRow[]
+  // Whether the folder is in no git repository: nothing is compared then,
+  // and its files are listed as they stand.
+  isPlain: boolean
   refusal?: string
 }
 
@@ -441,6 +496,23 @@ export const readChanges = async (
 ): Promise<Changes> => {
   const sides = target === '' ? [base] : [base, target]
   const git = (argv: string[]) => run(['git', ...argv], { cwd: repo, timeoutMs: 60_000 })
+
+  if (isOutside(await git(['rev-parse', '--git-dir']))) {
+    return {
+      files: [],
+      changed: {},
+      stats: {},
+      branches: [],
+      head: '',
+      headHash: '',
+      dirty: [],
+      stashes: [],
+      worktrees: [],
+      history: [],
+      isPlain: true,
+    }
+  }
+
   const [named, untracked, hunks, numstat, log, branches, head, headHash, dirty, stashes, trees, top, prefix] =
     await Promise.all([
       git(['diff', '--name-status', '--relative', ...sides]),
@@ -529,6 +601,7 @@ export const readChanges = async (
           return !nested.some(path => whole === path || whole.startsWith(`${path}/`))
         }),
     ),
+    isPlain: false,
     ...(named.exitCode !== 0 ? { refusal: tail(named.stderr) } : {}),
   }
 }
@@ -610,13 +683,14 @@ export const requestChanges = async (
 
 // A short mark of how the repo stands: what is checked out, what is edited,
 // staged or new, the stashes and the worktrees. It changes when any of them
-// does, whoever made the change; '' where git does not answer.
+// does, whoever made the change; '' where git does not answer. A folder git
+// does not know is marked by its files: their names, sizes and times.
 export const repoMark = async (run: Run, repo: string): Promise<string> => {
   const asked = await run(
     [
       'sh',
       '-c',
-      '{ git rev-parse HEAD; git symbolic-ref -q HEAD; git status --porcelain; git diff --numstat HEAD; git stash list; git worktree list; } 2>/dev/null | cksum',
+      `if git rev-parse --git-dir >/dev/null 2>&1; then { git rev-parse HEAD; git symbolic-ref -q HEAD; git status --porcelain; git diff --numstat HEAD; git stash list; git worktree list; } 2>/dev/null; else ${FIND_FILES} 2>/dev/null | head -n ${PLAIN_FILES} | tr '\\n' '\\0' | xargs -0 ls -ln 2>/dev/null; fi | cksum`,
     ],
     { cwd: repo, timeoutMs: 15_000 },
   )

@@ -75,7 +75,9 @@ export type LineRange = [from: number, to: number]
 export type View = {
   repo: string
   base: string
-  screen: 'tree' | 'file' | 'graph' | 'list'
+  // `requests` lists the repo's open pull or merge requests; `changes` is the
+  // whole comparison on one page.
+  screen: 'tree' | 'file' | 'graph' | 'list' | 'requests' | 'changes'
   file: string
   // The first line the file screen's window shows, 1-based.
   top: number
@@ -89,12 +91,21 @@ export type View = {
   // Whether the file screen interleaves what the base had (a diff) or shows
   // the file as it is.
   isDiff: boolean
+  // Whether the diff is cut down to what differs: each change and each
+  // commented line, with a few lines around it.
+  isChanges: boolean
   // The commit the file screen shows the file at; '' for the working tree.
   commit: string
   // The uncommitted and untracked files ticked for a commit or a stash.
   checked: string[]
   // The screen a commit's or stash's file was opened from, where back returns.
-  origin: 'tree' | 'graph'
+  origin: 'tree' | 'graph' | 'changes'
+  // The files of each request ticked as reviewed, by the folder under review
+  // and what the request is typed as ("/repo\n#12"): kept between sessions.
+  reviewed: Record<string, string[]>
+  // How many rows of code the page of every change draws so far: it grows
+  // as the person scrolls toward its end.
+  pageRows: number
   // The first line the picked commit's body box shows, 0-based.
   bodyTop: number
   // The first line the graph screen's window shows, 0-based.
@@ -221,6 +232,9 @@ export type Scan = {
   // batch at a time, the file the person has open first.
   checked: number
   toCheck: number
+  // Whether the folder is in no git repository: its files are listed as they
+  // stand, and nothing is compared.
+  isPlain: boolean
 }
 
 export type LineStat = [added: number, deleted: number]

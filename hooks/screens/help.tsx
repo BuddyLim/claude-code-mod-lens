@@ -18,8 +18,12 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['c', 'list the threads of the request under review'],
         ['v', 'submit a review of it: approve, request changes or comment'],
         ['x', 'stop comparing (while a comparison is on)'],
+        ['p', 'list the open pull or merge requests, yours first, to review one'],
+        ['d', 'every change on one page, to scroll through'],
+        ['☐ on a request', 'tick a file as reviewed; it stays ticked between sessions'],
         ['press a file', 'open it'],
         ['press a folder', 'open or close it'],
+        ['m a d r t n', 'beside a file: modified, added, deleted, renamed, type changed, new (untracked)'],
       ],
     ],
     [
@@ -56,6 +60,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
       'Views',
       [
         ['v', 'diff view: − removed lines in red, + added lines in green'],
+        ['v again', 'changes only: each change and comment, with three lines around it'],
         ['m', 'markdown: rendered or source'],
         ['l', 'blame: who last changed each line; press one to open its commit'],
         ['e', 'expand or collapse every diagnostic and comment thread'],
@@ -122,6 +127,39 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['press a row', 'open that file at that line'],
         ['n', 'put the list into the prompt (for uses of a name)'],
         ['b', 'back to the file'],
+      ],
+    ],
+  ],
+  requests: [
+    [
+      'Pull and merge requests',
+      [
+        ['press a number', 'review that request: its head against where it forked; nothing is checked out'],
+        ['Yours / Others', 'the requests you opened come first'],
+        ['n reviewed', 'how many of its files you have ticked'],
+        ['r', 'ask the forge again'],
+        ['b', 'back to the file tree'],
+      ],
+    ],
+  ],
+  changes: [
+    [
+      'All changes',
+      [
+        ['scroll', 'every changed file on one page, each change with three lines round it'],
+        ['☐', 'tick a file as reviewed (a request under review): it folds, and stays ticked'],
+        ['press a file', 'open it in the code view'],
+        ['press a line', 'open the file at a comment outside the changes shown'],
+        ['m', 'load the next files now; they also load as you scroll toward the end'],
+        ['r', 'read the changes again'],
+        ['b', 'back to the file tree'],
+      ],
+    ],
+    [
+      'Marks',
+      [
+        ['+ / −', 'a line added, a line removed'],
+        ['┃', 'a review comment or a ledger finding, under the line it is on'],
       ],
     ],
   ],

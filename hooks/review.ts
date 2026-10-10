@@ -927,33 +927,74 @@ export const requestOfBranch = async (
 // The repo's open pull or merge requests, newest first, each by what a person
 // would type to open it ("#12", "!34") and its title. None where there is no
 // forge to ask, or it does not answer: a list to offer, never an error.
-export const listRequests = async (run: Run): Promise<{ typed: string; title: string }[]> => {
+//
+// Each also says who opened it, whether that is the person signed in to the
+// forge's CLI (`isMine`), whether it is a draft, the branch it is from, and
+// when it last changed (an ISO time, '' where the forge did not say).
+export type Listed = {
+  typed: string
+  title: string
+  author: string
+  isMine: boolean
+  isDraft: boolean
+  branch: string
+  when: string
+}
+
+export const listRequests = async (run: Run): Promise<Listed[]> => {
   const place = await locate(run, '1')
 
   if ('error' in place) {
     return []
   }
 
-  const listed = await call(
-    run,
-    place.forge === 'gitlab'
-      ? glab(place, `projects/${encodeURIComponent(place.repo)}/merge_requests?state=opened&per_page=30`)
-      : gh(place, `repos/${place.repo}/pulls?state=open&per_page=30`),
-    20_000,
-  )
+  const isGitlab = place.forge === 'gitlab'
+  const [listed, signedIn] = await Promise.all([
+    call(
+      run,
+      isGitlab
+        ? glab(place, `projects/${encodeURIComponent(place.repo)}/merge_requests?state=opened&per_page=50`)
+        : gh(place, `repos/${place.repo}/pulls?state=open&per_page=50`),
+      20_000,
+    ),
+    // Who is asking, to tell their own requests from the rest.
+    call(run, isGitlab ? glab(place, 'user') : gh(place, 'user'), 20_000),
+  ])
 
   if (listed.exitCode !== 0) {
     return []
   }
 
+  let me = ''
+
+  try {
+    const user = record(JSON.parse(signedIn.stdout))
+
+    me = signedIn.exitCode === 0 ? text(isGitlab ? user.username : user.login) : ''
+  } catch {
+    me = ''
+  }
+
   try {
     return values(listed.stdout).flatMap(raw => {
       const one = record(raw)
-      const number = whole(place.forge === 'gitlab' ? one.iid : one.number)
+      const number = whole(isGitlab ? one.iid : one.number)
+      const by = record(isGitlab ? one.author : one.user)
+      const author = text(isGitlab ? by.username : by.login)
 
       return number === 0
         ? []
-        : [{ typed: `${place.forge === 'gitlab' ? '!' : '#'}${number}`, title: text(one.title) }]
+        : [
+            {
+              typed: `${isGitlab ? '!' : '#'}${number}`,
+              title: text(one.title),
+              author,
+              isMine: me !== '' && author === me,
+              isDraft: (isGitlab ? (one.draft ?? one.work_in_progress) : one.draft) === true,
+              branch: text(isGitlab ? one.source_branch : record(one.head).ref),
+              when: text(one.updated_at),
+            },
+          ]
     })
   } catch {
     return []

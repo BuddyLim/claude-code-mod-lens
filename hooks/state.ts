@@ -47,9 +47,12 @@ export const NO_VIEW: View = {
   toggled: [],
   selected: '',
   isDiff: false,
+  isChanges: false,
   commit: '',
   checked: [],
   origin: 'graph',
+  reviewed: {},
+  pageRows: 400,
   bodyTop: 0,
   graphTop: 0,
   target: '',
@@ -107,6 +110,7 @@ export const NO_SCAN: Scan = {
   faded: [],
   checked: 0,
   toCheck: 0,
+  isPlain: false,
 }
 export const NO_SOURCE: Source = { path: '', lineCount: 0, note: '', stamp: 0 }
 export const NO_LISTING: Listing = { title: '', rows: [], prompt: '' }
@@ -179,7 +183,8 @@ export const comparisonOf = (now: View, found: Scan, history: readonly GraphRow[
 export const changedDiags = (found: Scan): Diag[] => {
   const changed = new Set(found.files.map(one => one.path))
 
-  return found.diags.filter(diag => changed.has(diag.path))
+  // Where nothing is compared, every problem found counts.
+  return found.isPlain ? found.diags : found.diags.filter(diag => changed.has(diag.path))
 }
 
 // The changed files in one row of numbers; `inChanged` is `changedDiags`.

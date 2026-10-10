@@ -11,6 +11,7 @@ import type { RenderChildren } from 'claude-code'
 
 import type { Crumb, Diag, LineRange, Lookup, Span } from '../../types'
 import { countLabel, diagsByLine } from '../diags'
+import { changeLines, stepShown } from '../changes'
 import type { Blamed } from '../git'
 import { kindColor } from '../lists'
 import type { InlayHint, OutlineItem, SemanticToken } from '../lsp-types'
@@ -98,6 +99,9 @@ export type FileModel = {
   cursor: number
   isExpanded: boolean
   isDiff: boolean
+  // Whether the diff is cut down to what differs: each change and each
+  // commented line, with a few lines around it.
+  isChanges: boolean
   isMore: boolean
   isHinting: boolean
   // The search: whether its field shows, what is typed, the match the
@@ -204,8 +208,12 @@ export type FileActions = {
 // go (where the file's last line sits on the bottom row), and where the
 // breadcrumb's open list sits among the pane's rows (which rows are over it,
 // where it is scrolled to, and how far it can go), if one is open.
+//
+// `shown` is the lines the changes-only view draws, in order, which the
+// window then steps among; undefined while every line shows.
 export type FileWindow = {
   maxTop: number
+  shown: readonly number[] | undefined
   crumbBox: { from: number; to: number; top: number; max: number } | undefined
 }
 
@@ -288,6 +296,29 @@ export const fileScreen = (
   let maxTop = Math.max(1, lineCount)
 
   const moveTo = (line: number) => actions.scrollTo(clamp(line, 1, maxTop))
+  // The changes-only view: the lines that show, or undefined where every
+  // line does (a new file is all change, and a file with nothing changed or
+  // said has nothing to cut down to).
+  const cut =
+    isDiff && model.isChanges && !isNewFile
+      ? changeLines(
+          lineCount,
+          changed,
+          Object.keys(removed).map(Number),
+          model.talk.map(one => one.line),
+        )
+      : []
+  const shown = cut.length === 0 ? undefined : cut
+  const firstLine = shown?.[0] ?? 1
+  const lastLine = shown?.[shown.length - 1] ?? lineCount
+  // The line drawn after one and before it, among those that show.
+  const nextLine = (n: number): number =>
+    shown === undefined ? n + 1 : (shown.find(line => line > n) ?? lineCount + 1)
+  const prevLine = (n: number): number =>
+    shown === undefined ? n - 1 : ([...shown].reverse().find(line => line < n) ?? 0)
+  // Moves the window by rows' worth of the lines that show.
+  const moveBy = (by: number) =>
+    moveTo(shown === undefined ? top + by : stepShown(shown, top, by))
   // The next commented line below the window's first lines, or the one
   // above; from the last it goes round to the first.
   const stepTalk = (way: 1 | -1) => {
@@ -718,29 +749,55 @@ export const fileScreen = (
   // The window stops once the file's last line reaches its bottom row:
   // walking up from the end, `maxTop` is the first line of the last full
   // window, counting the rows each line and its diagnostics really take.
-  maxTop = Math.max(1, lineCount)
+  maxTop = Math.max(1, lastLine)
+
+  // In the changes-only view, a row stands for the unchanged lines left out
+  // above a line (`before` is that line, or one past the file's last).
+  const gapRows = (before: number) => {
+    const hidden = shown === undefined ? 0 : Math.min(before, lineCount + 1) - prevLine(before) - 1
+
+    // A rule across the code's width, so one change is set apart from the
+    // next: it says how many lines it stands for.
+    const label = ` ${hidden} unchanged ${hidden === 1 ? 'line' : 'lines'} `
+    const lead = '─'.repeat(gutter + 2)
+    const width = codeColumns + blameWidth
+
+    return hidden <= 0
+      ? []
+      : [
+          <Text color={COMMIT_BOX} dimColor wrap="truncate-end">
+            {lead}
+            {label}
+            {'─'.repeat(Math.max(0, width - lead.length - label.length))}
+          </Text>,
+        ]
+  }
+  // What follows the last line that shows: the unchanged lines left out
+  // after it, one row.
+  const tailGap = shown === undefined || lastLine >= lineCount ? [] : gapRows(lineCount + 1)
 
   if (lines !== undefined) {
     const rowsOf = (n: number): number =>
-      codeLine(lines[n - 1] ?? [], n).rows + removedRows(n).length
+      codeLine(lines[n - 1] ?? [], n).rows + removedRows(n).length + gapRows(n).length
     // The last line always shows, with what was removed after it.
-    let filled = removedRows(lineCount + 1).length + rowsOf(maxTop)
+    let filled = removedRows(lineCount + 1).length + tailGap.length + rowsOf(maxTop)
 
-    while (maxTop > 1 && filled + rowsOf(maxTop - 1) <= room) {
-      filled += rowsOf(maxTop - 1)
-      maxTop -= 1
+    while (maxTop > firstLine && filled + rowsOf(prevLine(maxTop)) <= room) {
+      maxTop = prevLine(maxTop)
+      filled += rowsOf(maxTop)
     }
   }
 
-  top = Math.min(top, maxTop)
+  // A top on a line left out moves to the next that shows.
+  top = Math.min(shown === undefined ? top : stepShown(shown, top, 0), maxTop)
   last = top - 1
 
-  while (lines !== undefined && last < lineCount && used < room) {
-    last += 1
-    const gone = removedRows(last)
-    const drawn = codeLine(lines[last - 1] ?? [], last, used + gone.length)
-    used += gone.length + drawn.rows
-    windowRows.push(...gone, ...drawn.elements)
+  for (let at = top; lines !== undefined && at <= lastLine && used < room; at = nextLine(at)) {
+    const above = [...gapRows(at), ...removedRows(at)]
+    const drawn = codeLine(lines[at - 1] ?? [], at, used + above.length)
+    used += above.length + drawn.rows
+    windowRows.push(...above, ...drawn.elements)
+    last = at
 
     if (drawn.overlay !== undefined) {
       overlays.push(drawn.overlay)
@@ -750,6 +807,10 @@ export const fileScreen = (
   // Lines removed from the end of the file come before a line it no longer has.
   if (lines !== undefined && last === lineCount) {
     windowRows.push(...removedRows(lineCount + 1))
+  }
+
+  if (lines !== undefined && last === lastLine) {
+    windowRows.push(...tailGap)
   }
 
   // The next place the file differs from the base, below the window's top.
@@ -920,6 +981,7 @@ export const fileScreen = (
   return {
     window: {
       maxTop,
+      shown,
       // Where the popover sits among the pane's rows: under the status and
       // the breadcrumb, inside the comparison border if any.
       crumbBox:
@@ -952,20 +1014,22 @@ export const fileScreen = (
             key="down"
             hotkey="d"
             label="down"
-            onPress={() => moveTo(top + Math.floor(room / 2))}
+            onPress={() => moveBy(Math.floor(room / 2))}
           />
           <Button
             plain
             key="up"
             hotkey="u"
             label="up"
-            onPress={() => moveTo(top - Math.floor(room / 2))}
+            onPress={() => moveBy(-Math.floor(room / 2))}
           />
           <Button
             plain
             key="diff"
             hotkey="v"
-            label={isDiff ? 'file view' : 'diff view'}
+            // The key goes round: the file, its diff, the diff cut down to
+            // what differs.
+            label={!isDiff ? 'diff view' : model.isChanges ? 'file view' : 'changes only'}
             onPress={actions.toggleDiff}
           />
           <Button plain key="find" hotkey="f" label="find" onPress={actions.find} />
@@ -1081,7 +1145,13 @@ export const fileScreen = (
           {model.isChecked ? countLabel(diags) || '✓' : ''}
           {lineCount > 0 ? `  ${top}–${last} of ${lineCount}` : ''}
           {commit === '' ? '' : `  @ ${commit}`}
-          {isDiff ? '  · diff' : ''}
+          {!isDiff
+            ? ''
+            : shown !== undefined
+              ? '  · changes only'
+              : model.isChanges && !isNewFile
+                ? '  · diff (nothing differs here)'
+                : '  · diff'}
         </Text>
         {/* The looked-up name: what it is, and a way to where it is defined. */}
         {symbol !== undefined && (

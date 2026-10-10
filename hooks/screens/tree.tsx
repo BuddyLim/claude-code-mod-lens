@@ -7,8 +7,9 @@ import type { ChangedFile, Diag, LineStat, Picked } from '../../types'
 import { isAwaited, isCheckable } from '../check'
 import { countLabel, diagsOf } from '../diags'
 import type { Stash } from '../git'
+import { isFinding } from '../ledger'
 import type { Comment } from '../review'
-import { clamp, wrapText } from '../text'
+import { clamp, fitStash, wrapText } from '../text'
 import type { TreeRow } from '../tree'
 import { buildTree, iconOf, visibleTree } from '../tree'
 import type { Kit, Shell } from './frame'
@@ -67,6 +68,13 @@ export type TreeModel = {
   isDiscarding: boolean
   // Whether the box of less-used keys is open.
   isMore: boolean
+  // The files of the request under review ticked as reviewed; `canMark` is
+  // whether a request is under review, so there is something to tick.
+  canMark: boolean
+  reviewed: readonly string[]
+  // Whether the folder is in no git repository: there is no change to list,
+  // and the tree of every file is all there is.
+  isPlain: boolean
   // The tree of every tracked file: whether it shows, and the files.
   isBrowsing: boolean
   allFiles: readonly string[]
@@ -149,6 +157,11 @@ export type TreeActions = {
   scrollBody: (line: number) => void
   applyStash: (ref: string) => void
   popStash: (ref: string) => void
+  // Opens the list of open requests, and the page of every change.
+  openRequests: () => void
+  openChanges: () => void
+  // Ticks or unticks a file of the request under review as reviewed.
+  toggleReviewed: (path: string) => void
 }
 
 export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => {
@@ -164,7 +177,14 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
 
   // The working tree against the base in one row: lines added and deleted
   // across the changed files, and the errors and warnings found in them.
-  const summary = (
+  const summary = model.isPlain ? (
+    <Box>
+      <Text bold>Folder </Text>
+      <Text dimColor>not a git repository, so nothing is compared · </Text>
+      <Text color="red">{totals.errors}✖ </Text>
+      <Text color="yellow">{totals.others}⚠</Text>
+    </Box>
+  ) : (
     <Box>
       <Text bold>{shell.isComparing ? `Against ${shell.against} ` : 'Uncommitted '}</Text>
       <Text color="green">+{totals.added} </Text>
@@ -179,7 +199,8 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
   // The files ticked for a commit or a stash. A tick box ticks or unticks
   // all its paths together: one file's, or every file under a folder.
   const checked = new Set(model.checked)
-  const tick = (key: string, paths: readonly string[]) => (
+  const seen = new Set(model.reviewed)
+  const tick =(key: string, paths: readonly string[]) => (
     <Button
       plain
       key={key}
@@ -214,10 +235,23 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
     const icon = iconOf(path)
     // What happened to the file, in a word and git's usual colour for it.
     const change = STATUS_WORD[mark]
+    // A file of the request under review has a box of its own kind: ticked
+    // once it has been read. One being committed keeps the commit's box.
+    const isMarkable =
+      model.canMark && !isPickable && scope !== 'all:' && (scope === REQUEST_SPACE || changedPaths.has(path))
     const lead = [
       <Text>{'  '.repeat(depth)}</Text>,
       isPickable && tick(`check:${path}`, [path]),
       isPickable && <Text> </Text>,
+      isMarkable && (
+        <Button
+          plain
+          key={`seen:${scope}${path}`}
+          label={seen.has(path) ? '☑' : '☐'}
+          onPress={() => actions.toggleReviewed(path)}
+        />
+      ),
+      isMarkable && <Text> </Text>,
     ]
 
     if (mark === 'D') {
@@ -227,7 +261,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           <Text dimColor>
             {icon.glyph} {name}
           </Text>
-          <Text color="#f14c4c">  deleted</Text>
+          <Text color="#f14c4c">  d</Text>
         </Box>
       )
     }
@@ -572,25 +606,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
       </Box>
     )
   // A stash's row, and under it what the stash holds when it is opened.
-  const stashRow = (one: Stash) => [
-    <Box>
-      <Text backgroundColor={STASH_COLOR} color="#000000">
-        {' '}
-        {STASH_ICON}{' '}
-      </Text>
-      <Text> </Text>
-      <Button plain key={`stash:${one.ref}`} label={one.ref} onPress={() => actions.openStash(one.ref)} />
-      <Box flexGrow={1} flexShrink={1}>
-        <Text dimColor wrap="truncate-end">
-          {' '}
-          {one.subject}
-        </Text>
-      </Box>
-      <Box flexShrink={0} columnGap={1} marginLeft={1}>
-        <Text dimColor>
-          {one.base ? `on ${one.base} · ` : ''}
-          {(one.when ?? '').replace(' ago', '')}
-        </Text>
+  // The row is fitted to the pane's width here and never left to wrap: a
+  // narrow pane would otherwise break the mark's badge across lines.
+  const stashRow = (one: Stash) => {
+    const fit = fitStash(
+      { ref: one.ref, subject: one.subject, base: one.base ?? '', when: one.when ?? '' },
+      shell.columns,
+    )
+    const buttons = (
+      <Box flexShrink={0} columnGap={1} marginLeft={fit.isStacked ? 5 : 1}>
         <Button
           plain
           key={`apply:${one.ref}`}
@@ -599,9 +623,46 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         />
         <Button plain key={`pop:${one.ref}`} label="pop" onPress={() => actions.popStash(one.ref)} />
       </Box>
-    </Box>,
-    filesOf(one.ref, 2),
-  ]
+    )
+
+    return [
+      <Box height={1} overflow="hidden">
+        <Box flexShrink={0}>
+          <Text backgroundColor={STASH_COLOR} color="#000000">
+            {' '}
+            {STASH_ICON}{' '}
+          </Text>
+          <Text> </Text>
+          <Button
+            plain
+            key={`stash:${one.ref}`}
+            label={one.ref}
+            onPress={() => actions.openStash(one.ref)}
+          />
+        </Box>
+        <Box flexGrow={1} flexShrink={1}>
+          {fit.subject !== '' && (
+            <Text dimColor wrap="truncate-end">
+              {' '}
+              {fit.subject}
+            </Text>
+          )}
+        </Box>
+        {fit.trail !== '' && (
+          <Box flexShrink={0} marginLeft={1}>
+            <Text dimColor>{fit.trail}</Text>
+          </Box>
+        )}
+        {!fit.isStacked && buttons}
+      </Box>,
+      fit.isStacked && (
+        <Box height={1} overflow="hidden">
+          {buttons}
+        </Box>
+      ),
+      filesOf(one.ref, 2),
+    ]
+  }
 
   return (
     <Box flexDirection="column">
@@ -615,7 +676,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           label={layout === 'tree' ? 'list view' : 'tree view'}
           onPress={actions.switchLayout}
         />
-        <Button plain key="graph" hotkey="g" label="git graph" onPress={actions.openGraph} />
+        {!model.isPlain && (
+          <Button plain key="graph" hotkey="g" label="git graph" onPress={actions.openGraph} />
+        )}
+        {!model.isPlain && (
+          <Button plain key="changes" hotkey="d" label="all changes" onPress={actions.openChanges} />
+        )}
+        {!model.isPlain && (
+          <Button plain key="requests" hotkey="p" label="requests" onPress={actions.openRequests} />
+        )}
         {shell.reviewing !== '' && (
           <Button
             plain
@@ -664,13 +733,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
               label="check whole project"
               onPress={actions.checkProject}
             />
-            <Button
-              plain
-              key="browse"
-              hotkey="w"
-              label={isBrowsing ? 'changed files only' : 'all files'}
-              onPress={actions.toggleAllFiles}
-            />
+            {!model.isPlain && (
+              <Button
+                plain
+                key="browse"
+                hotkey="w"
+                label={isBrowsing ? 'changed files only' : 'all files'}
+                onPress={actions.toggleAllFiles}
+              />
+            )}
             <Button
               plain
               key="send-issues"
@@ -725,7 +796,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
       )}
       {summary}
       {gitBar}
-      {files.length === 0 && model.isScanned && (
+      {files.length === 0 && model.isScanned && !model.isPlain && (
         <Text dimColor>
           {shell.isComparing ? `Nothing differs from ${shell.against}.` : 'Nothing is modified.'}
         </Text>
@@ -734,8 +805,13 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         const rows = rowsFor(group, at)
 
         return [
+          // A clear row sets each group apart from the one above it.
+          at > 0 && <Text> </Text>,
           <Text bold>
             {group.title} ({group.files.length})
+            {model.canMark && !group.isPickable
+              ? ` · ${group.files.filter(one => seen.has(one.path)).length} reviewed`
+              : ''}
           </Text>,
           ...rows.slice(0, LIST_LIMIT),
           rows.length > LIST_LIMIT && (
@@ -767,12 +843,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             asked.typed
           )}
           {asked.title === '' ? '' : `: ${asked.title}`} ({asked.files.length})
+          {model.canMark ? ` · ${asked.files.filter(one => seen.has(one.path)).length} reviewed` : ''}
         </Text>
       )}
       {requestRows.slice(0, LIST_LIMIT)}
       {/* What was said on the request as a whole, and the comments that
           no longer sit on a line (the code under them has changed). Under
           the request's own heading it is part of that section. */}
+      {/* Standing alone, it has a clear row above it and below it. */}
+      {comments.some(one => one.line === 0) && !isInSection && <Text> </Text>}
       {comments.some(one => one.line === 0) && (
         <Text bold={!isInSection} dimColor={isInSection}>
           {isInSection ? '  ' : ''}Conversation ({comments.filter(one => one.line === 0).length})
@@ -781,23 +860,57 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
       {comments
         .filter(one => one.line === 0)
         .slice(-CONVERSATION_ROWS)
-        .map(one => (
-          <Text color={one.path === '' ? undefined : COMMENT_COLOR} wrap="truncate-end">
-            {isInSection ? '  ' : ''}
-            {COMMENT_ICON} {one.path === '' ? '' : `${one.path} (outdated) · `}
-            {said(one)}
-          </Text>
-        ))}
-      {others.length > 0 && <Text bold>Other files with issues ({others.length})</Text>}
+        .map(one =>
+          one.path === '' ? (
+            <Text wrap="truncate-end">
+              {isInSection ? '  ' : ''}
+              {COMMENT_ICON} {said(one)}
+            </Text>
+          ) : (
+            // A comment on a file names it, and the name opens the file.
+            <Box height={1} overflow="hidden">
+              <Box flexShrink={0}>
+                <Text color={COMMENT_COLOR}>
+                  {isInSection ? '  ' : ''}
+                  {COMMENT_ICON}{' '}
+                </Text>
+                <Button
+                  plain
+                  key={`talk-file:${one.id}`}
+                  label={one.path}
+                  onPress={() => actions.open(one.path)}
+                />
+              </Box>
+              {/* A ledger finding with no line is on its file as a whole; a
+                  request's comment with none has lost its line to an edit. */}
+              <Text color={COMMENT_COLOR} wrap="truncate-end">
+                {' '}
+                ({isFinding(one) ? 'whole file' : 'outdated'}) · {said(one)}
+              </Text>
+            </Box>
+          ),
+        )}
+      {comments.some(one => one.line === 0) && <Text> </Text>}
+      {others.length > 0 && (
+        <Text bold>
+          {model.isPlain ? 'Files' : 'Other files'} with issues ({others.length})
+        </Text>
+      )}
       {others.slice(0, OTHER_FILES).map(path => fileRow(path, ' '))}
       {isBrowsing && <Text bold>All files ({everything.length})</Text>}
-      {isBrowsing && everything.length === 0 && <Text dimColor>Reading the file list…</Text>}
+      {isBrowsing && everything.length === 0 && (
+        <Text dimColor>
+          {model.isPlain && model.isScanned ? 'This folder holds no files.' : 'Reading the file list…'}
+        </Text>
+      )}
       {everyRow.slice(0, LIST_LIMIT)}
       {everyRow.length > LIST_LIMIT && (
         <Text dimColor>… {everyRow.length - LIST_LIMIT} more rows; open a folder to narrow</Text>
       )}
       {/* What was stashed earlier: apply keeps the stash, pop removes it
           once its changes are back. */}
+      {/* A clear row sets the stashes apart from the files above them. */}
+      {stashes.length > 0 && <Text> </Text>}
       {stashes.length > 0 && <Text bold>Stashes ({stashes.length})</Text>}
       {stashes.flatMap(one => stashRow(one))}
     </Box>

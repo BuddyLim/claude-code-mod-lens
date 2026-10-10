@@ -19,6 +19,10 @@ import type { Checkers } from './settings'
 // starting the checkers more often.
 export const BATCH = 100
 
+// The most files checked of a folder git does not know, where every file is
+// listed and none is singled out by a change.
+export const PLAIN_CHECKED = 1000
+
 // How many issues an automatic note tells Claude.
 const ISSUES_TOLD = 15
 
@@ -148,7 +152,24 @@ export const scanRepo = async (
 
   notes.push(...uncheckedNotes(wanted))
 
-  if (isBrowsing) {
+  // A folder git does not know has no change to list: every file of it is
+  // listed instead, and those a checker reads are checked.
+  if (changes.isPlain) {
+    allFiles = { repo, paths: await git.folderFiles(ports.run, repo) }
+
+    const code = allFiles.paths.filter(isCheckable)
+
+    wanted.push(...code.slice(0, PLAIN_CHECKED))
+    notes.push(...uncheckedNotes(allFiles.paths))
+
+    if (allFiles.paths.length >= git.PLAIN_FILES) {
+      notes.push(`only the first ${git.PLAIN_FILES} files of this folder are listed`)
+    }
+
+    if (code.length > PLAIN_CHECKED) {
+      notes.push(`only the first ${PLAIN_CHECKED} of ${code.length} code files are checked`)
+    }
+  } else if (isBrowsing) {
     allFiles = { repo, paths: await git.trackedFiles(ports.run, repo) }
   }
 
@@ -180,6 +201,7 @@ export const scanRepo = async (
     dirty: changes.dirty,
     stashes: changes.stashes,
     worktrees: changes.worktrees,
+    isPlain: changes.isPlain,
   }
 
   await ports.writeScan(
@@ -195,8 +217,9 @@ export const scanRepo = async (
   )
   await ports.onListed()
 
-  const targetHash = target === '' ? '' : await git.shortHash(ports.run, repo, target)
-  const baseShort = await git.shortHash(ports.run, repo, base)
+  const targetHash =
+    target === '' || changes.isPlain ? '' : await git.shortHash(ports.run, repo, target)
+  const baseShort = changes.isPlain ? '' : await git.shortHash(ports.run, repo, base)
 
   // The scan as it goes: which tools are still running, and what they have
   // found so far. A tool that has not reported yet keeps what it found last
@@ -348,7 +371,8 @@ export const scanRepo = async (
   // working tree is clean without the pane open. Each mod has its own entry
   // there, so this sits beside any other mod's.
   const changedPaths = new Set(changes.files.map(one => one.path))
-  const mine = diags.filter(diag => changedPaths.has(diag.path))
+  // Where nothing is compared, every problem found counts.
+  const mine = changes.isPlain ? diags : diags.filter(diag => changedPaths.has(diag.path))
   const errorCount = mine.filter(diag => diag.severity === 'error').length
 
   ports.showStatus(

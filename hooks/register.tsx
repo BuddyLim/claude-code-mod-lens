@@ -39,7 +39,9 @@ import type { InlayHint, SemanticToken } from './lsp-types'
 import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
-import type { Comment, Run as ForgeRun } from './review'
+import type { PatchFile } from './patch'
+import { readPatch } from './patch'
+import type { Comment, Listed, Run as ForgeRun } from './review'
 import {
   fetchComments,
   parseRequest,
@@ -65,7 +67,9 @@ import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
 import { listScreen } from './screens/list'
 import { isMarkdownFile, markdownScreen } from './screens/markdown'
+import { PAGE_STEP, changesScreen } from './screens/changes'
 import { recentsScreen } from './screens/recents'
+import { requestsScreen } from './screens/requests'
 import { treeScreen } from './screens/tree'
 import { foldOf } from './semantic'
 import type { Settings } from './settings'
@@ -86,6 +90,7 @@ import {
   settledView,
   totalsOf,
 } from './state'
+import { stepShown } from './changes'
 import { clamp, foldEnd } from './text'
 
 const PANE = 'lens'
@@ -188,10 +193,12 @@ const showPlace = async ($: EngineInterface, named: string, line: number): Promi
 
   if (repo === '') {
     const top = await run(['git', '-C', full.replace(/\/[^/]*$/, ''), 'rev-parse', '--show-toplevel'])
-    repo = top.exitCode === 0 ? top.stdout.trim() : ''
+    // Outside any repository, the session's folder is listed where it holds
+    // the file.
+    repo = top.exitCode === 0 ? top.stdout.trim() : root
 
     if (repo === '' || !full.startsWith(`${repo}/`)) {
-      $.ui.toast(`Lens: ${named} is not in a git repository`)
+      $.ui.toast(`Lens: ${named} is not in a git repository or this session's folder`)
 
       return
     }
@@ -255,7 +262,19 @@ let branchRequest:
 
 // The repo's open pull or merge requests, for the compare panel to offer.
 // Written by `loadRequests`, when the panel opens.
-let requestsCache: { repo: string; list: { typed: string; title: string }[] } | undefined
+let requestsCache: { repo: string; list: Listed[] } | undefined
+
+// The whole comparison as one page, for the changes screen: what git said of
+// the repo, base and target in `key`. Written by `loadPatch`, when that
+// screen opens or is refreshed; `patchWanted` is the key being read.
+let patchCache: { key: string; files: PatchFile[]; refusal: string } | undefined
+let patchWanted: string | undefined
+// The page and length the changes screen last grew from, so one drawing
+// near its end asks for the next stretch once.
+let pageGrownAt = ''
+
+// How many requests' ticks are kept between sessions.
+const REVIEWED_KEPT = 40
 
 // What the folder the breadcrumb last opened holds, written by `loadCrumb`.
 let crumbCache: { dir: string; entries: string[] } | undefined
@@ -269,7 +288,7 @@ let blameCache: { path: string; commit: string; lines: Blamed[] } | undefined
 // and whether the pane's own scroll needs holding one row down, for a screen
 // that draws its own window; the drawing asks, the timer does it.
 let graphWindow: GraphWindow = { header: 0, kinds: [], maxTop: 0, bodyMax: 0 }
-let fileWindow: FileWindow = { maxTop: 1, crumbBox: undefined }
+let fileWindow: FileWindow = { maxTop: 1, shown: undefined, crumbBox: undefined }
 let wantPin = false
 
 const noteEdit = async ($: EngineInterface, path: string): Promise<void> => {
@@ -382,9 +401,16 @@ const openReview = async (
     layout: kept?.layout ?? 'tree',
     isBrowsing: kept?.isBrowsing ?? false,
   }))
+  // The ticks of the requests reviewed before come back with the review.
+  void readReviewed($).then(reviewed => update($, view, (last): View => ({ ...last, reviewed })))
   await update($, scan, () => ({ ...NO_SCAN, status: 'running' }))
   job = { isProject: false }
   await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+
+  // A folder git does not know has nothing to compare: its files are listed.
+  if ((await git.findRepo(runOf($), repo)) === '') {
+    return `Listing ${repo}, which is not in a git repository: its code files are checked, and nothing is compared.`
+  }
 
   if (kept === undefined || (kept.base === 'HEAD' && kept.target === '')) {
     return `Reviewing ${repo} against ${base ?? 'HEAD'}.`
@@ -926,6 +952,58 @@ const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => 
   await update($, view, (last): View => ({ ...last }))
 }
 
+// Reads the whole comparison for the changes screen and has it drawn again.
+const loadPatch = async (
+  $: EngineInterface,
+  repo: string,
+  base: string,
+  target: string,
+): Promise<void> => {
+  const key = `${repo}\n${base}\n${target}`
+
+  patchWanted = key
+
+  const read = await readPatch(runOf($), repo, base, target)
+
+  // A comparison asked for since is the one that counts.
+  if (patchWanted === key) {
+    patchCache = { key, ...read }
+    patchWanted = undefined
+    await update($, view, (last): View => ({ ...last }))
+  }
+}
+
+// The files ticked as reviewed, as the store keeps them between sessions.
+const readReviewed = async ($: EngineInterface): Promise<Record<string, string[]>> => {
+  const stored: unknown = await $.store.get('reviewed').catch(() => undefined)
+  const kept: Record<string, string[]> = {}
+
+  if (typeof stored === 'object' && stored !== null) {
+    for (const [key, paths] of Object.entries(stored)) {
+      if (Array.isArray(paths)) {
+        kept[key] = paths.filter((path): path is string => typeof path === 'string')
+      }
+    }
+  }
+
+  return kept
+}
+
+// Ticks or unticks a file of a request as reviewed, here and in the store.
+// The request last ticked is kept last, and the oldest give way.
+const toggleReviewed = async ($: EngineInterface, key: string, path: string): Promise<void> => {
+  await update($, view, (last): View => {
+    const { [key]: held = [], ...rest } = last.reviewed ?? {}
+    const paths = held.includes(path) ? held.filter(one => one !== path) : [...held, path]
+
+    return {
+      ...last,
+      reviewed: Object.fromEntries([...Object.entries(rest), [key, paths]].slice(-REVIEWED_KEPT)),
+    }
+  })
+  await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
+}
+
 // Starts a comparison between two things the person named: `side` is what is
 // read (a branch or commit, or '' for the working tree) and `against` is what
 // it is compared with. Each name is checked with git first, so a typo is said
@@ -1369,7 +1447,11 @@ export const register: Register = (on, options) => {
     const isFolder = /^[~./]/.test(words[0] ?? '')
     const folder = isFolder ? (words[0] ?? '.') : '.'
     const base = isFolder ? words[1] : words[0]
-    const repo = await git.findRepo(runOf($), folder)
+    const isRecent = words[0] === 'recent' && words.length === 1
+    // A folder git does not know is opened too, to list its files.
+    const repo = isRecent
+      ? ''
+      : (await git.findRepo(runOf($), folder)) || (await git.findFolder(runOf($), folder))
 
     if (repo !== '') {
       return { text: await openReview($, repo, base) }
@@ -1377,12 +1459,12 @@ export const register: Register = (on, options) => {
 
     if (isFolder) {
       return {
-        text: `/lens: ${folder} is not a folder inside a git repository. Check the path, or run /lens with no folder to pick a recent one.`,
+        text: `/lens: ${folder} is not a folder. Check the path, or run /lens recent to pick a recent one.`,
       }
     }
 
-    // Run where there is no repo, with none named: the pane opens on the
-    // repos reviewed lately, to pick one.
+    // Asked for the repos reviewed lately (/lens recent), or run where the
+    // folder cannot be read: the pane opens on them, to pick one.
     const list = await readRecents($)
 
     await update($, recents, () => list)
@@ -1392,8 +1474,8 @@ export const register: Register = (on, options) => {
     return {
       text:
         list.length === 0
-          ? 'This folder is not inside a git repository. Name one: /lens ~/Code/my-repo [base]'
-          : 'This folder is not inside a git repository: pick a recent one in the pane, or name one (/lens ~/Code/my-repo).',
+          ? 'Nothing has been reviewed lately. Name a folder: /lens ~/Code/my-repo [base]'
+          : 'Pick a recent one in the pane, or name a folder (/lens ~/Code/my-repo).',
     }
   })
 
@@ -1442,7 +1524,14 @@ export const register: Register = (on, options) => {
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const now = await read($, view)
 
-    if (e.origin.kind !== 'person' || now.screen === 'tree' || now.screen === 'list') {
+    // The screens as long as their lists are pages of the pane's own to scroll.
+    if (
+      e.origin.kind !== 'person' ||
+      now.screen === 'tree' ||
+      now.screen === 'list' ||
+      now.screen === 'requests' ||
+      now.screen === 'changes'
+    ) {
       return next(e)
     }
 
@@ -1496,7 +1585,14 @@ export const register: Register = (on, options) => {
 
     await update($, view, last => ({
       ...last,
-      top: clamp((last.top ?? 1) + e.by, 1, fileWindow.maxTop),
+      // In the changes-only view the window steps among the lines that show.
+      top: clamp(
+        fileWindow.shown === undefined
+          ? (last.top ?? 1) + e.by
+          : stepShown(fileWindow.shown, last.top ?? 1, e.by),
+        1,
+        fileWindow.maxTop,
+      ),
     }))
 
     return {}
@@ -1594,6 +1690,7 @@ export const register: Register = (on, options) => {
       inset,
       padding: settings.sidePadding,
       repoName: repo.split('/').pop() ?? '',
+      isPlain: found.isPlain,
       // git lists the main checkout first; any other is a worktree of it.
       worktreeOf:
         found.worktrees.length > 1 && found.worktrees[0]?.isCurrent === false
@@ -1713,6 +1810,115 @@ export const register: Register = (on, options) => {
           help,
         }),
       )
+    }
+
+    // The files of the request under review ticked as reviewed, and the
+    // name they are kept under; '' with no request, when nothing is ticked.
+    const seenKey = requestTyped === '' ? '' : `${repo}\n${requestTyped}`
+    const seen = seenKey === '' ? [] : (now.reviewed[seenKey] ?? [])
+    const markReviewed = (path: string): void => {
+      if (seenKey !== '') {
+        void toggleReviewed($, seenKey, path)
+      }
+    }
+
+    if (now.screen === 'requests') {
+      const prefix = `${repo}\n`
+
+      return framed(
+        requestsScreen(
+          kit,
+          {
+            shell,
+            list: requestsCache?.repo === repo ? requestsCache.list : undefined,
+            current: requestTyped,
+            reviewed: Object.fromEntries(
+              Object.entries(now.reviewed)
+                .filter(([key]) => key.startsWith(prefix))
+                .map(([key, paths]) => [key.slice(prefix.length), paths.length]),
+            ),
+            now: await $.clock.now(),
+          },
+          {
+            back: () => set((last): View => ({ ...last, screen: 'tree' })),
+            refresh: () => {
+              requestsCache = undefined
+              void loadRequests($, repo)
+              set((last): View => ({ ...last }))
+            },
+            // A request is a comparison by itself: its head against where it
+            // forked, which the file tree then lists.
+            open: typed => void startCompare($, repo, '', typed),
+            help,
+          },
+        ),
+      )
+    }
+
+    if (now.screen === 'changes') {
+      // The branch's own request, with no comparison on, is read as the
+      // request has it: from where the branch forked, to the files as they
+      // stand.
+      const isOfBranch = !isComparing && ofBranch !== undefined && ofBranch.base !== ''
+      const pageBase = isOfBranch ? ofBranch.base : now.base
+      const pageKey = `${repo}\n${pageBase}\n${target}`
+      const page = patchCache?.key === pageKey ? patchCache : undefined
+
+      if (page === undefined && patchWanted !== pageKey) {
+        void loadPatch($, repo, pageBase, target)
+      }
+
+      const more = (): void =>
+        set((last): View => ({ ...last, pageRows: (last.pageRows ?? PAGE_STEP) + PAGE_STEP }))
+      const drawn = changesScreen(
+          kit,
+          {
+            shell,
+            limit: now.pageRows,
+            title: isOfBranch
+              ? `${requestLabel}: your branch as it stands`
+              : shell.request !== ''
+                ? shell.request
+                : isComparing
+                  ? `${shell.side} vs ${shell.against}`
+                  : 'Uncommitted changes',
+            files: page?.files,
+            refusal: page?.refusal ?? '',
+            statusOf: new Map(
+              [...(ofBranch?.files ?? []), ...found.files].map(one => [one.path, one.status]),
+            ),
+            comments: comments.filter(one => !(now.hidesResolved && one.isResolved === true)),
+            canMark: seenKey !== '',
+            reviewed: seen,
+            untracked: found.files.filter(one => one.status === '?').length,
+          },
+          {
+            back: () => set((last): View => ({ ...last, screen: 'tree' })),
+            refresh: () => {
+              rescan()
+              patchCache = undefined
+              set((last): View => ({ ...last }))
+            },
+            // A file opens as the comparison has it, and back returns here.
+            open: (path, line) =>
+              void (target === '' ? openAt(path, line) : openCommitAt(target, path, line)).then(() =>
+                update($, view, (last): View => ({ ...last, origin: 'changes' })),
+              ),
+            toggleReviewed: markReviewed,
+            more,
+            help,
+          },
+        )
+      // The next stretch is drawn once the person is within a screen or two
+      // of the end of what is there: once for each length the page has had.
+      const scrolled = (e.props.scroll?.offset ?? 0) + 2 * (e.props.scroll?.bodyRows ?? 30)
+
+      if (drawn.isCut && scrolled >= drawn.rows && pageGrownAt !== `${pageKey}\n${now.pageRows}`) {
+        pageGrownAt = `${pageKey}\n${now.pageRows}`
+        more()
+      }
+
+      return framed(drawn.tree)
     }
 
     // What the graph and the file tree both offer: a commit or a stash
@@ -1885,11 +2091,14 @@ export const register: Register = (on, options) => {
             checked: now.checked,
             isDiscarding: now.isDiscarding,
             isMore: now.isMore || settings.showsAllKeys,
-            isBrowsing: now.isBrowsing,
-            allFiles: now.isBrowsing ? allFilesOf(repo) : [],
+            isPlain: found.isPlain,
+            isBrowsing: now.isBrowsing || found.isPlain,
+            allFiles: now.isBrowsing || found.isPlain ? allFilesOf(repo) : [],
             isTelling: now.isTelling,
             issuesToSend: sendable.length,
             comments,
+            canMark: seenKey !== '',
+            reviewed: seen,
             stashes: found.stashes,
             isReviewing: now.isReviewing,
             reviewRound,
@@ -2007,7 +2216,7 @@ export const register: Register = (on, options) => {
               // A file the change does not touch has not been checked: opening
               // it asks for it to be, along with the last few opened the same
               // way.
-              if (target === '' && !found.files.some(one => one.path === path)) {
+              if (target === '' && !found.isPlain && !found.files.some(one => one.path === path)) {
                 await update($, view, last => ({
                   ...last,
                   extra: [path, ...(last.extra ?? []).filter(one => one !== path)].slice(0, EXTRA_FILES),
@@ -2031,7 +2240,9 @@ export const register: Register = (on, options) => {
                   // In a comparison a file opens on what differs.
                   // In a comparison a file opens on what differs; markdown
                   // opens as it reads, its threads set into the page.
-                  isDiff: isMarkdownFile(path) ? false : isComparing ? true : last.isDiff,
+                  // Where git knows nothing of the folder, nothing differs.
+                  isDiff:
+                    isMarkdownFile(path) || found.isPlain ? false : isComparing ? true : last.isDiff,
                   isPreview: isMarkdownFile(path) ? true : last.isPreview,
                 }),
               )
@@ -2096,6 +2307,17 @@ export const register: Register = (on, options) => {
             scrollBody: line => set(last => ({ ...last, bodyTop: line })),
             applyStash: ref => void applyStash($, repo, ref, false),
             popStash: ref => void applyStash($, repo, ref, true),
+            openRequests: () => {
+              void loadRequests($, repo)
+              set((last): View => ({ ...last, screen: 'requests' }))
+            },
+            openChanges: () => {
+              // Read again each time it is opened: the files may have changed.
+              patchCache = undefined
+              pageGrownAt = ''
+              set((last): View => ({ ...last, screen: 'changes', pageRows: PAGE_STEP }))
+            },
+            toggleReviewed: markReviewed,
           },
         ),
       )
@@ -2126,7 +2348,8 @@ export const register: Register = (on, options) => {
       set(
         (was): View => ({
           ...was,
-          screen: commit === '' ? 'tree' : (was.origin ?? 'graph'),
+          // A file opened from the page of every change goes back to it.
+          screen: was.origin === 'changes' ? 'changes' : commit === '' ? 'tree' : (was.origin ?? 'graph'),
           commit: '',
         }),
       )
@@ -2204,13 +2427,21 @@ export const register: Register = (on, options) => {
     const isOwnDiff = commit === '' && now.diffBase.path === file && now.diffBase.base !== ''
     const talk =
       commit === target
-        ? comments.filter(
-            one =>
-              one.path === file &&
-              one.line > 0 &&
-              // A resolved thread is left out where the person asked for that.
-              !(now.hidesResolved && one.isResolved === true),
-          )
+        ? comments
+            // A ledger finding on the file as a whole has no line of its own:
+            // it is shown on the file's first, and says so.
+            .map(one =>
+              one.path === file && one.line === 0 && isFinding(one)
+                ? { ...one, line: 1, body: `(whole file) ${one.body}` }
+                : one,
+            )
+            .filter(
+              one =>
+                one.path === file &&
+                one.line > 0 &&
+                // A resolved thread is left out where the person asked for that.
+                !(now.hidesResolved && one.isResolved === true),
+            )
         : []
     // The first comment of the thread on a line: what a reply answers and
     // what resolving settles. A reply is listed under the comment it answers.
@@ -2244,6 +2475,7 @@ export const register: Register = (on, options) => {
         cursor: now.cursor,
         isExpanded: now.isExpanded,
         isDiff: now.isDiff,
+        isChanges: now.isChanges,
         isMore: now.isMore || settings.showsAllKeys,
         isHinting: now.isHinting,
         isFinding: now.isFinding,
@@ -2269,7 +2501,16 @@ export const register: Register = (on, options) => {
         showIssue: (cursor, top) => set(last => ({ ...last, cursor, top })),
         nextChange: top =>
           top === undefined ? $.ui.toast('No more changes below') : set(last => ({ ...last, top })),
-        toggleDiff: () => set(was => ({ ...was, isDiff: !was.isDiff })),
+        // Round the three views: the file, its diff, the diff cut down to
+        // what differs.
+        toggleDiff: () =>
+          set(was =>
+            !was.isDiff
+              ? { ...was, isDiff: true, isChanges: false }
+              : !(was.isChanges ?? false)
+                ? { ...was, isChanges: true }
+                : { ...was, isDiff: false, isChanges: false },
+          ),
         toggleExpanded: () => set(was => ({ ...was, isExpanded: !was.isExpanded })),
         toggleBlame: () =>
           blame === undefined
