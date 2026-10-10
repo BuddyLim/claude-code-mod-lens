@@ -39,6 +39,9 @@ export type OverviewActions = {
   refresh: () => void
   // Compares the request's head with the commit the person last reviewed.
   sinceReview: () => void
+  // On to the request's code: the file tree, or every change on one page.
+  openFiles: () => void
+  openChanges: () => void
   // Asks about an action before doing it ('' takes the question away), and
   // does the one asked about.
   ask: (act: RequestAct | '') => void
@@ -108,6 +111,9 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
       {statusLine(kit, shell)}
       <Box columnGap={2} flexWrap="wrap">
         <Button plain key="back" hotkey="b" label="back" onPress={actions.back} />
+        {/* On from what the request says to its code. */}
+        <Button plain key="files" hotkey="f" label="its files" onPress={actions.openFiles} />
+        <Button plain key="changes" hotkey="d" label="all changes" onPress={actions.openChanges} />
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         {overview !== undefined && overview.lastReviewed !== '' && (
           <Button plain key="since" hotkey="s" label="changes since your review" onPress={actions.sinceReview} />

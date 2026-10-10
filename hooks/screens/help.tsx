@@ -146,8 +146,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
     [
       'Pull and merge requests',
       [
-        ['press a number', 'review that request: its head against where it forked; nothing is checked out'],
-        ['press a title', 'the same, opened on the page of every change'],
+        ['press a request', 'its number or its title: see what it is (title, description, checks), then f for its files or d for every change'],
         ['Yours / Others', 'the requests you opened come first'],
         ['n reviewed', 'how many of its files you have ticked'],
         ['r', 'ask the forge again'],
@@ -162,6 +161,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['Where it stands', 'whether it can be merged, what its reviews come to, and its checks'],
         ['Description', 'what the request says it does, rendered'],
         ['Pictures, videos and files', 'what the description links to: each opens in the browser'],
+        ['f / d', 'on to its code: the files it changes, or every change on one page'],
         ['s', 'compare the request with the commit you last reviewed it at'],
         ['r', 'ask the forge again'],
         ['b', 'back to the file tree'],

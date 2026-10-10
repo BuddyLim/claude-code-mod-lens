@@ -153,6 +153,8 @@ export type View = {
   // The removed line the comment being typed is on, by its number in the
   // other side of the comparison; 0 when it is on a line of this side.
   commentOld: number
+  // The screen the overview was opened from, where its back returns.
+  overviewFrom: 'tree' | 'requests'
   // What the file tree's lists are narrowed by: only files whose path holds
   // it are listed; '' lists them all.
   filter: string

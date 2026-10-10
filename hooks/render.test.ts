@@ -262,6 +262,16 @@ test('the overview draws what a request says, where it stands and what it links 
   expect(clock.asked.filter(line => line.startsWith('gh pr ')).pop()).toBe('gh pr view 12 --repo github.com/acme/app --json title,body,author,state,isDraft,url,baseRefName,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,latestReviews,commits,labels,additions,deletions,changedFiles')
   expect(clock.asked.includes('gh pr close 12 --repo github.com/acme/app')).toBe(true)
   expect(clock.asked.some(line => line.startsWith('gh pr merge'))).toBe(false)
+
+  // From what it says, on to its code: every change on one page, or its files.
+  await ui.press({ key: 'changes' })
+  await ui.drawn()
+  expect(await ui.find({ key: 'next-file' })).toBeDefined()
+  await ui.press({ key: 'back' })
+  await ui.press({ key: 'overview' })
+  await ui.press({ key: 'files' })
+  await ui.drawn()
+  expect(await ui.find({ key: 'requests' })).toBeDefined()
   await ui.unmount()
 })
 

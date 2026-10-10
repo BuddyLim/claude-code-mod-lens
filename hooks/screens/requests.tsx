@@ -23,10 +23,9 @@ export type RequestsModel = {
 export type RequestsActions = {
   back: () => void
   refresh: () => void
-  // Starts a review of a request: its head against where it forked.
+  // Starts a review of a request (its head against where it forked) and
+  // shows what it is first: its overview, from which its code is a key away.
   open: (typed: string) => void
-  // The same, opened on the page of every change of it.
-  openChanges: (typed: string) => void
   help: () => void
 }
 
@@ -75,7 +74,7 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
             plain
             key={`request-changes:${one.typed}`}
             label={cut(one.title === '' ? '(no title)' : one.title)}
-            onPress={() => actions.openChanges(one.typed)}
+            onPress={() => actions.open(one.typed)}
           />
         </Box>
         {one.summary !== '' && (
@@ -101,7 +100,7 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
         Open {isGitlab ? 'merge' : 'pull'} requests{list === undefined ? '' : ` (${list.length})`}
       </Text>
       <Text dimColor wrap="truncate-end">
-        Press a number for its files, or a title for every change on one page: nothing is checked out.
+        Press a request to see what it is, then its code: nothing is checked out.
       </Text>
       {list === undefined && <Text dimColor>Asking the forge…</Text>}
       {list !== undefined && list.length === 0 && (

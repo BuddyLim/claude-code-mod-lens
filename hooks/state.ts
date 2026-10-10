@@ -70,6 +70,7 @@ export const NO_VIEW: View = {
   isCommenting: false,
   commentLine: 0,
   commentFrom: 0, commentOld: 0,
+  overviewFrom: 'tree',
   filter: '',
   editing: '',
   deleting: '',

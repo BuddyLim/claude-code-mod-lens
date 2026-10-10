@@ -2256,7 +2256,21 @@ export const register: Register = (on, options) => {
             isActing: requestActing,
           },
           {
-            back: () => set((last): View => ({ ...last, screen: 'tree' })),
+            // Back goes where the overview was opened from: the list of requests, or the file tree.
+            back: () => {
+              if (now.overviewFrom === 'requests' && requestsCache?.repo !== repo) {
+                void loadRequests($, repo)
+              }
+
+              set((last): View => ({ ...last, screen: last.overviewFrom === 'requests' ? 'requests' : 'tree' }))
+            },
+            // On to the code: the files it changes, or every change on one page.
+            openFiles: () => set((last): View => ({ ...last, screen: 'tree' })),
+            openChanges: () => {
+              patchCache = undefined
+              pageColors = { key: '', lines: new Map(), asked: new Set() }
+              set((last): View => ({ ...last, screen: 'changes', pageTop: 0 }))
+            },
             refresh: () => {
               overviewCache = undefined
               set(nudged)
@@ -2337,15 +2351,16 @@ export const register: Register = (on, options) => {
             },
             // A request is a comparison by itself: its head against where it
             // forked, which the file tree then lists.
-            open: typed => void startCompare($, repo, '', typed),
-            // The title opens it on the page of every change; where the
-            // request could not be opened, the list stays.
-            openChanges: typed =>
+            //
+            // Opened from the list, a request is first shown as what it is
+            // (its title, what it says of itself, where it stands): the
+            // overview, from which its files and its changes are a key
+            // away. Where the request could not be opened, the list stays.
+            open: typed =>
               void startCompare($, repo, '', typed).then(async () => {
                 if ((await read($, view)).requestTyped === typed) {
-                  patchCache = undefined
-                  pageColors = { key: '', lines: new Map(), asked: new Set() }
-                  await update($, view, (last): View => ({ ...last, screen: 'changes', pageTop: 0 }))
+                  overviewCache = undefined
+                  await update($, view, (last): View => ({ ...last, screen: 'overview', overviewFrom: 'requests' }))
                 }
               }),
             help,
@@ -2941,7 +2956,7 @@ export const register: Register = (on, options) => {
             openOverview: () => {
               // Asked again each time it is opened: checks and reviews move.
               overviewCache = undefined
-              set((last): View => ({ ...last, screen: 'overview' }))
+              set((last): View => ({ ...last, screen: 'overview', overviewFrom: 'tree' }))
             },
             openRequests: () => {
               void loadRequests($, repo)
