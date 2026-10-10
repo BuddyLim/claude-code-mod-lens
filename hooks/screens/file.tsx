@@ -18,6 +18,7 @@ import type { InlayHint, OutlineItem, SemanticToken } from '../lsp-types'
 import type { MiniLine } from '../minimap'
 import { minimapCells } from '../minimap'
 import { markSpans, withInlays } from '../parts'
+import { isFinding as isLedgerFinding } from '../ledger'
 import type { Comment } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
 import { clamp, findMatches, shortRef, wrapText } from '../text'
@@ -511,36 +512,119 @@ export const fileScreen = (
     // shows it: who and when, then what was said, replies indented. Folded,
     // the card keeps the first comment's opening lines and counts the rest.
     const talkWidth = Math.max(24, Math.min(100, codeColumns - gutter - 4))
-    const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
+    // A request's thread and the ledger's findings on the same line are two
+    // cards, each in its colour: a finding is no answer to the thread.
+    const forgeTalk = talk.filter(one => !isLedgerFinding(one))
+    const ledgerTalk = talk.filter(isLedgerFinding)
+    const cardFor = (group: readonly Comment[], isLedger: boolean) => {
+      if (group.length === 0) {
+        return { height: 0, rows: [] }
+      }
 
-    for (const [at, one] of (model.isExpanded ? talk : talk.slice(0, 1)).entries()) {
-      const indent = at === 0 ? '' : '  '
+      const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
+      const scope = isLedger ? ':ledger' : ''
+
+    for (const [at, one] of (model.isExpanded ? group : group.slice(0, 1)).entries()) {
+      // A finding stands by itself; an answer in a thread is set in.
+      const indent = at === 0 || isLedger ? '' : '  '
       const body = wrapText(one.body.trim(), talkWidth - 4 - indent.length)
 
       talkLines.push({
         kind: 'head',
-        text: `${indent}${at === 0 ? talkIcon(one) : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.startLine === undefined ? '' : ` · lines ${one.startLine}–${one.line}`}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
+        text: `${indent}${at === 0 || isLedger ? talkIcon(one) : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.startLine === undefined ? '' : ` · lines ${one.startLine}–${one.line}`}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
       })
 
       for (const line of model.isExpanded ? body : body.slice(0, TALK_FOLDED)) {
         talkLines.push({ kind: 'body', text: `${indent}${line}` })
       }
 
-      if (!model.isExpanded && (body.length > TALK_FOLDED || talk.length > 1)) {
+      if (!model.isExpanded && (body.length > TALK_FOLDED || group.length > 1)) {
+        const rest = group.length - 1
+        const counted = isLedger
+          ? `${rest} more ${rest === 1 ? 'finding' : 'findings'}`
+          : `${rest} ${rest === 1 ? 'reply' : 'replies'}`
+
         talkLines.push({
           kind: 'more',
-          text: `${[body.length > TALK_FOLDED ? '…' : '', talk.length > 1 ? `${talk.length - 1} ${talk.length === 2 ? 'reply' : 'replies'}` : ''].filter(part => part !== '').join(' ')} · e expands`,
+          text: `${[body.length > TALK_FOLDED ? '…' : '', rest > 0 ? counted : ''].filter(part => part !== '').join(' ')} · e expands`,
         })
       }
     }
 
-    // What can be done with the thread sits on the card's last row.
-    const isSettled = talk.some(one => one.isResolved === true)
-    const canSettle = talk.some(one => one.isResolved !== undefined)
-    // A settled thread steps back: a dim gold in place of the comments' purple.
-    // A ledger finding's thread has a colour of its own.
-    const talkColor = isSettled ? RESOLVED_COLOR : colorOfTalk(talk[0])
-    const cardHeight = talk.length === 0 ? 0 : talkLines.length + 2 + (model.canComment ? 1 : 0)
+      // What can be done with the thread sits on the card's last row. The
+      // ledger's findings are closed in the ledger, and have no thread to
+      // answer: theirs holds the way to the prompt alone.
+      const isSettled = isLedger
+        ? group.every(one => one.isResolved === true)
+        : group.some(one => one.isResolved === true)
+      const canSettle = !isLedger && group.some(one => one.isResolved !== undefined)
+      // A settled thread steps back: a dim gold in place of its own colour.
+      const talkColor = isSettled ? RESOLVED_COLOR : colorOfTalk(group[0])
+      const height = talkLines.length + 2 + (model.canComment ? 1 : 0)
+
+      return {
+        height,
+        rows: [
+          <Box
+            marginLeft={gutter + 2}
+            width={talkWidth}
+            height={height}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={talkColor}
+            paddingX={1}
+            overflow="hidden"
+          >
+            {talkLines.map((line, at) => {
+              const text = (
+                <Text
+                  wrap="truncate-end"
+                  color={line.kind === 'head' ? talkColor : undefined}
+                  bold={line.kind === 'head'}
+                  dimColor={line.kind === 'more'}
+                >
+                  {line.text}
+                </Text>
+              )
+
+              // The card's first row carries its handle, as a problem's
+              // does: pressed, the thread and its code go to the prompt.
+              return at === 0 ? (
+                <Box height={1} columnGap={1} overflow="hidden">
+                  <Button plain key={`talk:${n}${scope}`} label="↗" onPress={() => actions.sendTalk(n)} />
+                  {text}
+                </Box>
+              ) : (
+                text
+              )
+            })}
+            {model.canComment && (
+              <Box height={1} columnGap={3} overflow="hidden">
+                {!isLedger && (
+                  <Button plain key={`reply:${n}`} label="↩ reply" onPress={() => actions.replyOn(n)} />
+                )}
+                {canSettle && (
+                  <Button
+                    plain
+                    key={`settle:${n}`}
+                    label={isSettled ? '↺ reopen' : '✓ resolve'}
+                    onPress={() => actions.resolveOn(n, !isSettled)}
+                  />
+                )}
+                <Button
+                  plain
+                  key={`talk-send:${n}${scope}`}
+                  label="↗ to prompt"
+                  onPress={() => actions.sendTalk(n)}
+                />
+              </Box>
+            )}
+          </Box>,
+        ],
+      }
+    }
+    const cards = [cardFor(forgeTalk, false), cardFor(ledgerTalk, true)]
+    const cardHeight = cards.reduce((sum, card) => sum + card.height, 0)
     // The box a comment or a reply is typed in opens under the line it is
     // for (under the thread, when it answers one). Only Enter or its post
     // button sends anything to the forge.
@@ -550,7 +634,7 @@ export const fileScreen = (
     const writeHeight = isWriting ? 4 : 0
     // The lines a comment being typed is on, when it is on more than one.
     const isRange = model.commentFrom > 0 && model.commentFrom < n
-    const answered = model.replyTo === '' ? undefined : talk[0]
+    const answered = model.replyTo === '' ? undefined : forgeTalk[0]
     const writeRows =
       isWriting && Input !== undefined
         ? [
@@ -591,60 +675,7 @@ export const fileScreen = (
     // One element as tall as its lines and its border: the window counts the
     // card and the box by `talkHeight`.
     const talkHeight = cardHeight + writeHeight
-    const talkRows =
-      talk.length === 0
-        ? writeRows
-        : [
-            <Box
-              marginLeft={gutter + 2}
-              width={talkWidth}
-              height={cardHeight}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={talkColor}
-              paddingX={1}
-              overflow="hidden"
-            >
-              {talkLines.map((line, at) => {
-                const text = (
-                  <Text
-                    wrap="truncate-end"
-                    color={line.kind === 'head' ? talkColor : undefined}
-                    bold={line.kind === 'head'}
-                    dimColor={line.kind === 'more'}
-                  >
-                    {line.text}
-                  </Text>
-                )
-
-                // The card's first row carries its handle, as a problem's
-                // does: pressed, the thread and its code go to the prompt.
-                return at === 0 ? (
-                  <Box height={1} columnGap={1} overflow="hidden">
-                    <Button plain key={`talk:${n}`} label="↗" onPress={() => actions.sendTalk(n)} />
-                    {text}
-                  </Box>
-                ) : (
-                  text
-                )
-              })}
-              {model.canComment && (
-                <Box height={1} columnGap={3} overflow="hidden">
-                  <Button plain key={`reply:${n}`} label="↩ reply" onPress={() => actions.replyOn(n)} />
-                  {canSettle && (
-                    <Button
-                      plain
-                      key={`settle:${n}`}
-                      label={isSettled ? '↺ reopen' : '✓ resolve'}
-                      onPress={() => actions.resolveOn(n, !isSettled)}
-                    />
-                  )}
-                  <Button plain key={`talk-send:${n}`} label="↗ to prompt" onPress={() => actions.sendTalk(n)} />
-                </Box>
-              )}
-            </Box>,
-            ...writeRows,
-          ]
+    const talkRows = [...cards.flatMap(card => card.rows), ...writeRows]
 
     if (first === undefined) {
       return {

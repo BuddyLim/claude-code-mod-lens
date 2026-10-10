@@ -2619,7 +2619,10 @@ export const register: Register = (on, options) => {
     // The first comment of the thread on a line: what a reply answers and
     // what resolving settles. A reply is listed under the comment it answers.
     const rootOn = (n: number): Comment | undefined => {
-      const first = talk.find(one => one.line === n)
+      // A request's thread before a ledger finding on the same line: reply
+      // and resolve are the thread's.
+      const first =
+        talk.find(one => one.line === n && !isFinding(one)) ?? talk.find(one => one.line === n)
 
       return first === undefined || first.replyTo === undefined
         ? first
