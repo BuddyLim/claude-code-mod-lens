@@ -1083,7 +1083,7 @@ const standingOf = (overview: Overview | undefined): [state: string, words: stri
 
   return [
     ...(overview.checks.length === 0
-      ? []
+      ? [['NONE', 'no checks'] as [string, string]]
       : [
           failed > 0
             ? (['FAILURE', `${failed} of ${marks.length} checks fail`] as [string, string])

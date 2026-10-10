@@ -36,7 +36,7 @@ import {
   notesOf,
   said,
   statusLine,
-  stateOf,
+  checksMark,
   talkColor,
   talkIcon,
 } from './frame'
@@ -928,8 +928,8 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           {model.about.standing.length > 0 && (
             <Box height={1} overflow="hidden" marginLeft={2} columnGap={2}>
               {model.about.standing.map(([state, words]) => (
-                <Text color={stateOf(state)[1]}>
-                  {stateOf(state)[0]} {words}
+                <Text color={checksMark(state)[1]}>
+                  {checksMark(state)[0]} {words}
                 </Text>
               ))}
             </Box>
