@@ -42,54 +42,6 @@ export const changeLines = (
   return [...shown].sort((one, other) => one - other)
 }
 
-// The lines of a file a mouse selection covers, first and last (1-based), or
-// undefined when it cannot be told. `selected` is the text as a copy would
-// take it, which holds each row's gutter too and may start or end mid-line;
-// `texts` is the file's lines as drawn, and only those from `from` to `to`
-// (the window) are looked among. A row matches a line when the row holds the
-// line's text (a whole row was taken), or the line holds the row's (a part
-// of one was); the selection is where every one of its rows matches in turn.
-export const selectedLines = (
-  selected: string,
-  texts: readonly string[],
-  from: number,
-  to: number,
-): [first: number, last: number] | undefined => {
-  const picked = selected.split('\n').map(row => row.trimEnd())
-
-  while (picked.length > 0 && (picked[0] ?? '').trim() === '') {
-    picked.shift()
-  }
-
-  while (picked.length > 0 && (picked[picked.length - 1] ?? '').trim() === '') {
-    picked.pop()
-  }
-
-  if (picked.length === 0) {
-    return undefined
-  }
-
-  const matches = (row: string, line: string): boolean => {
-    const code = line.trim()
-    // The row without its gutter: a part of a line taken from its start.
-    const bare = row.replace(/^[^A-Za-z0-9_]*\d+\s?/, '').trim()
-
-    // An empty line of the file is a row of gutter alone, which has no
-    // letters of its own to tell it by.
-    return code === ''
-      ? !/[A-Za-z_]/.test(row)
-      : row.includes(code) || code.includes(row.trim()) || (bare !== '' && code.includes(bare))
-  }
-
-  for (let first = Math.max(1, from); first + picked.length - 1 <= Math.min(to, texts.length); first += 1) {
-    if (picked.every((row, at) => matches(row, texts[first - 1 + at] ?? ''))) {
-      return [first, first + picked.length - 1]
-    }
-  }
-
-  return undefined
-}
-
 // Where the window's first line goes when it moves `by` of the lines that
 // show, from `top` (or from the first shown line at or after it).
 export const stepShown = (shown: readonly number[], top: number, by: number): number => {

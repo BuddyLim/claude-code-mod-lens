@@ -94,7 +94,7 @@ import {
   settledView,
   totalsOf,
 } from './state'
-import { selectedLines, stepShown } from './changes'
+import { stepShown } from './changes'
 import { clamp, foldEnd } from './text'
 
 const PANE = 'lens'
@@ -2714,8 +2714,17 @@ export const register: Register = (on, options) => {
         pressLine: n =>
           // While commenting on a request, a line number picks the line
           // to comment on.
+          // With the box already open on a line, a later line's number
+          // stretches the comment down to it (the first line stays); the
+          // first line's own number, or an earlier one, starts again there.
           isCommenting
-            ? set(last => ({ ...last, commentLine: n, commentFrom: 0, replyTo: '' }))
+            ? set(last => {
+                const first = (last.commentFrom ?? 0) > 0 ? last.commentFrom : (last.commentLine ?? 0)
+
+                return first > 0 && n > first && (last.replyTo ?? '') === ''
+                  ? { ...last, commentLine: n, commentFrom: first }
+                  : { ...last, commentLine: n, commentFrom: 0, replyTo: '' }
+              })
             : // The fold is the function or class the server says starts
               // here; without a server, what the indentation suggests.
               void sendToComposer(
@@ -2883,28 +2892,8 @@ export const register: Register = (on, options) => {
             replyTo: '',
           }))
         },
-        // The lines the person last dragged over become the lines the
-        // comment is on: the box opens under the last of them.
-        commentOnSelection: async (from, to) => {
-          const picked = selectedLines((await $.ui.selection())?.text ?? '', texts, from, to)
-
-          if (picked === undefined) {
-            $.ui.toast('Drag over the lines to comment on first, then press [selected lines]', {
-              timeoutMs: 8000,
-            })
-
-            return
-          }
-
-          commentDraft = ''
-          commentRound += 1
-          set(was => ({
-            ...was,
-            commentLine: picked[1],
-            commentFrom: picked[0] === picked[1] ? 0 : picked[0],
-            replyTo: '',
-          }))
-        },
+        // Back to a comment on the one line the box is under.
+        commentOnOneLine: () => set(was => ({ ...was, commentFrom: 0 })),
         typeComment: text => {
           commentDraft = text
         },

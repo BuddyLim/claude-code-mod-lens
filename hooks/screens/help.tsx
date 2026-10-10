@@ -64,7 +64,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['v', 'diff view: − removed lines in red, + added lines in green'],
         ['v again', 'changes only: each change and comment, with three lines around it'],
         ['whole file', 'while commenting: write on the file as a whole, on no line'],
-        ['selected lines', 'while commenting: drag over several lines, then press it to comment on them together'],
+        ['several lines', 'while commenting: press the first line number, then one further down; the stretch is marked ┃'],
         ['m', 'markdown: rendered or source'],
         ['l', 'blame: who last changed each line; press one to open its commit'],
         ['e', 'expand or collapse every diagnostic and comment thread'],

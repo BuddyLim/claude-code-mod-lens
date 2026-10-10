@@ -185,9 +185,8 @@ export type FileActions = {
   cancelComment: () => void
   // Opens the box for a comment on the file as a whole.
   commentOnFile: () => void
-  // Opens the box for a comment on the lines last dragged over with the
-  // mouse, looked for among the lines the window shows (`from` to `to`).
-  commentOnSelection: (from: number, to: number) => void
+  // Brings a comment on several lines back to the one its box is under.
+  commentOnOneLine: () => void
   // Leaves resolved threads out, or shows them again; lists every thread.
   toggleResolved: () => void
   listThreads: () => void
@@ -460,7 +459,16 @@ export const fileScreen = (
               <Text> </Text>,
             ]
           ))}
-        <Text color="green">{isAdded ? '+' : isChanged ? '▎' : ' '}</Text>
+        {/* The lines the comment being typed is on are marked down their
+            edge, so a stretch of several can be seen before it is posted. */}
+        {isCommenting &&
+        commentLine > 0 &&
+        n <= commentLine &&
+        n >= (model.commentFrom > 0 ? model.commentFrom : commentLine) ? (
+          <Text color={COMMENT_COLOR}>┃</Text>
+        ) : (
+          <Text color="green">{isAdded ? '+' : isChanged ? '▎' : ' '}</Text>
+        )}
         <Button
           plain
           dimColor
@@ -1285,8 +1293,8 @@ export const fileScreen = (
                 : commentLine === 0
                   ? 'Commenting: press a line number to write on that line, or reply on a thread.'
                   : model.commentFrom > 0 && commentLine > model.commentFrom
-                    ? `Writing on lines ${model.commentFrom}–${commentLine}: Enter posts it.`
-                    : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
+                    ? `Writing on lines ${model.commentFrom}–${commentLine}: Enter posts it. Press another line number below ${model.commentFrom} to change where it ends.`
+                    : `Writing on line ${commentLine}: Enter posts it. Press a line number further down to cover several lines, one above to move.`}
             </Text>
           </Box>
         )}
@@ -1300,18 +1308,16 @@ export const fileScreen = (
               label={commentLine === FILE_COMMENT ? '[whole file ✓]' : '[whole file]'}
               onPress={actions.commentOnFile}
             />
-            {/* Several lines at once: drag over them with the mouse, then
-                press this, and the box opens under the last of them. */}
-            <Button
-              plain
-              key="comment-range"
-              label={
-                model.commentFrom > 0 && commentLine > model.commentFrom
-                  ? `[lines ${model.commentFrom}–${commentLine} ✓]`
-                  : '[selected lines]'
-              }
-              onPress={() => actions.commentOnSelection(top, last)}
-            />
+            {/* A comment stretched over several lines says so here, and
+                pressed goes back to the one line. */}
+            {model.commentFrom > 0 && commentLine > model.commentFrom && (
+              <Button
+                plain
+                key="comment-range"
+                label={`[lines ${model.commentFrom}–${commentLine}: back to one line]`}
+                onPress={actions.commentOnOneLine}
+              />
+            )}
           </Box>
         )}
         {isCommenting && Input !== undefined && commentLine === FILE_COMMENT && (
