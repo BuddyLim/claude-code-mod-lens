@@ -292,7 +292,8 @@ export const fileScreen = (
     (symbol === undefined ? 0 : symbolLines.length + 5 + (symbol.signature === '' ? 0 : 1)) +
     (isDiff ? 1 : 0) +
     (isFinding ? 3 : 0) +
-    (isCommenting ? 1 : 0) +
+    // The hint, and the row of the whole-file button under it.
+    (isCommenting ? 2 : 0) +
     // The box a comment on the file as a whole is typed in.
     (isCommenting && commentLine === FILE_COMMENT ? 3 : 0) +
     // The main row of buttons, and the box of the rest when it is open.
@@ -1220,24 +1221,27 @@ export const fileScreen = (
         {/* The comment row: a line number picks the line, and only Enter or
             the post button sends anything to the forge. */}
         {isCommenting && Input !== undefined && (
-          <Box height={1} overflow="hidden" columnGap={2}>
-            {/* The file as a whole can be commented on too, on no line. */}
-            <Box flexShrink={0}>
-              <Button
-                plain
-                key="comment-file"
-                label={commentLine === FILE_COMMENT ? 'whole file ✓' : 'whole file'}
-                onPress={actions.commentOnFile}
-              />
-            </Box>
+          <Box height={1} overflow="hidden">
             <Text color={COMMENT_COLOR} wrap="truncate-end">
               {COMMENT_ICON}{' '}
               {commentLine === FILE_COMMENT
                 ? 'Writing on the file as a whole: Enter posts it.'
                 : commentLine === 0
-                  ? 'Commenting: press a line number to write on that line, "whole file" for the file, or reply on a thread.'
+                  ? 'Commenting: press a line number to write on that line, or reply on a thread.'
                   : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
             </Text>
+          </Box>
+        )}
+        {/* The file as a whole can be commented on too, on no line: its
+            button has the row under the hint to itself. */}
+        {isCommenting && Input !== undefined && (
+          <Box height={1} overflow="hidden">
+            <Button
+              plain
+              key="comment-file"
+              label={commentLine === FILE_COMMENT ? '[whole file ✓]' : '[whole file]'}
+              onPress={actions.commentOnFile}
+            />
           </Box>
         )}
         {isCommenting && Input !== undefined && commentLine === FILE_COMMENT && (
