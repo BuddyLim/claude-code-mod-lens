@@ -41,8 +41,12 @@ import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
 import type { PatchFile } from './patch'
 import { readPatch } from './patch'
-import type { Comment, Listed, Run as ForgeRun } from './review'
+import type { Comment, Draft, Listed, Run as ForgeRun } from './review'
 import {
+  draftComment,
+  draftId,
+  isDraft,
+  submitDrafted,
   fetchComments,
   parseRequest,
   isOnWholeFile,
@@ -55,7 +59,6 @@ import {
   repoPrefix,
   resolveRequest,
   resolveThread,
-  submitReview,
 } from './review'
 import type { Run } from './run'
 import { tail } from './run'
@@ -300,6 +303,8 @@ const nudged = (last: View): View => ({ ...last, redraws: (last.redraws ?? 0) + 
 const REVIEWED_KEPT = 40
 // And how many ticked files of each.
 const REVIEWED_PATHS = 2000
+// The most comments one review holds unsent.
+const DRAFTS_KEPT = 200
 
 // What the folder the breadcrumb last opened holds, written by `loadCrumb`.
 let crumbCache: { dir: string; entries: string[] } | undefined
@@ -428,6 +433,8 @@ const openReview = async (
   }))
   // The ticks of the requests reviewed before come back with the review.
   void readReviewed($).then(reviewed => update($, view, (last): View => ({ ...last, reviewed })))
+  // And the comments written for a review and not sent yet.
+  void readDrafts($).then(drafts => update($, view, (last): View => ({ ...last, drafts })))
   await update($, scan, () => ({ ...NO_SCAN, status: 'running' }))
   job = { isProject: false }
   await $.ui.open({ id: PANE, title: 'Lens', focus: true })
@@ -925,8 +932,8 @@ const applyStash = async (
 // How the forge module runs its commands: in the folder under review.
 const forgeRun =
   (run: Run, repo: string): ForgeRun =>
-  (argv, timeoutMs = 60_000) =>
-    run(argv, { cwd: repo, timeoutMs })
+  (argv, timeoutMs = 60_000, stdin) =>
+    run(argv, { cwd: repo, timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
 
 // How long what the forge said of a branch's request is taken as still so.
 const BRANCH_REQUEST_MS = 5 * 60_000
@@ -1074,6 +1081,61 @@ const readReviewed = async ($: EngineInterface): Promise<Record<string, string[]
 
   // What the store holds is held to the same limits as what is written.
   return Object.fromEntries(Object.entries(kept).slice(-REVIEWED_KEPT))
+}
+
+// The comments written for reviews and not sent yet, as the store keeps them
+// between sessions: only what reads as a draft is taken.
+const readDrafts = async ($: EngineInterface): Promise<View['drafts']> => {
+  const stored: unknown = await $.store.get('drafts').catch(() => undefined)
+  const kept: View['drafts'] = {}
+
+  if (typeof stored === 'object' && stored !== null) {
+    for (const [key, list] of Object.entries(stored).slice(-REVIEWED_KEPT)) {
+      if (Array.isArray(list)) {
+        kept[key] = list.flatMap((one: unknown): Draft[] => {
+          const draft = (typeof one === 'object' && one !== null ? one : {}) as Record<string, unknown>
+
+          return typeof draft.id === 'string' &&
+            typeof draft.path === 'string' &&
+            typeof draft.line === 'number' &&
+            typeof draft.body === 'string'
+            ? [
+                {
+                  id: draft.id,
+                  path: draft.path,
+                  line: draft.line,
+                  body: draft.body,
+                  ...(typeof draft.startLine === 'number' ? { startLine: draft.startLine } : {}),
+                },
+              ]
+            : []
+        })
+      }
+    }
+  }
+
+  return kept
+}
+
+// Changes a request's drafts, here and in the store. A request left with
+// none is dropped, and the oldest give way as the reviewed ticks do.
+const changeDrafts = async (
+  $: EngineInterface,
+  key: string,
+  change: (list: readonly Draft[]) => Draft[],
+): Promise<void> => {
+  await update($, view, (last): View => {
+    const { [key]: held = [], ...rest } = last.drafts ?? {}
+    const list = change(held).slice(-DRAFTS_KEPT)
+
+    return {
+      ...last,
+      drafts: Object.fromEntries(
+        [...Object.entries(rest), ...(list.length === 0 ? [] : [[key, list] as const])].slice(-REVIEWED_KEPT),
+      ),
+    }
+  })
+  await $.store.set('drafts', (await read($, view)).drafts ?? {}).catch(() => undefined)
 }
 
 // Ticks or unticks a file of a request as reviewed, here and in the store.
@@ -1447,8 +1509,23 @@ const sendReview = async (
   typed: string,
   verdict: 'approve' | 'request-changes' | 'comment',
   summary: string,
+  // The request's head when it is not what is checked out ('' then).
+  target = '',
 ): Promise<void> => {
-  const refusal = await submitReview(forgeRun(runOf($), repo), typed, verdict, summary)
+  const run = forgeRun(runOf($), repo)
+  const key = `${repo}\n${typed}`
+  const drafts = (await read($, view)).drafts?.[key] ?? []
+  // The comments written for the review go with it, on the request's head.
+  const [commit, prefix] =
+    drafts.length === 0
+      ? ['', '']
+      : await Promise.all([git.fullHash(runOf($), repo, target === '' ? 'HEAD' : target), repoPrefix(run)])
+  const { refusal, sent } = await submitDrafted(run, typed, verdict, summary, { drafts, commit, prefix })
+
+  // What reached the forge is no longer waiting, whether or not the rest did.
+  if (sent.length > 0) {
+    await changeDrafts($, key, list => list.filter(one => !sent.includes(one.id)))
+  }
 
   if (refusal !== '') {
     $.ui.toast(refusal, { timeoutMs: 10_000 })
@@ -1459,7 +1536,7 @@ const sendReview = async (
   reviewDraft = ''
   reviewRound += 1
   $.ui.toast(
-    verdict === 'approve' ? 'Approved' : verdict === 'comment' ? 'Review comment sent' : 'Changes requested',
+    `${verdict === 'approve' ? 'Approved' : verdict === 'comment' ? 'Review sent' : 'Changes requested'}${sent.length === 0 ? '' : `, with ${sent.length} ${sent.length === 1 ? 'comment' : 'comments'}`}`,
   )
   await update($, view, last => ({ ...last, isReviewing: false }))
   // What was said shows among the request's comments on the next scan.
@@ -1800,8 +1877,12 @@ export const register: Register = (on, options) => {
       () => undefined,
     )
     const sessionRoot = await $.session.cwd().catch(() => '')
+    // The comments written for the review and not sent yet are drawn where
+    // they will sit, as comments of their own kind.
+    const drafts = requestTyped === '' ? [] : (now.drafts[`${repo}\n${requestTyped}`] ?? [])
     const comments = [
       ...requestComments,
+      ...drafts.map(draftComment),
       ...findingComments(
         ledgerRun,
         repo,
@@ -2254,6 +2335,7 @@ export const register: Register = (on, options) => {
             reviewed: seen,
             stashes: found.stashes,
             isReviewing: now.isReviewing,
+            pending: drafts.length,
             reviewRound,
             talkOpen: now.talkOpen,
             talkReply: now.talkReply,
@@ -2328,7 +2410,7 @@ export const register: Register = (on, options) => {
               reviewDraft = text
             },
             submitReview: (verdict, entered) =>
-              void sendReview($, repo, requestTyped, verdict, entered ?? reviewDraft),
+              void sendReview($, repo, requestTyped, verdict, entered ?? reviewDraft, target),
             checkProject: () => {
               job = { isProject: true }
             },
@@ -2622,7 +2704,8 @@ export const register: Register = (on, options) => {
       // A request's thread before a ledger finding on the same line: reply
       // and resolve are the thread's.
       const first =
-        talk.find(one => one.line === n && !isFinding(one)) ?? talk.find(one => one.line === n)
+        talk.find(one => one.line === n && !isFinding(one) && !isDraft(one)) ??
+        talk.find(one => one.line === n && !isDraft(one))
 
       return first === undefined || first.replyTo === undefined
         ? first
@@ -2763,7 +2846,7 @@ export const register: Register = (on, options) => {
               requestLabel,
               file,
               n,
-              talk.filter(one => one.line === n && isFinding(one) === isLedger),
+              talk.filter(one => one.line === n && isFinding(one) === isLedger && !isDraft(one)),
               from,
               to,
               texts,
@@ -2892,16 +2975,60 @@ export const register: Register = (on, options) => {
             replyTo: '',
           }))
         },
+        // Drops comments written for the review and not sent yet.
+        discardDrafts: ids =>
+          void changeDrafts($, `${repo}\n${requestTyped}`, list =>
+            list.filter(one => !ids.includes(one.id)),
+          ),
         // Back to a comment on the one line the box is under.
         commentOnOneLine: () => set(was => ({ ...was, commentFrom: 0 })),
         typeComment: text => {
           commentDraft = text
         },
-        postComment: entered => {
+        // An answer to a thread is posted at once. A comment of its own waits
+        // with the review's others unless it is asked to go now (`isNow`).
+        postComment: (entered, isNow = false) => {
           const root = now.replyTo === '' ? undefined : rootOn(now.commentLine)
+          const body = (entered ?? commentDraft).trim()
 
           if (root !== undefined) {
             void postReply($, repo, requestTyped, root, entered ?? commentDraft)
+
+            return
+          }
+
+          if (!isNow) {
+            if (body === '') {
+              $.ui.toast('Type the comment first')
+
+              return
+            }
+
+            const line = now.commentLine === FILE_COMMENT ? 0 : now.commentLine
+
+            commentDraft = ''
+            commentRound += 1
+            void $.clock
+              .now()
+              .then(at =>
+                changeDrafts($, `${repo}\n${requestTyped}`, list => [
+                  ...list,
+                  {
+                    id: `${at}-${list.length}`,
+                    path: file,
+                    line,
+                    body,
+                    ...(now.commentFrom > 0 && now.commentFrom < line ? { startLine: now.commentFrom } : {}),
+                  },
+                ]),
+              )
+              .then(() => {
+                $.ui.toast(
+                  `Added to your review (${drafts.length + 1} waiting): send it from the file tree with v`,
+                  { timeoutMs: 6000 },
+                )
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '' }))
+              })
 
             return
           }

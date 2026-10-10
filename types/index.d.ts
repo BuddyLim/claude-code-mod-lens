@@ -103,6 +103,10 @@ export type View = {
   // The files of each request ticked as reviewed, by the folder under review
   // and what the request is typed as ("/repo\n#12"): kept between sessions.
   reviewed: Record<string, string[]>
+  // The comments written for each request's review and not sent yet, by the
+  // same name as `reviewed`: they go to the forge with the verdict. `line`
+  // is 0 for a file as a whole; `startLine` makes it a comment on several.
+  drafts: Record<string, { id: string; path: string; line: number; startLine?: number; body: string }[]>
   // The first row the page of every change shows in its window, 0-based.
   pageTop: number
   // How many times the hooks module has asked for the pane to be drawn again

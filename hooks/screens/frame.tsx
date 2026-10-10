@@ -11,6 +11,7 @@ import type { ElementTable, Elements, RenderChildren } from 'claude-code'
 import type { Severity } from '../../types'
 import { isFinding } from '../ledger'
 import type { Comment } from '../review'
+import { isDraft } from '../review'
 
 // The elements of the surface the pane is on. Every surface has the first
 // three; a screen draws without the others where a surface lacks them.
@@ -127,9 +128,16 @@ export const LEDGER_COLOR = '#4fc1ff'
 // The mark and the colour of a thread, by its first comment: a ledger
 // finding's, or a request comment's. A resolved thread's colour is the
 // caller's to choose.
-export const talkIcon = (one: Comment): string => (isFinding(one) ? LEDGER_ICON : COMMENT_ICON)
+export const talkIcon = (one: Comment): string =>
+  isDraft(one) ? '✎' : isFinding(one) ? LEDGER_ICON : COMMENT_ICON
 export const talkColor = (one: Comment | undefined): string =>
-  one !== undefined && isFinding(one) ? LEDGER_COLOR : COMMENT_COLOR
+  one !== undefined && isDraft(one)
+    ? PENDING_COLOR
+    : one !== undefined && isFinding(one)
+      ? LEDGER_COLOR
+      : COMMENT_COLOR
+// A comment written for the review and not sent yet: the colour of what waits.
+export const PENDING_COLOR = '#e2c08d'
 // The colour of a review thread that has been resolved.
 export const RESOLVED_COLOR = '#9a8444'
 // How many lines of a commit's body show at once.

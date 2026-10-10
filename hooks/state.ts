@@ -52,6 +52,7 @@ export const NO_VIEW: View = {
   checked: [],
   origin: 'graph',
   reviewed: {},
+  drafts: {},
   pageTop: 0,
   redraws: 0,
   bodyTop: 0,

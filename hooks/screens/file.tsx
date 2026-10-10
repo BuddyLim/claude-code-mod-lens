@@ -20,6 +20,7 @@ import { minimapCells } from '../minimap'
 import { markSpans, withInlays } from '../parts'
 import { isFinding as isLedgerFinding } from '../ledger'
 import type { Comment } from '../review'
+import { draftId, isDraft } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
 import { clamp, findMatches, shortRef, wrapText } from '../text'
 import { iconOf } from '../tree'
@@ -29,6 +30,7 @@ import {
   COLOR,
   COMMENT_COLOR,
   RESOLVED_COLOR,
+  PENDING_COLOR,
   COMMIT_BOX,
   talkColor as colorOfTalk,
   talkIcon,
@@ -40,6 +42,8 @@ import {
 } from './frame'
 import { isMarkdownFile } from './markdown'
 
+// The most lines of an unsent comment its card shows.
+const DRAFT_LINES = 6
 // What `commentLine` holds while the comment being typed is on the file as a
 // whole, not on a line of it.
 export const FILE_COMMENT = -1
@@ -215,7 +219,11 @@ export type FileActions = {
   // passes the field's text; the button posts what was typed so far).
   toggleCommenting: () => void
   typeComment: (text: string) => void
-  postComment: (entered?: string) => void
+  // `isNow` sends a comment of its own at once, in place of leaving it to
+  // wait for the review.
+  postComment: (entered?: string, isNow?: boolean) => void
+  // Drops comments written for the review and not sent, by their ids.
+  discardDrafts: (ids: readonly string[]) => void
 }
 
 // The window as drawn, for the scroll hook: the furthest its first line may
@@ -523,8 +531,57 @@ export const fileScreen = (
     const talkWidth = Math.max(24, Math.min(100, codeColumns - gutter - 4))
     // A request's thread and the ledger's findings on the same line are two
     // cards, each in its colour: a finding is no answer to the thread.
-    const forgeTalk = talk.filter(one => !isLedgerFinding(one))
+    const forgeTalk = talk.filter(one => !isLedgerFinding(one) && !isDraft(one))
     const ledgerTalk = talk.filter(isLedgerFinding)
+    // What was written for the review and not sent yet has a card of its
+    // own too, in the colour of what waits: all of it, and a way to drop it.
+    const draftTalk = talk.filter(isDraft)
+    const draftCard = () => {
+      if (draftTalk.length === 0) {
+        return { height: 0, rows: [] }
+      }
+
+      const lines = draftTalk.flatMap(one => [
+        {
+          isHead: true,
+          text: `✎ pending${one.startLine === undefined ? '' : ` · lines ${one.startLine}–${one.line}`} · goes with your review`,
+        },
+        ...wrapText(one.body.trim(), talkWidth - 4)
+          .slice(0, DRAFT_LINES)
+          .map(text => ({ isHead: false, text })),
+      ])
+      const height = lines.length + 3
+
+      return {
+        height,
+        rows: [
+          <Box
+            marginLeft={gutter + 2}
+            width={talkWidth}
+            height={height}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={PENDING_COLOR}
+            paddingX={1}
+            overflow="hidden"
+          >
+            {lines.map(line => (
+              <Text wrap="truncate-end" color={line.isHead ? PENDING_COLOR : undefined} bold={line.isHead}>
+                {line.text === '' ? ' ' : line.text}
+              </Text>
+            ))}
+            <Box height={1} overflow="hidden">
+              <Button
+                plain
+                key={`draft-drop:${n}`}
+                label="✕ discard"
+                onPress={() => actions.discardDrafts(draftTalk.map(draftId))}
+              />
+            </Box>
+          </Box>,
+        ],
+      }
+    }
     const cardFor = (group: readonly Comment[], isLedger: boolean) => {
       if (group.length === 0) {
         return { height: 0, rows: [] }
@@ -632,7 +689,7 @@ export const fileScreen = (
         ],
       }
     }
-    const cards = [cardFor(forgeTalk, false), cardFor(ledgerTalk, true)]
+    const cards = [cardFor(forgeTalk, false), cardFor(ledgerTalk, true), draftCard()]
     const cardHeight = cards.reduce((sum, card) => sum + card.height, 0)
     // The box a comment or a reply is typed in opens under the line it is
     // for (under the thread, when it answers one). Only Enter or its post
@@ -675,7 +732,21 @@ export const fileScreen = (
                 />
               </Box>
               <Box height={1} overflow="hidden" columnGap={2}>
-                <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+                {/* An answer is posted at once. A comment of its own waits for
+                    the review (Enter does that too), or goes now. */}
+                {answered !== undefined ? (
+                  <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+                ) : (
+                  [
+                    <Button
+                      key="comment-post"
+                      variant="primary"
+                      label="add to review"
+                      onPress={() => actions.postComment()}
+                    />,
+                    <Button key="comment-now" label="post now" onPress={() => actions.postComment(undefined, true)} />,
+                  ]
+                )}
                 <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
               </Box>
             </Box>,
@@ -1328,7 +1399,13 @@ export const fileScreen = (
               />
             </Box>
             <Box height={1} overflow="hidden" columnGap={2}>
-              <Button key="comment-file-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+              <Button
+                key="comment-file-post"
+                variant="primary"
+                label="add to review"
+                onPress={() => actions.postComment()}
+              />
+              <Button key="comment-file-now" label="post now" onPress={() => actions.postComment(undefined, true)} />
               <Button key="comment-file-cancel" label="cancel" onPress={actions.cancelComment} />
             </Box>
           </Box>

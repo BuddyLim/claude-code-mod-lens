@@ -9,7 +9,7 @@ import { countLabel, diagsOf } from '../diags'
 import type { Stash } from '../git'
 import { isFinding } from '../ledger'
 import type { Comment } from '../review'
-import { isOnWholeFile } from '../review'
+import { isDraft, isOnWholeFile } from '../review'
 import { clamp, fitStash, wrapText } from '../text'
 import type { TreeRow } from '../tree'
 import { buildTree, iconOf, visibleTree } from '../tree'
@@ -25,6 +25,7 @@ import {
   GITLAB_ICON,
   LEDGER_COLOR,
   LEDGER_ICON,
+  PENDING_COLOR,
   RESOLVED_COLOR,
   STASH_COLOR,
   STASH_ICON,
@@ -109,6 +110,8 @@ export type TreeModel = {
   // review sent or dropped, so its field starts empty.
   isReviewing: boolean
   reviewRound: number
+  // How many comments are written for the review and not sent yet.
+  pending: number
   // The conversation: the comment opened in full ('' for none); what is
   // being typed ('' nothing, 'new' a comment of its own, else the id of the
   // comment an answer quotes); and a number that changes with each comment
@@ -248,7 +251,11 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
     const counts = countLabel(diagsOf(diags, path))
     // A request's file is counted by what the request changes in it.
     const counted = scope === REQUEST_SPACE ? (model.request?.stats ?? {}) : stats
-    const threads = comments.filter(one => one.path === path && one.replyTo === undefined)
+    // What is written and not sent is counted apart, in its own colour.
+    const waiting = comments.filter(one => one.path === path && isDraft(one)).length
+    const threads = comments.filter(
+      one => one.path === path && one.replyTo === undefined && !isDraft(one),
+    )
     const settled = threads.filter(one => one.isResolved === true).length
     const open = threads.length - settled
     const found = threads.filter(one => one.isResolved !== true && isFinding(one)).length
@@ -308,6 +315,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             {COMMENT_ICON} {open - found}
           </Text>
         )}
+        {waiting > 0 && <Text color={PENDING_COLOR}>  ✎ {waiting}</Text>}
         {/* The ledger's open findings are counted apart, in their colour. */}
         {found > 0 && (
           <Text color={LEDGER_COLOR}>
@@ -732,7 +740,11 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             plain
             key="review"
             hotkey="v"
-            label={model.isReviewing ? 'close review' : 'submit review'}
+            label={
+              model.isReviewing
+                ? 'close review'
+                : `submit review${model.pending === 0 ? '' : ` (${model.pending} waiting)`}`
+            }
             onPress={actions.toggleReviewing}
           />
         )}
@@ -817,10 +829,22 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           request. Nothing is sent until one of its buttons is pressed. */}
       {model.isReviewing && Input !== undefined && shell.reviewing !== '' && (
         <Box flexDirection="column" borderStyle="round" borderColor={COMMIT_BOX} paddingX={1}>
+          {/* The comments written in the code view and left waiting go to
+              the forge with whichever button is pressed here. */}
+          {model.pending > 0 && (
+            <Text color={PENDING_COLOR} wrap="truncate-end">
+              ✎ {model.pending} {model.pending === 1 ? 'comment is' : 'comments are'} waiting, and will be
+              sent with this review.
+            </Text>
+          )}
           <Input
             key={`review-text:${model.reviewRound}`}
             label="review"
-            placeholder="a summary of your review (needed to comment or request changes)"
+            placeholder={
+              model.pending > 0
+                ? 'a summary of your review (optional with comments waiting)'
+                : 'a summary of your review (needed to comment or request changes)'
+            }
             submitLabel="comment"
             autoFocus
             onInput={actions.typeReview}

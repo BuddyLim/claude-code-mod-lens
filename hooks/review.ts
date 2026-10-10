@@ -1,9 +1,11 @@
 // Pull request / merge request lookup: turns what the user typed into two refs that exist locally.
 // Handle-free on purpose: every command goes through the `run` the caller passes in.
 
+// `stdin` is what the command reads, where it is given one (a JSON body).
 export type Run = (
   argv: string[],
   timeoutMs?: number,
+  stdin?: string,
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>
 
 export type Forge = 'github' | 'gitlab' | 'unknown'
@@ -312,6 +314,33 @@ export type Comment = {
   // forge did not say, and on general comments.
   thread?: string
 }
+
+// A comment written and not yet sent: it waits to go with the review. `path`
+// is from the folder under review; `line` is 0 for the file as a whole, and
+// `startLine`, where it is before `line`, makes it a comment on those lines.
+export type Draft = { id: string; path: string; line: number; startLine?: number; body: string }
+
+const DRAFT = 'draft-'
+
+// A draft as the comment it will be, so the screens draw it where it will
+// sit: its id says it is one (see `isDraft`).
+export const draftComment = (draft: Draft): Comment => ({
+  id: `${DRAFT}${draft.id}`,
+  path: draft.path,
+  line: draft.line,
+  author: 'you · pending, not sent yet',
+  body: draft.body,
+  when: '',
+  isOutdated: false,
+  ...(draft.startLine !== undefined && draft.startLine > 0 && draft.startLine < draft.line
+    ? { startLine: draft.startLine }
+    : {}),
+})
+
+export const isDraft = (one: Pick<Comment, 'id'>): boolean => one.id.startsWith(DRAFT)
+
+// The id of the draft a comment made by `draftComment` stands for.
+export const draftId = (one: Pick<Comment, 'id'>): string => one.id.slice(DRAFT.length)
 
 // Whether a comment is on its file as a whole: it names a file and no line,
 // and is neither one that lost its line to an edit nor one on a removed line.
@@ -1293,19 +1322,85 @@ export const submitReview = async (
   typed: string,
   verdict: 'approve' | 'request-changes' | 'comment',
   summary: string,
-): Promise<string> => {
-  const body = summary.trim()
+): Promise<string> => (await submitDrafted(run, typed, verdict, summary, { drafts: [], commit: '', prefix: '' })).refusal
 
-  if (verdict !== 'approve' && body === '') {
-    return 'Write a summary first: it is what the review says'
+// Submits a review with the comments written for it (`drafts`), which go to
+// the forge with the verdict. `commit` is the request's head, which the
+// comments are placed on, and `prefix` the folder under review's place in
+// the repo. Answers why it was not taken ('' when it was) and which drafts
+// did reach the forge (`sent`, by id), so those are not sent twice.
+//
+// GitHub takes the comments on lines and the verdict as one review. A
+// comment on a file as a whole is no part of that call there, and GitLab
+// has no such call at all: those are posted one at a time, before the
+// verdict.
+export const submitDrafted = async (
+  run: Run,
+  typed: string,
+  verdict: 'approve' | 'request-changes' | 'comment',
+  summary: string,
+  pending: { drafts: readonly Draft[]; commit: string; prefix: string },
+): Promise<{ refusal: string; sent: string[] }> => {
+  const body = summary.trim()
+  const sent: string[] = []
+  const { drafts, commit, prefix } = pending
+
+  if (verdict !== 'approve' && body === '' && drafts.length === 0) {
+    return { refusal: 'Write a summary first: it is what the review says', sent }
   }
 
   const place = await locate(run, typed)
 
   if ('error' in place) {
-    return place.error
+    return { refusal: place.error, sent }
   }
 
+  // The comments posted one at a time: all of them on GitLab, those on a
+  // whole file on GitHub.
+  for (const draft of drafts.filter(one => place.forge === 'gitlab' || one.line === 0)) {
+    const posted = await postComment(
+      run,
+      typed,
+      {
+        path: `${prefix}${draft.path}`,
+        line: draft.line,
+        commit,
+        ...(draft.startLine === undefined ? {} : { startLine: draft.startLine }),
+      },
+      draft.body,
+    )
+
+    if ('error' in posted) {
+      return { refusal: posted.error, sent }
+    }
+
+    sent.push(draft.id)
+  }
+
+  const refusal = await submitVerdict(
+    run,
+    place,
+    verdict,
+    body,
+    place.forge === 'gitlab' ? [] : drafts.filter(one => one.line > 0),
+    commit,
+    prefix,
+  )
+
+  return refusal === ''
+    ? { refusal, sent: drafts.map(one => one.id) }
+    : { refusal, sent }
+}
+
+const submitVerdict = async (
+  run: Run,
+  place: Place,
+  verdict: 'approve' | 'request-changes' | 'comment',
+  body: string,
+  onLines: readonly Draft[],
+  commit: string,
+  prefix: string,
+): Promise<string> => {
   if (place.forge === 'gitlab') {
     if (verdict === 'request-changes') {
       return 'GitLab has no call for requesting changes here: submit a comment saying what to change'
@@ -1332,6 +1427,38 @@ export const submitReview = async (
   }
 
   const event = verdict === 'approve' ? 'APPROVE' : verdict === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
+
+  // With comments, the review is one JSON body: a list does not fit the
+  // CLI's fields.
+  if (onLines.length > 0) {
+    const whole = await run(
+      gh(place, '-X', 'POST', `repos/${place.repo}/pulls/${place.number}/reviews`, '--input', '-'),
+      COMMENTS_MS,
+      JSON.stringify({
+        event,
+        ...(body === '' ? {} : { body }),
+        ...(commit === '' ? {} : { commit_id: commit }),
+        comments: onLines.map(one => ({
+          path: `${prefix}${one.path}`,
+          line: one.line,
+          side: 'RIGHT',
+          body: one.body,
+          ...(one.startLine !== undefined && one.startLine > 0 && one.startLine < one.line
+            ? { start_line: one.startLine, start_side: 'RIGHT' }
+            : {}),
+        })),
+      }),
+    ).catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: String(error) }))
+
+    return whole.exitCode === 0 ? '' : whyFailed(place, whole, 'comment on')
+  }
+
+  // GitHub refuses a comment-only review that says nothing: with its
+  // comments all posted already, there is nothing left to send.
+  if (verdict === 'comment' && body === '') {
+    return ''
+  }
+
   const sent = await call(
     run,
     gh(

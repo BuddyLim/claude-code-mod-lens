@@ -11,6 +11,7 @@ import {
   remoteParts,
   repoPrefix,
   resolveRequest,
+  submitDrafted,
 } from './review'
 import type { Run } from './review'
 
@@ -595,6 +596,49 @@ test('a GitHub comment is posted on the right side of the head commit', async ()
     },
   })
   expect(sent).toEqual([['git', 'remote', 'get-url', 'origin'], GH_POST])
+})
+
+test('a review goes to GitHub with the comments written for it, as one call', async () => {
+  const sent: { argv: string[]; stdin: string | undefined }[] = []
+  const run: Run = async (argv, _timeout, stdin) => {
+    sent.push({ argv, stdin })
+
+    return argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : ok('{}')
+  }
+  const drafts = [
+    { id: 'a', path: 'a.ts', line: 40, body: 'why?' },
+    { id: 'b', path: 'a.ts', line: 12, startLine: 9, body: 'these four' },
+  ]
+
+  expect(
+    await submitDrafted(run, '12', 'request-changes', 'see inline', { drafts, commit: 'f'.repeat(40), prefix: 'src/' }),
+  ).toEqual({ refusal: '', sent: ['a', 'b'] })
+
+  const review = sent[sent.length - 1]
+
+  expect(review?.argv.slice(-3)).toEqual(['repos/acme/app/pulls/12/reviews', '--input', '-'])
+  expect(JSON.parse(review?.stdin ?? '{}')).toEqual({
+    event: 'REQUEST_CHANGES',
+    body: 'see inline',
+    commit_id: 'f'.repeat(40),
+    comments: [
+      { path: 'src/a.ts', line: 40, side: 'RIGHT', body: 'why?' },
+      { path: 'src/a.ts', line: 12, side: 'RIGHT', body: 'these four', start_line: 9, start_side: 'RIGHT' },
+    ],
+  })
+
+  // With comments waiting, a comment-only review needs no summary; with
+  // none, it still does.
+  expect((await submitDrafted(run, '12', 'comment', '', { drafts, commit: 'f'.repeat(40), prefix: '' })).refusal).toBe('')
+  expect(await submitDrafted(run, '12', 'comment', '', { drafts: [], commit: '', prefix: '' })).toEqual({
+    refusal: 'Write a summary first: it is what the review says',
+    sent: [],
+  })
+
+  // A review the forge refuses leaves its comments waiting.
+  const refusing: Run = async argv => (argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : failed('HTTP 422'))
+
+  expect((await submitDrafted(refusing, '12', 'comment', 'x', { drafts, commit: 'f'.repeat(40), prefix: '' })).sent).toEqual([])
 })
 
 test('a GitHub comment on several lines names the first of them too', async () => {
