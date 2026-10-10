@@ -16,6 +16,8 @@ export const PICTURE_BYTES = 2 * 1024 * 1024
 const PICTURE_PIXELS = 4096
 // How many of a description's pictures are drawn; the rest stay links.
 export const PICTURES_SHOWN = 6
+// How many times a picture's address may point on to another.
+const REDIRECTS = 4
 
 // The hosts a forge serves its own pictures from, beside the forge itself:
 // what people drop into a description, and a file of a repository.
@@ -58,7 +60,7 @@ export const cellsOf = (
 
 // Fetches one address into a folder that is the person's alone, makes what
 // came a PNG, and prints the file and its size. $1 the address, $2 the most
-// bytes. The folder is in the person's own cache, never the shared /tmp, and
+// bytes, $3 the address the picture was first asked for by (its name). The folder is in the person's own cache, never the shared /tmp, and
 // is refused where it is a link or someone else's. The file is named by the
 // SHA-256 of the address, worked out here, so two addresses never share one.
 // The address is taken as it is written (no braces or brackets are spread
@@ -72,8 +74,8 @@ const FETCH = [
   'mkdir -p "$dir" || exit 1',
   '[ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || exit 1',
   'chmod 700 "$dir" || exit 1',
-  'if command -v shasum >/dev/null 2>&1; then name=$(printf %s "$1" | shasum -a 256 | cut -c1-64)',
-  'elif command -v sha256sum >/dev/null 2>&1; then name=$(printf %s "$1" | sha256sum | cut -c1-64)',
+  'if command -v shasum >/dev/null 2>&1; then name=$(printf %s "$3" | shasum -a 256 | cut -c1-64)',
+  'elif command -v sha256sum >/dev/null 2>&1; then name=$(printf %s "$3" | sha256sum | cut -c1-64)',
   'else exit 1; fi',
   '[ "${#name}" -eq 64 ] || exit 1',
   'case "$name" in *[!0-9a-f]*) exit 1 ;; esac',
@@ -82,7 +84,14 @@ const FETCH = [
   'raw="$dir/$name.$$.raw"; made="$dir/$name.$$.png"; png="$dir/$name.png"',
   'if [ ! -s "$png" ] || [ -L "$png" ]; then',
   '  rm -f "$png"',
-  '  curl -sSL --globoff --proto "=https" --proto-redir "=https" --max-redirs 5 --max-time 20 --max-filesize "$2" -o "$raw" -- "$1" || { rm -f "$raw"; exit 1; }',
+  // No redirect is followed here: where the answer is one, the address it
+  // points at is printed, for the caller to hold to the same hosts first.
+  '  said=$(curl -sS --globoff --proto "=https" --max-redirs 0 --max-time 20 --max-filesize "$2" -o "$raw" -w "%{http_code} %{redirect_url}" -- "$1") || { rm -f "$raw"; exit 1; }',
+  '  case "$said" in',
+  '    3??\\ https://*) rm -f "$raw"; printf "to %s\\n" "${said#* }"; exit 0 ;;',
+  '    200\\ *) ;;',
+  '    *) rm -f "$raw"; exit 1 ;;',
+  '  esac',
   '  [ "$(wc -c < "$raw" | tr -d " ")" -le "$2" ] || { rm -f "$raw"; exit 1; }',
   '  magic=$(od -An -tx1 -N12 "$raw" | tr -d " \\n")',
   '  case "$magic" in',
@@ -112,7 +121,22 @@ export const fetchPicture = async (run: Run, url: string, forge: string): Promis
     return undefined
   }
 
-  const ran = await run(['sh', '-c', FETCH, 'sh', url, String(PICTURE_BYTES)], { timeoutMs: 40_000 })
+  // A forge answers some pictures with another address. Each one it points
+  // at is held to the same hosts before it is asked, a few times at most, so
+  // a redirect cannot lead the fetch anywhere the first address could not go.
+  let from = url
+  let ran = await run(['sh', '-c', FETCH, 'sh', from, String(PICTURE_BYTES), url], { timeoutMs: 40_000 })
+
+  for (let hop = 0; hop < REDIRECTS && ran.exitCode === 0 && ran.stdout.startsWith('to '); hop++) {
+    from = ran.stdout.slice(3).trim()
+
+    if (!isFetched(from, forge)) {
+      return undefined
+    }
+
+    ran = await run(['sh', '-c', FETCH, 'sh', from, String(PICTURE_BYTES), url], { timeoutMs: 40_000 })
+  }
+
   const [file = '', size = ''] = ran.stdout.trim().split('\n')
   const [width = 0, height = 0] = size.split(' ').map(Number)
 

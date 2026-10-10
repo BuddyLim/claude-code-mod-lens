@@ -5,7 +5,7 @@
 import { ageOf } from '../git'
 import type { Listed } from '../review'
 import type { Kit, Shell } from './frame'
-import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksWord, helpButton, stateOf, statusLine } from './frame'
+import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksMark, checksWord, helpButton, stateOf, statusLine } from './frame'
 
 export type RequestsModel = {
   shell: Shell
@@ -64,12 +64,12 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
             {/* Whether its checks pass, and whether it is approved or has
                 changes asked for: a mark each, in the colour of how it stands. */}
             {one.checks !== '' && (
-              <Text color={stateOf(one.checks)[1]}>
+              <Text color={checksMark(one.checks)[1]}>
                 {' '}
-                {stateOf(one.checks)[0]} {checksWord(one.checks)}
+                {checksMark(one.checks)[0]} {checksWord(one.checks)}
               </Text>
             )}
-            {/APPROVED|CHANGES_REQUESTED/.test(one.decision) && (
+            {/^(APPROVED|CHANGES_REQUESTED)$/.test(one.decision) && (
               <Text color={stateOf(one.decision)[1]}>
                 {' '}
                 {stateOf(one.decision)[0]} {one.decision === 'APPROVED' ? 'approved' : 'changes asked'}

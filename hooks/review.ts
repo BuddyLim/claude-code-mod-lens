@@ -1158,7 +1158,7 @@ export type Listed = {
 const GITHUB_STANDING =
   'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:50,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}'
 const GITLAB_STANDING =
-  'query($path:ID!){project(fullPath:$path){mergeRequests(state:opened,first:50,sort:UPDATED_DESC){nodes{iid approved headPipeline{status}}}}}'
+  'query($path:ID!){project(fullPath:$path){mergeRequests(state:opened,first:50,sort:UPDATED_DESC){nodes{iid approved approvedBy(first:1){nodes{username}} headPipeline{status}}}}}'
 
 export const listRequests = async (run: Run): Promise<Listed[]> => {
   const place = await locate(run, '1')
@@ -1217,7 +1217,17 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
 
       standing.set(Number(isGitlab ? node.iid : node.number), {
         checks: plain(text(isGitlab ? record(node.headPipeline).status : record(commit.statusCheckRollup).state)).slice(0, 40),
-        decision: plain(isGitlab ? (node.approved === true ? 'APPROVED' : '') : text(node.reviewDecision)).slice(0, 40),
+        // GitLab calls a request approved when it needs no approval at all,
+        // so it is said to be only where someone did approve it.
+        decision: plain(
+          isGitlab
+            ? node.approved === true &&
+              Array.isArray(record(node.approvedBy).nodes) &&
+              (record(node.approvedBy).nodes as unknown[]).length > 0
+              ? 'APPROVED'
+              : ''
+            : text(node.reviewDecision),
+        ).slice(0, 40),
       })
     }
   } catch {

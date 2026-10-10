@@ -1204,13 +1204,17 @@ test('the open requests say whether their checks pass and how their reviews stan
     return argv[0] === 'git'
       ? ok('https://gitlab.com/acme/app.git\n')
       : line.includes('graphql')
-        ? ok(JSON.stringify({ data: { project: { mergeRequests: { nodes: [{ iid: '34', approved: true, headPipeline: { status: 'RUNNING' } }] } } } }))
+        ? ok(JSON.stringify({ data: { project: { mergeRequests: { nodes: [{ iid: '34', approved: true, approvedBy: { nodes: [{ username: 'bob' }] }, headPipeline: { status: 'RUNNING' } }, { iid: '35', approved: true, approvedBy: { nodes: [] }, headPipeline: { status: 'SKIPPED' } }] } } } }))
         : line.includes('merge_requests?state=opened')
-          ? ok(JSON.stringify([{ iid: 34, title: 'One', author: { username: 'ann' } }]))
+          ? ok(JSON.stringify([{ iid: 34, title: 'One', author: { username: 'ann' } }, { iid: 35, title: 'Two', author: { username: 'ann' } }]))
           : ok(JSON.stringify({ username: 'zed' }))
   }
 
-  expect((await listRequests(gitlab)).map(one => [one.typed, one.checks, one.decision])).toEqual([['!34', 'RUNNING', 'APPROVED']])
+  expect((await listRequests(gitlab)).map(one => [one.typed, one.checks, one.decision])).toEqual([
+    ['!34', 'RUNNING', 'APPROVED'],
+    // Approved by nobody, because nobody had to: not said to be approved.
+    ['!35', 'SKIPPED', ''],
+  ])
 
   // A forge that will not say how they stand still lists them.
   const silent: Run = async argv =>

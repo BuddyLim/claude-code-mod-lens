@@ -126,19 +126,57 @@ export const GITLAB_COLOR = '#fc6d26'
 // A check's or a review's state, in whichever forge's words, as a mark and a
 // colour: what passed, what failed, what is still going or waiting.
 export const stateOf = (state: string): [mark: string, color: string] => {
-  const word = state.toUpperCase()
+  const word = state.trim().toUpperCase()
 
-  return /SUCCESS|APPROVED|PASSED|MERGEABLE|CLEAN|NEUTRAL|SKIPPED/.test(word)
-    ? ['✓', 'green']
-    : /FAIL|ERROR|CHANGES_REQUESTED|CONFLICT|TIMED_OUT|CANCEL|ACTION_REQUIRED|BLOCKED|DIRTY/.test(word)
-      ? ['✖', 'red']
-      : ['●', 'yellow']
+  // Each is a whole word a forge says, never a part of one ("UNSUCCESSFUL"
+  // is no success), and what failed is asked first. A word neither list
+  // knows is drawn as not settled: nothing is called good on a guess.
+  return FAILED.has(word) ? ['✖', 'red'] : PASSED.has(word) ? ['✓', 'green'] : ['●', 'yellow']
 }
 
+const PASSED = new Set(['SUCCESS', 'SUCCESSFUL', 'APPROVED', 'PASSED', 'MERGEABLE', 'CLEAN', 'NEUTRAL', 'SKIPPED'])
+const FAILED = new Set([
+  'FAILURE',
+  'FAILED',
+  'ERROR',
+  'CHANGES_REQUESTED',
+  'CONFLICT',
+  'CONFLICTING',
+  'TIMED_OUT',
+  'CANCELED',
+  'CANCELLED',
+  'ACTION_REQUIRED',
+  'STARTUP_FAILURE',
+  'BLOCKED',
+  'DIRTY',
+])
+// What a run of checks is while it has neither passed nor failed.
+const GOING = new Set(['PENDING', 'EXPECTED', 'RUNNING', 'IN_PROGRESS', 'QUEUED', 'CREATED', 'PREPARING', 'WAITING_FOR_RESOURCE'])
+
 // The same in a few words, for a row that has no room for the forge's own:
-// "checks pass", "checks fail", "checks running".
-export const checksWord = (state: string): string =>
-  state === '' ? '' : `checks ${{ '✓': 'pass', '✖': 'fail', '●': 'running' }[stateOf(state)[0]] ?? 'running'}`
+// "checks pass", "checks fail", "checks running". Checks that were skipped
+// did not pass, and a word that is none of these is said as the forge said
+// it, so the row never claims more than the forge did.
+export const checksWord = (state: string): string => {
+  const word = state.trim().toUpperCase()
+
+  return word === ''
+    ? ''
+    : FAILED.has(word)
+      ? 'checks fail'
+      : word === 'SKIPPED' || word === 'NEUTRAL'
+        ? 'checks skipped'
+        : PASSED.has(word)
+          ? 'checks pass'
+          : GOING.has(word)
+            ? 'checks running'
+            : `checks ${word.toLowerCase().replace(/[^a-z]+/g, ' ').trim().slice(0, 24)}`
+}
+
+// The mark and colour of a run of checks as a whole: as `stateOf`, but
+// skipped checks are not drawn as passed.
+export const checksMark = (state: string): [mark: string, color: string] =>
+  /^(SKIPPED|NEUTRAL)$/i.test(state.trim()) ? ['○', 'gray'] : stateOf(state)
 
 // The mark of a link that opens a page elsewhere.
 export const LINK_ICON = '\u{f08e}'

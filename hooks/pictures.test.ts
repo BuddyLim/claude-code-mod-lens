@@ -44,7 +44,30 @@ test('a fetched picture is what the command said, and nothing is fetched that sh
   })
   // The address rides as an argument of a fixed script, with the size it may be.
   expect(asked[0]?.slice(0, 2)).toEqual(['sh', '-c'])
-  expect(asked[0]?.slice(3)).toEqual(['sh', url, String(2 * 1024 * 1024)])
+  expect(asked[0]?.slice(3)).toEqual(['sh', url, String(2 * 1024 * 1024), url])
+  // The script follows no redirect itself, and spreads no braces.
+  expect(asked[0]?.[2]?.includes('--max-redirs 0') && asked[0]?.[2]?.includes('--globoff') && !/curl[^\n]* -\w*L/.test(asked[0]?.[2] ?? '')).toBe(true)
+
+  // A redirect to one of the forge's own hosts is asked next, under the first address's name.
+  asked.length = 0
+  const hops = ['to https://private-user-images.githubusercontent.com/1/2.png?jwt=x\n', '/Users/x/.cache/lens-pictures/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png\n10 10\n']
+  const hopping = async (argv: string[]) => {
+    asked.push(argv)
+
+    return { exitCode: 0, stdout: hops[asked.length - 1] ?? '', stderr: '' }
+  }
+
+  expect((await fetchPicture(hopping, url, 'github.com'))?.width).toBe(10)
+  expect(asked.map(argv => argv.slice(4))).toEqual([
+    [url, String(2 * 1024 * 1024), url],
+    ['https://private-user-images.githubusercontent.com/1/2.png?jwt=x', String(2 * 1024 * 1024), url],
+  ])
+
+  // A redirect anywhere else is not followed: nothing more is asked.
+  asked.length = 0
+  expect(await fetchPicture(run('to https://169.254.169.254.example.net/latest\n'), url, 'github.com')).toBe(undefined)
+  expect(await fetchPicture(run('to https://internal.corp/a.png\n'), url, 'github.com')).toBe(undefined)
+  expect(asked.length).toBe(2)
 
   // A failed fetch, a file somewhere else, or a size no picture has, is no picture.
   expect(await fetchPicture(run('', 1), url, 'github.com')).toBe(undefined)
