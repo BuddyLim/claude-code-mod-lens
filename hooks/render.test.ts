@@ -414,6 +414,63 @@ test('the code view opens a changed file on its diff, with the rewritten words l
   await ui.unmount()
 })
 
+test('a folder’s box ticks every file under it, and the totals are drawn in their colours', async ($, on) => {
+  const clock = host(on, { ...IN_REPO, '--name-status': 'M\tsrc/a.ts\nM\tsrc/b.ts\nM\ttop.ts\n' })
+
+  await $.session.start({ cwd: REPO } as never)
+  await $.command.run(lens(REPO))
+  await clock.advance(2000)
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.drawn()
+  expect((await ui.find({ key: 'checkdir:0:src' }))?.text).toBe('☐')
+  await ui.press({ key: 'checkdir:0:src' })
+  expect((await ui.find({ key: 'checkdir:0:src' }))?.text).toBe('☑')
+  expect(await ui.find({ type: 'Text', text: /^2 files selected$/ })).toBeDefined()
+  // One of them unticked, the folder's box says it holds some and not all.
+  await ui.press({ key: 'check:src/a.ts' })
+  expect((await ui.find({ key: 'checkdir:0:src' }))?.text).toBe('◪')
+  await ui.unmount()
+})
+
+test('a folder of a request’s files is marked as reviewed in one press, and unmarked in another', async ($, on) => {
+  const clock = host(on, {
+    ...IN_REPO,
+    'remote get-url origin': 'https://github.com/acme/app.git\n',
+    '--abbrev-ref': 'feature\n',
+    'pulls?state=open&head=': JSON.stringify([{ number: 12, title: 'Add the thing', base: { ref: 'main' }, html_url: 'https://github.com/acme/app/pull/12' }]),
+    'merge-base': 'b'.repeat(40) + '\n',
+    [`--name-status --relative ${'b'.repeat(40)} HEAD`]: 'M\tsrc/a.ts\nM\tsrc/b.ts\n',
+    'gh api': '[]',
+  })
+
+  await $.session.start({ cwd: REPO } as never)
+  await $.command.run(lens(REPO))
+  await clock.advance(2000)
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.drawn()
+  expect((await ui.find({ key: 'seendir:pr:98:src' }))?.text).toBe('☐')
+  await ui.press({ key: 'seendir:pr:98:src' })
+  await ui.drawn()
+  expect((await ui.find({ key: 'seendir:pr:98:src' }))?.text).toBe('☑')
+  expect((await ui.find({ key: 'seen:pr:src/a.ts' }))?.text).toBe('☑')
+  expect((await ui.find({ key: 'seen:pr:src/b.ts' }))?.text).toBe('☑')
+  // One file unticked leaves the folder half ticked; its box then ticks the rest.
+  await ui.press({ key: 'seen:pr:src/a.ts' })
+  await ui.drawn()
+  expect((await ui.find({ key: 'seendir:pr:98:src' }))?.text).toBe('◪')
+  await ui.press({ key: 'seendir:pr:98:src' })
+  await ui.drawn()
+  expect((await ui.find({ key: 'seendir:pr:98:src' }))?.text).toBe('☑')
+  await ui.press({ key: 'seendir:pr:98:src' })
+  await ui.drawn()
+  expect((await ui.find({ key: 'seen:pr:src/b.ts' }))?.text).toBe('☐')
+  await ui.unmount()
+})
+
 test('the code view of a picture draws the picture, not its bytes', async ($, on) => {
   const clock = host(on, {
     ...IN_REPO,

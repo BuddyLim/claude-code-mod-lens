@@ -1376,6 +1376,29 @@ const toggleReviewed = async ($: EngineInterface, key: string, path: string): Pr
   await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
 }
 
+// Marks several files of a request as reviewed, or as not, in one go.
+const setReviewed = async (
+  $: EngineInterface,
+  key: string,
+  paths: readonly string[],
+  isOn: boolean,
+): Promise<void> => {
+  const named = new Set(paths)
+
+  await update($, view, (last): View => {
+    const { [key]: held = [], ...rest } = last.reviewed ?? {}
+    const kept = held.filter(one => !named.has(one))
+
+    return {
+      ...last,
+      reviewed: Object.fromEntries(
+        [...Object.entries(rest), [key, (isOn ? [...kept, ...paths] : kept).slice(-REVIEWED_PATHS)]].slice(-REVIEWED_KEPT),
+      ),
+    }
+  })
+  await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
+}
+
 // Starts a comparison between two things the person named: `side` is what is
 // read (a branch or commit, or '' for the working tree) and `against` is what
 // it is compared with. Each name is checked with git first, so a typo is said
@@ -2315,6 +2338,33 @@ export const register: Register = (on, options) => {
       }
     }
 
+    // A folder's tick: every file under it is marked, or every one unmarked,
+    // here at once and on the forge one after another, with one word said
+    // if the forge refused any.
+    const markReviewedAll = (paths: readonly string[], isOn: boolean): void => {
+      const todo = paths.filter(path => seen.includes(path) !== isOn)
+
+      if (seenKey === '' || todo.length === 0) {
+        return
+      }
+
+      const held = viewedCache?.key === seenKey ? viewedCache : undefined
+
+      void (async () => {
+        await setReviewed($, seenKey, todo, isOn)
+
+        let refused = ''
+
+        for (const path of held !== undefined && held.id !== '' ? todo : []) {
+          refused ||= await markViewed(forgeRun(runOf($), repo), requestTyped, held?.id ?? '', `${held?.prefix ?? ''}${path}`, isOn)
+        }
+
+        if (refused !== '') {
+          $.ui.toast(`Ticked here, but not all on the forge: ${refused}`, { timeoutMs: 8000 })
+        }
+      })()
+    }
+
     if (now.screen === 'overview') {
       const key = `${repo}\n${requestTyped}`
       const held = overviewCache?.key === key ? overviewCache : undefined
@@ -3083,6 +3133,7 @@ export const register: Register = (on, options) => {
               set((last): View => ({ ...last, screen: 'changes', pageTop: 0, codeFrom: 'tree' }))
             },
             toggleReviewed: markReviewed,
+            markAll: markReviewedAll,
             openTalk: id => set((last): View => ({ ...last, talkOpen: id })),
             writeTalk: id => {
               talkDraft = ''

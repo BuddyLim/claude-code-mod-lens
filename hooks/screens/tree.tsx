@@ -36,6 +36,7 @@ import {
   notesOf,
   said,
   statusLine,
+  FILES_ICON,
   checksMark,
   talkColor,
   talkIcon,
@@ -219,6 +220,8 @@ export type TreeActions = {
   backToOverview: () => void
   // Ticks or unticks a file of the request under review as reviewed.
   toggleReviewed: (path: string) => void
+  // Ticks, or unticks, every file named as reviewed: a folder's tick.
+  markAll: (paths: readonly string[], isOn: boolean) => void
 }
 
 export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => {
@@ -244,9 +247,16 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
   ) : (
     <Box>
       <Text bold>{shell.isComparing ? `Against ${shell.against} ` : 'Uncommitted '}</Text>
-      <Text color="green">+{totals.added} </Text>
-      <Text color="red">−{totals.deleted} </Text>
-      <Text dimColor>in {totals.files} files · </Text>
+      <Text dimColor>
+        {FILES_ICON} {totals.files} ·{' '}
+      </Text>
+      <Text color="green" dimColor>
+        +{totals.added}{' '}
+      </Text>
+      <Text color="red" dimColor>
+        −{totals.deleted}{' '}
+      </Text>
+      <Text dimColor>· </Text>
       <Text color="red">{totals.errors}✖ </Text>
       <Text color="yellow">{totals.others}⚠</Text>
       {totals.fresh !== undefined && <Text bold> {totals.fresh} new</Text>}
@@ -376,8 +386,12 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
     group: number,
     under: readonly string[],
     space = '',
+    // The files under it that can be marked as reviewed, none where they
+    // cannot be: its box then ticks or unticks them all.
+    marks: readonly string[] = [],
   ) => {
     const held = `${space}${row.path}`
+    const isAllSeen = marks.every(path => seen.has(path))
     const counts = countLabel(diags.filter(diag => diag.path.startsWith(`${row.path}/`)))
 
     return (
@@ -385,6 +399,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         <Text dimColor>{'  '.repeat(row.depth)}</Text>
         {under.length > 0 && tick(`checkdir:${group}:${row.path}`, under)}
         {under.length > 0 && <Text> </Text>}
+        {marks.length > 0 && (
+          <Button
+            plain
+            key={`seendir:${space}${group}:${row.path}`}
+            label={isAllSeen ? '☑' : marks.some(path => seen.has(path)) ? '◪' : '☐'}
+            onPress={() => actions.markAll(marks, !isAllSeen)}
+          />
+        )}
+        {marks.length > 0 && <Text> </Text>}
         <Text color="#dcb67a">{isClosed ? '\u{f07b}' : '\u{f07c}'} </Text>
         <Button
           plain
@@ -447,6 +470,14 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
                         .map(one => one.path)
                         .filter(path => path.startsWith(`${row.path}/`))
                     : [],
+                  '',
+                  // What a comparison's commits changed is marked as read,
+                  // where a request is under review: a folder at a time too.
+                  model.canMark && !group.isPickable
+                    ? group.files
+                        .map(one => one.path)
+                        .filter(path => path.startsWith(`${row.path}/`) && changedPaths.has(path))
+                    : [],
                 )
               : fileRow(
                   row.path,
@@ -478,7 +509,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             .map(path => path.slice(REQUEST_SPACE.length)),
         ).map(({ row, isClosed }) =>
           row.kind === 'dir'
-            ? folderRow(row, isClosed, 98, [], REQUEST_SPACE)
+            ? folderRow(row, isClosed, 98, [], REQUEST_SPACE, model.canMark ? requested.map(one => one.path).filter(path => path.startsWith(`${row.path}/`)) : [])
             : fileRow(row.path, requestStatus.get(row.path) ?? ' ', row.name, row.depth, false, REQUEST_SPACE),
         )
       : requested.map(one => fileRow(one.path, one.status, one.path, 0, false, REQUEST_SPACE))
