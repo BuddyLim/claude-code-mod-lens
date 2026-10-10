@@ -10,6 +10,7 @@ import {
   parseNameStatus,
   parseNumstat,
   parseRemoved,
+  parseRemovedAt,
   parseWorktrees,
   sumStats,
 } from './git'
@@ -126,6 +127,10 @@ test('removed lines sit before the new line they came before', async () => {
   ].join('\n')
 
   expect(parseRemoved(out)).toEqual({ 3: ['old three', 'old four'], 9: ['dropped'] })
+  // And where the first of each run was in the base: the rest follow it.
+  expect(parseRemovedAt(out)).toEqual({ 3: 3, 9: 10 })
+  // A hunk that only adds has no old lines to number.
+  expect(parseRemovedAt('@@ -5,0 +6,2 @@\n+a\n+b')).toEqual({})
 })
 
 test('blame gives each line its commit, and ages read short', async () => {

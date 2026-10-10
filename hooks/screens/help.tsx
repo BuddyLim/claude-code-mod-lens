@@ -66,6 +66,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['v', 'diff view: − removed lines in red, + added lines in green'],
         ['v again', 'changes only: each change and comment, with three lines around it'],
         ['whole file', 'while commenting: write on the file as a whole, on no line'],
+        ['a removed line', 'while commenting, in the diff: press its number (the other side\'s) to comment on it'],
         ['\\n', 'typed in a comment: starts a new line'],
         ['suggest as change', 'offers what you typed as a replacement for the lines the comment is on'],
         ['✎ edit / ✕ delete', 'on a thread you started: change what it says, or remove it (asked first)'],

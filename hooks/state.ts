@@ -69,7 +69,7 @@ export const NO_VIEW: View = {
   requestTyped: '',
   isCommenting: false,
   commentLine: 0,
-  commentFrom: 0,
+  commentFrom: 0, commentOld: 0,
   filter: '',
   editing: '',
   deleting: '',

@@ -738,6 +738,35 @@ test('a GitHub comment on several lines names the first of them too', async () =
   expect(sent[1]?.includes('start_side=RIGHT')).toBe(false)
 })
 
+test('a comment on a removed line goes on the left of the forge’s diff, by its old number', async () => {
+  const sent: { argv: string[]; stdin: string | undefined }[] = []
+  const run: Run = async (argv, _timeout, stdin) => {
+    sent.push({ argv, stdin })
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : ok(JSON.stringify(ghLine(9, { body: 'why gone?', user: { login: 'me' }, line: 17, side: 'LEFT' })))
+  }
+
+  // Posted at once: its line is the old side's, and it comes back as one.
+  expect(await postComment(run, '12', { ...AT, line: 0, oldLine: 17 }, 'why gone?')).toMatchObject({
+    comment: { path: 'src/a.ts', line: 0, oldLine: 17 },
+  })
+  expect(sent[1]?.argv.slice(-4)).toEqual(['-F', 'line=17', '-f', 'side=LEFT'])
+
+  // Waiting for the review: it goes with the comments on lines, not alone.
+  sent.length = 0
+  await submitDrafted(run, '12', 'comment', '', {
+    drafts: [{ id: 'a', path: 'a.ts', line: 0, oldLine: 17, body: 'why gone?' }],
+    commit: 'f'.repeat(40),
+    prefix: 'src/',
+  })
+  expect(sent.filter(one => one.argv[0] === 'gh').length).toBe(1)
+  expect(JSON.parse(sent[sent.length - 1]?.stdin ?? '{}').comments).toEqual([
+    { path: 'src/a.ts', line: 17, side: 'LEFT', body: 'why gone?' },
+  ])
+})
+
 test('a GitHub comment on line 0 is posted on the file as a whole', async () => {
   const sent: string[][] = []
 

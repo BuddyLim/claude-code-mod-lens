@@ -105,8 +105,12 @@ export type View = {
   reviewed: Record<string, string[]>
   // The comments written for each request's review and not sent yet, by the
   // same name as `reviewed`: they go to the forge with the verdict. `line`
-  // is 0 for a file as a whole; `startLine` makes it a comment on several.
-  drafts: Record<string, { id: string; path: string; line: number; startLine?: number; body: string }[]>
+  // is 0 for a file as a whole; `startLine` makes it a comment on several;
+  // `oldLine` puts it on a removed line, by its number in the other side.
+  drafts: Record<
+    string,
+    { id: string; path: string; line: number; startLine?: number; oldLine?: number; body: string }[]
+  >
   // The first row the page of every change shows in its window, 0-based;
   // how many unchanged lines it shows round each change; and whether lines
   // that differ only in their spaces are left out of it.
@@ -146,6 +150,9 @@ export type View = {
   // The first line of the comment being typed when it is on several lines
   // (`commentLine` is then the last); 0 when it is on one.
   commentFrom: number
+  // The removed line the comment being typed is on, by its number in the
+  // other side of the comparison; 0 when it is on a line of this side.
+  commentOld: number
   // What the file tree's lists are narrowed by: only files whose path holds
   // it are listed; '' lists them all.
   filter: string

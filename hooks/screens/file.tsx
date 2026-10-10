@@ -98,6 +98,9 @@ export type FileModel = {
   // The lines the other side had, by the line they came before; the lines
   // this side changed; and whether the other side has no such file at all.
   removed: Readonly<Record<number, string[]>>
+  // Where the first of each run of removed lines was in the other side, by
+  // the same line: what a comment on a removed line is placed by.
+  removedAt: Readonly<Record<number, number>>
   changed: readonly LineRange[]
   isNewFile: boolean
   // The file's diagnostics, sorted, and the code said to be never used.
@@ -131,6 +134,9 @@ export type FileModel = {
   // The first line of the comment being typed when it is on several (then
   // `commentLine` is the last); 0 when it is on one.
   commentFrom: number
+  // The removed line the comment being typed is on, by its number in the
+  // other side; 0 when it is on a line of this side.
+  commentOld: number
   // Who the person is on the forge ('' when not known), so their own
   // comments can be changed; the comment being changed and the one asked
   // about before deleting, by id; what the field starts with while one is
@@ -186,6 +192,9 @@ export type FileActions = {
   // Pressing a line's number: its block goes to the prompt, or, while
   // commenting, the line is picked to comment on.
   pressLine: (line: number) => void
+  // While commenting: a removed line is picked, by its number in the other
+  // side and the line of this side it is drawn before.
+  pressOldLine: (old: number, before: number) => void
   // Puts a line's diagnostics, with its code, into the prompt.
   sendIssues: (line: number) => void
   // Puts the review thread on a line, with the code it is about, into the prompt.
@@ -833,9 +842,11 @@ export const fileScreen = (
                       ? 'edit your comment'
                       : answered !== undefined
                         ? `reply to ${answered.author}`
-                        : isRange
-                          ? `comment on lines ${model.commentFrom}–${n}`
-                          : `comment on line ${n}`
+                        : model.commentOld > 0
+                          ? `comment on removed line ${model.commentOld}`
+                          : isRange
+                            ? `comment on lines ${model.commentFrom}–${n}`
+                            : `comment on line ${n}`
                   }
                   // A comment being changed starts as what it said.
                   {...(isEditing ? { value: model.draft } : {})}
@@ -1003,7 +1014,25 @@ export const fileScreen = (
 
       return (
         <Box>
-          <Text color="red">{`-${' '.repeat(gutter)} `}</Text>
+          {/* While commenting, a removed line's mark is its handle, with its
+              number in the other side: pressed, the comment is on that line. */}
+          {isCommenting && model.removedAt[before] !== undefined ? (
+            <Box flexShrink={0}>
+              <Text color={model.commentOld === (model.removedAt[before] ?? 0) + at ? COMMENT_COLOR : 'red'}>
+                {model.commentOld === (model.removedAt[before] ?? 0) + at ? '┃' : '-'}
+              </Text>
+              <Button
+                plain
+                dimColor
+                key={`old:${(model.removedAt[before] ?? 0) + at}`}
+                label={String((model.removedAt[before] ?? 0) + at).padStart(gutter)}
+                onPress={() => actions.pressOldLine((model.removedAt[before] ?? 0) + at, before)}
+              />
+              <Text> </Text>
+            </Box>
+          ) : (
+            <Text color="red">{`-${' '.repeat(gutter)} `}</Text>
+          )}
           <Text color="#f48771" backgroundColor={REMOVED_BACKGROUND} wrap="truncate-end">
             {text === ''
               ? ' '

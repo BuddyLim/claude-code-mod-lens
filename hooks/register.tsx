@@ -167,6 +167,8 @@ let cache:
       commit: string
       lines: Span[][]
       removed: Record<number, string[]>
+      // Where the first of each run of removed lines was, in the base.
+      removedAt: Record<number, number>
       // A commit's own changed lines; the working tree's come from the scan.
       changed: LineRange[] | undefined
     }
@@ -386,7 +388,7 @@ const loadSource = async (
   const own = commit === '' && diffBase?.path === path && diffBase.base !== '' ? diffBase.base : ''
   const diff = await git.fileDiff(run, repo, path, commit, own || base, target ?? '', own !== '')
 
-  cache = { path, commit, lines, removed: diff.removed, changed: diff.changed }
+  cache = { path, commit, lines, removed: diff.removed, removedAt: diff.removedAt, changed: diff.changed }
   const stamp = await $.clock.now()
   await update($, source, () => ({ path, lineCount: lines.length, note, stamp }))
 
@@ -1207,6 +1209,7 @@ const readDrafts = async ($: EngineInterface): Promise<View['drafts']> => {
                   line: draft.line,
                   body: draft.body,
                   ...(typeof draft.startLine === 'number' ? { startLine: draft.startLine } : {}),
+                  ...(typeof draft.oldLine === 'number' ? { oldLine: draft.oldLine } : {}),
                 },
               ]
             : []
@@ -1489,6 +1492,9 @@ const postReview = async (
   body: string,
   // The first line, when the comment is on several (`line` is the last).
   from = 0,
+  // The removed line it is on, by its number in the other side (`line` is
+  // then 0); 0 for a comment on this side.
+  old = 0,
 ): Promise<void> => {
   if (body.trim() === '') {
     $.ui.toast('Type the comment first')
@@ -1505,7 +1511,13 @@ const postReview = async (
   const answer = await postComment(
     run,
     typed,
-    { path: `${prefix}${path}`, line, commit: head, ...(from > 0 && from < line ? { startLine: from } : {}) },
+    {
+      path: `${prefix}${path}`,
+      line,
+      commit: head,
+      ...(from > 0 && from < line ? { startLine: from } : {}),
+      ...(old > 0 ? { oldLine: old } : {}),
+    },
     unfold(body.trim()),
   )
 
@@ -1522,7 +1534,7 @@ const postReview = async (
   commentDraft = ''
   commentRound += 1
   $.ui.toast(line === 0 ? `Comment posted on ${path}` : `Comment posted on line ${line}`)
-  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0 }))
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, commentOld: 0 }))
 }
 
 // Answers the thread whose first comment is `root`, on the forge.
@@ -1562,7 +1574,7 @@ const postReply = async (
   commentDraft = ''
   commentRound += 1
   $.ui.toast(`Replied to ${root.author}`)
-  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
 }
 
 // Marks the thread `root` starts as resolved, or open again, on the forge.
@@ -3053,6 +3065,25 @@ export const register: Register = (on, options) => {
                 ? { ...one, line: 1, body: `(whole file) ${one.body}` }
                 : one,
             )
+            // A comment on a removed line is shown under the removed lines
+            // it is among: on the line of this side they are drawn before.
+            .map(one => {
+              const old = one.path === file && one.line === 0 ? (one.oldLine ?? 0) : 0
+              const before =
+                old === 0
+                  ? undefined
+                  : Object.entries(held?.removedAt ?? {}).find(
+                      ([at, first]) => old >= first && old < first + (held?.removed[Number(at)]?.length ?? 0),
+                    )?.[0]
+
+              return before === undefined
+                ? one
+                : {
+                    ...one,
+                    line: clamp(Number(before), 1, Math.max(1, lineCount)),
+                    body: `(removed line ${old}) ${one.body}`,
+                  }
+            })
             .filter(
               one =>
                 one.path === file &&
@@ -3085,6 +3116,7 @@ export const register: Register = (on, options) => {
         texts,
         note: shown.note,
         removed: held?.removed ?? {},
+        removedAt: held?.removedAt ?? {},
         changed:
           commit === '' && !isOwnDiff ? (found.changed[file] ?? []) : (held?.changed ?? []),
         diffAgainst: isOwnDiff ? now.diffBase.name : '',
@@ -3107,6 +3139,7 @@ export const register: Register = (on, options) => {
         isCommenting,
         commentLine: now.commentLine,
         commentFrom: now.commentFrom,
+        commentOld: now.commentOld,
         me: meCache?.repo === repo ? meCache.me : '',
         editing: now.editing,
         deleting: now.deleting,
@@ -3161,6 +3194,17 @@ export const register: Register = (on, options) => {
         showMatch: (index, top) => set(last => ({ ...last, findAt: index, top })),
         leaveFindField: () => void $.ui.focus({ requestId: PANE, key: 'find-next' }),
         closeFind: () => set(was => ({ ...was, isFinding: false, find: '' })),
+        // A removed line picked to comment on: the box opens under the line
+        // of this side that those removed lines are drawn before.
+        pressOldLine: (old, before) =>
+          set(last => ({
+            ...last,
+            commentLine: clamp(before, 1, Math.max(1, lineCount)),
+            commentFrom: 0,
+            commentOld: old,
+            replyTo: '',
+            editing: '',
+          })),
         pressLine: n =>
           // While commenting on a request, a line number picks the line
           // to comment on.
@@ -3172,8 +3216,8 @@ export const register: Register = (on, options) => {
                 const first = (last.commentFrom ?? 0) > 0 ? last.commentFrom : (last.commentLine ?? 0)
 
                 return first > 0 && n > first && (last.replyTo ?? '') === ''
-                  ? { ...last, commentLine: n, commentFrom: first }
-                  : { ...last, commentLine: n, commentFrom: 0, replyTo: '' }
+                  ? { ...last, commentLine: n, commentFrom: first, commentOld: 0 }
+                  : { ...last, commentLine: n, commentFrom: 0, commentOld: 0, replyTo: '' }
               })
             : // The fold is the function or class the server says starts
               // here; without a server, what the indentation suggests.
@@ -3315,7 +3359,7 @@ export const register: Register = (on, options) => {
           const root = rootOn(n)
 
           if (root !== undefined) {
-            set(was => ({ ...was, isCommenting: true, commentLine: n, commentFrom: 0, replyTo: root.id }))
+            set(was => ({ ...was, isCommenting: true, commentLine: n, commentFrom: 0, commentOld: 0, replyTo: root.id }))
           }
         },
         resolveOn: (n, isResolved) => {
@@ -3330,7 +3374,7 @@ export const register: Register = (on, options) => {
         cancelComment: () => {
           commentDraft = ''
           commentRound += 1
-          set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
+          set(was => ({ ...was, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
         },
         commentOnFile: () => {
           commentDraft = ''
@@ -3338,7 +3382,7 @@ export const register: Register = (on, options) => {
           set(was => ({
             ...was,
             commentLine: was.commentLine === FILE_COMMENT ? 0 : FILE_COMMENT,
-            commentFrom: 0,
+            commentFrom: 0, commentOld: 0,
             replyTo: '',
           }))
         },
@@ -3354,7 +3398,7 @@ export const register: Register = (on, options) => {
             editing: id,
             deleting: '',
             commentLine: n,
-            commentFrom: 0,
+            commentFrom: 0, commentOld: 0,
             replyTo: '',
           }))
         },
@@ -3436,7 +3480,7 @@ export const register: Register = (on, options) => {
                 commentDraft = ''
                 commentRound += 1
                 $.ui.toast('Comment changed')
-                set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
               },
             )
 
@@ -3456,7 +3500,8 @@ export const register: Register = (on, options) => {
               return
             }
 
-            const line = now.commentLine === FILE_COMMENT ? 0 : now.commentLine
+            // A comment on a removed line is on no line of this side.
+            const line = now.commentLine === FILE_COMMENT || now.commentOld > 0 ? 0 : now.commentLine
 
             commentDraft = ''
             commentRound += 1
@@ -3471,6 +3516,7 @@ export const register: Register = (on, options) => {
                     line,
                     body,
                     ...(now.commentFrom > 0 && now.commentFrom < line ? { startLine: now.commentFrom } : {}),
+                    ...(now.commentOld > 0 ? { oldLine: now.commentOld } : {}),
                   },
                 ]),
               )
@@ -3479,7 +3525,7 @@ export const register: Register = (on, options) => {
                   `Added to your review (${drafts.length + 1} waiting): send it from the file tree with v`,
                   { timeoutMs: 6000 },
                 )
-                set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
               })
 
             return
@@ -3492,9 +3538,10 @@ export const register: Register = (on, options) => {
             target,
             file,
             // Line 0 is the file as a whole.
-            now.commentLine === FILE_COMMENT ? 0 : now.commentLine,
+            now.commentLine === FILE_COMMENT || now.commentOld > 0 ? 0 : now.commentLine,
             entered ?? commentDraft,
             now.commentFrom,
+            now.commentOld,
           )
         },
       },

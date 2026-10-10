@@ -320,7 +320,9 @@ export type Comment = {
 // A comment written and not yet sent: it waits to go with the review. `path`
 // is from the folder under review; `line` is 0 for the file as a whole, and
 // `startLine`, where it is before `line`, makes it a comment on those lines.
-export type Draft = { id: string; path: string; line: number; startLine?: number; body: string }
+// `oldLine` puts it on a removed line, by its number in the target's version
+// of the file (`line` is then 0, as on a comment the forge sends back).
+export type Draft = { id: string; path: string; line: number; startLine?: number; oldLine?: number; body: string }
 
 const DRAFT = 'draft-'
 
@@ -337,6 +339,7 @@ export const draftComment = (draft: Draft): Comment => ({
   ...(draft.startLine !== undefined && draft.startLine > 0 && draft.startLine < draft.line
     ? { startLine: draft.startLine }
     : {}),
+  ...(draft.oldLine !== undefined && draft.oldLine > 0 ? { oldLine: draft.oldLine } : {}),
 })
 
 export const isDraft = (one: Pick<Comment, 'id'>): boolean => one.id.startsWith(DRAFT)
@@ -1454,12 +1457,16 @@ export const postComment = async (
   // `startLine`, where it is before `line`, makes it a comment on those lines
   // together. GitHub takes the range; on GitLab the comment goes on the last
   // line and says which lines it is about.
-  at: { path: string; line: number; commit: string; startLine?: number },
+  // `oldLine` puts the comment on a removed line, by its number in the
+  // target's version of the file: the left side of the forge's own diff.
+  at: { path: string; line: number; commit: string; startLine?: number; oldLine?: number },
   body: string,
 ): Promise<{ comment: Comment } | { error: string }> => {
   if (body.trim() === '') {
     return { error: 'Write something before posting the comment' }
   }
+
+  const oldLine = at.oldLine !== undefined && Number.isInteger(at.oldLine) && at.oldLine > 0 ? at.oldLine : 0
 
   const startLine = at.startLine !== undefined && at.startLine > 0 && at.startLine < at.line ? at.startLine : 0
 
@@ -1475,6 +1482,12 @@ export const postComment = async (
   }
 
   if (place.forge === 'gitlab') {
+    // GitLab places a note on a removed line by a key of its own making,
+    // which is not worked out here.
+    if (oldLine > 0) {
+      return { error: 'Commenting on a removed line is not done for GitLab from here yet: comment on a line beside it' }
+    }
+
     return gitlabPost(
       run,
       place,
@@ -1497,8 +1510,12 @@ export const postComment = async (
       `commit_id=${at.commit}`,
       '-f',
       `path=${at.path}`,
-      ...(at.line === 0 ? ['-f', 'subject_type=file'] : ['-F', `line=${at.line}`, '-f', 'side=RIGHT']),
-      ...(startLine === 0 ? [] : ['-F', `start_line=${startLine}`, '-f', 'start_side=RIGHT']),
+      ...(oldLine > 0
+        ? ['-F', `line=${oldLine}`, '-f', 'side=LEFT']
+        : at.line === 0
+          ? ['-f', 'subject_type=file']
+          : ['-F', `line=${at.line}`, '-f', 'side=RIGHT']),
+      ...(startLine === 0 || oldLine > 0 ? [] : ['-F', `start_line=${startLine}`, '-f', 'start_side=RIGHT']),
     ),
   )
 
@@ -1801,7 +1818,11 @@ export const submitDrafted = async (
 
   // The comments posted one at a time: all of them on GitLab, those on a
   // whole file on GitHub.
-  for (const draft of drafts.filter(one => place.forge === 'gitlab' || one.line === 0)) {
+  // A comment on a removed line is on a line too (of the other side), and
+  // goes with the review.
+  const isOnLine = (one: Draft): boolean => one.line > 0 || (one.oldLine ?? 0) > 0
+
+  for (const draft of drafts.filter(one => place.forge === 'gitlab' || !isOnLine(one))) {
     const posted = await postComment(
       run,
       typed,
@@ -1810,6 +1831,7 @@ export const submitDrafted = async (
         line: draft.line,
         commit,
         ...(draft.startLine === undefined ? {} : { startLine: draft.startLine }),
+        ...(draft.oldLine === undefined ? {} : { oldLine: draft.oldLine }),
       },
       draft.body,
     )
@@ -1826,7 +1848,7 @@ export const submitDrafted = async (
     place,
     verdict,
     body,
-    place.forge === 'gitlab' ? [] : drafts.filter(one => one.line > 0),
+    place.forge === 'gitlab' ? [] : drafts.filter(isOnLine),
     commit,
     prefix,
   )
@@ -1882,15 +1904,21 @@ const submitVerdict = async (
         event,
         ...(body === '' ? {} : { body }),
         ...(commit === '' ? {} : { commit_id: commit }),
-        comments: onLines.map(one => ({
-          path: `${prefix}${one.path}`,
-          line: one.line,
-          side: 'RIGHT',
-          body: one.body,
-          ...(one.startLine !== undefined && one.startLine > 0 && one.startLine < one.line
-            ? { start_line: one.startLine, start_side: 'RIGHT' }
-            : {}),
-        })),
+        comments: onLines.map(one =>
+          (one.oldLine ?? 0) > 0
+            ? // A removed line is on the left of the forge's diff, by its
+              // number in the target's version of the file.
+              { path: `${prefix}${one.path}`, line: one.oldLine, side: 'LEFT', body: one.body }
+            : {
+                path: `${prefix}${one.path}`,
+                line: one.line,
+                side: 'RIGHT',
+                body: one.body,
+                ...(one.startLine !== undefined && one.startLine > 0 && one.startLine < one.line
+                  ? { start_line: one.startLine, start_side: 'RIGHT' }
+                  : {}),
+              },
+        ),
       }),
     ).catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: String(error) }))
 

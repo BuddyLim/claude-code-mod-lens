@@ -81,6 +81,24 @@ export const parseRemoved = (out: string): Record<number, string[]> => {
   return removed
 }
 
+// The same diff, for where those lines were: the number, in the base's
+// version of the file, of the first line removed before each such line. The
+// rest of a run follow it one by one.
+export const parseRemovedAt = (out: string): Record<number, number> => {
+  const at: Record<number, number> = {}
+
+  for (const line of out.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
+
+    // A hunk that removes nothing (`-12,0`) has no old lines to number.
+    if (hunk !== null && hunk[2] !== '0') {
+      at[Number(hunk[3]) + (hunk[4] === '0' ? 1 : 0)] ??= Number(hunk[1])
+    }
+  }
+
+  return at
+}
+
 export type BlameLine = { hash: string; author: string; time: number; summary: string }
 
 // `git blame --porcelain`: who last changed each line, in the file's order.
@@ -785,7 +803,11 @@ export const fileDiff = async (
   // Whether the working tree's file wants its changed lines from this diff
   // too: its base is then not the one the scan compared with.
   isOwn = false,
-): Promise<{ removed: Record<number, string[]>; changed: LineRange[] | undefined }> => {
+): Promise<{
+  removed: Record<number, string[]>
+  removedAt: Record<number, number>
+  changed: LineRange[] | undefined
+}> => {
   const diff = await run(
     commit === ''
       ? ['git', 'diff', '-U0', '--no-prefix', '--relative', base, '--', path]
@@ -808,6 +830,7 @@ export const fileDiff = async (
 
   return {
     removed: parseRemoved(diff.stdout),
+    removedAt: parseRemovedAt(diff.stdout),
     changed:
       commit === '' && !isOwn ? undefined : (parseChangedLines(diff.stdout)[path] ?? []),
   }
