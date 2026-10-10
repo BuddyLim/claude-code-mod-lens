@@ -414,6 +414,34 @@ test('the code view opens a changed file on its diff, with the rewritten words l
   await ui.unmount()
 })
 
+test('the code view of a picture draws the picture, not its bytes', async ($, on) => {
+  const clock = host(on, {
+    ...IN_REPO,
+    '--name-status': 'M\tdocs/shot.png\n',
+    'lens-pictures': '/Users/t/.cache/lens-pictures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png\n800 400\n',
+  })
+
+  await $.session.start({ cwd: REPO } as never)
+  await $.command.run(lens(REPO))
+  await clock.advance(2000)
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'layout' })
+  await ui.press({ key: 'file:docs/shot.png' })
+  await clock.advance(2000)
+  await ui.drawn()
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /800×400/ })).toBeDefined()
+  // It is asked for by a fixed script, with the folder and the path as arguments.
+  expect(clock.asked.some(line => line.includes('lens-pictures') && line.includes(`${REPO} docs/shot.png`))).toBe(true)
+  // No highlighter is run over it.
+  expect(clock.asked.some(line => line.includes('pygments') && line.includes('shot.png'))).toBe(false)
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ key: 'requests' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the requests list gives a title and a description sample rows of their own, cut to a narrow pane', async ($, on) => {
   const title = 'A very long title that goes on well past what a narrow pane can show on one row'
 

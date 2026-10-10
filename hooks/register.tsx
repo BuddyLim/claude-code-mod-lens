@@ -41,7 +41,7 @@ import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
 import { hostOf, mediaOf, plain, plainBlock, sampleOf } from './media'
 import type { Picture } from './pictures'
-import { PICTURES_SHOWN, fetchPicture, isFetched } from './pictures'
+import { PICTURES_SHOWN, fetchPicture, isFetched, isPictureFile, localPicture } from './pictures'
 import type { PatchFile } from './patch'
 import { CONTEXT, CONTEXTS, applyHunk, hunkMark, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
@@ -88,6 +88,7 @@ import { isMarkdownFile, markdownScreen } from './screens/markdown'
 import type { ChangesWindow } from './screens/changes'
 import { changesScreen } from './screens/changes'
 import { overviewScreen } from './screens/overview'
+import { pictureScreen } from './screens/picture'
 import { recentsScreen } from './screens/recents'
 import { requestsScreen } from './screens/requests'
 import { treeScreen } from './screens/tree'
@@ -366,6 +367,12 @@ const runOf =
       .run(argv, init ?? {})
       .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: String(error) }))
 
+// The open file where it is a picture: itself and what it was before, each
+// as a file the terminal draws, or undefined where there is none to draw.
+let shot:
+  | { path: string; commit: string; now: Picture | undefined; before: Picture | undefined; against: string }
+  | undefined
+
 // Reads a whole file as coloured lines and keeps it for the file screen, with
 // what the diff view interleaves.
 //
@@ -379,6 +386,30 @@ const loadSource = async (
   commit = '',
 ): Promise<void> => {
   const run = runOf($)
+
+  // A picture is not read as text: it is made a file the terminal draws,
+  // and so is what it was on the other side, where it was a different one.
+  if (isPictureFile(path)) {
+    const { base, target, diffBase } = await read($, view)
+    const own = commit === '' && diffBase?.path === path && diffBase.base !== '' ? diffBase.base : ''
+    const other = commit === '' ? own || base || 'HEAD' : commit === target && base !== '' ? base : `${commit}^`
+    const [now, was] = await Promise.all([localPicture(run, repo, path, commit), localPicture(run, repo, path, other)])
+
+    shot = {
+      path,
+      commit,
+      now,
+      before: was !== undefined && was.file !== now?.file ? was : undefined,
+      against: /^[0-9a-f]{40}$/.test(other) ? other.slice(0, 8) : other,
+    }
+    cache = { path, commit, lines: [], removed: {}, removedAt: {}, changed: undefined }
+    insight = undefined
+    const stamp = await $.clock.now()
+    await update($, source, () => ({ path, lineCount: 0, note: '', stamp }))
+
+    return
+  }
+
   const committed = commit === '' ? undefined : await git.fileAt(run, repo, path, commit)
   const { lines, note } = await readSource(
     run,
@@ -3105,6 +3136,27 @@ export const register: Register = (on, options) => {
         }),
       )
     const { Markdown } = kit
+
+    // A picture is drawn as itself, beside what it was where it changed.
+    if (isPictureFile(file)) {
+      const drawn = shot !== undefined && shot.path === file && shot.commit === commit ? shot : undefined
+
+      return framed(
+        pictureScreen(
+          kit,
+          {
+            shell,
+            file,
+            commit,
+            isLoaded: held !== undefined && drawn !== undefined,
+            now: drawn?.now,
+            before: drawn?.before,
+            against: drawn?.against ?? '',
+          },
+          { back, help, refresh: () => void loadSource($, repo, file, commit) },
+        ),
+      )
+    }
 
     // The request's threads on this file's lines, for the rendered page.
     const pageTalk =

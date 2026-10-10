@@ -1,6 +1,34 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cellsOf, fetchPicture, isFetched } from './pictures'
+import { cellsOf, fetchPicture, isFetched, isPictureFile, localPicture } from './pictures'
+
+test('a picture of the folder is asked for by a fixed script, and only a plain path inside it', async () => {
+  const asked: string[][] = []
+  const file = `/Users/x/.cache/lens-pictures/${'c'.repeat(64)}.png`
+  const run = async (argv: string[]) => {
+    asked.push(argv)
+
+    return { exitCode: 0, stdout: `${file}\n32 16\n`, stderr: '' }
+  }
+
+  expect(isPictureFile('docs/Shot.PNG') && isPictureFile('a.jpeg') && isPictureFile('a.webp')).toBe(true)
+  expect(isPictureFile('logo.svg') || isPictureFile('a.png.ts')).toBe(false)
+
+  expect(await localPicture(run, '/repo', 'docs/a.png')).toEqual({ file, width: 32, height: 16 })
+  expect(asked[0]?.slice(3, 7)).toEqual(['sh', '/repo', 'docs/a.png', '-'])
+  await localPicture(run, '/repo', 'docs/a.png', 'main')
+  expect(asked[1]?.[6]).toBe('main')
+  // A link is not followed, and the working tree's file is told from a link.
+  expect(asked[0]?.[2]?.includes('[ ! -L "$src" ]')).toBe(true)
+
+  // A path that leaves the folder, a commit that reads as an option, or a file that is no picture: not asked.
+  asked.length = 0
+  expect(await localPicture(run, '/repo', '../a.png')).toBe(undefined)
+  expect(await localPicture(run, '/repo', '/etc/a.png')).toBe(undefined)
+  expect(await localPicture(run, '/repo', 'a.png', '--output=x')).toBe(undefined)
+  expect(await localPicture(run, '/repo', 'a.ts')).toBe(undefined)
+  expect(asked).toEqual([])
+})
 
 test('only pictures the forge itself serves are fetched, and only over https', async () => {
   expect(isFetched('https://github.com/user-attachments/assets/1111-aaaa', 'github.com')).toBe(true)

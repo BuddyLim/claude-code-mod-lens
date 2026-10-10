@@ -151,3 +151,110 @@ export const fetchPicture = async (run: Run, url: string, forge: string): Promis
     ? { file, width, height }
     : undefined
 }
+
+// The most a picture of the folder under review may weigh to be drawn, and
+// the side one is brought down to where it is larger.
+export const LOCAL_BYTES = 16 * 1024 * 1024
+const LOCAL_SIDE = 2048
+
+// Whether a file is a picture the code view draws, by its name: the kinds
+// told by their first bytes below. (An SVG is text, and is read as code.)
+export const isPictureFile = (path: string): boolean => /\.(png|jpe?g|gif|webp)$/i.test(path)
+
+// Makes a picture of the folder under review a PNG in the same private
+// folder, and prints the file and its size. $1 the folder, $2 the file's
+// path in it, $3 the commit to read it at (- for the file as it stands),
+// $4 the most bytes, $5 the longest side. The file is named by the SHA-256
+// of what it holds, so a picture that changes is made again. A link is not
+// followed: only a file of the folder itself is read.
+const LOCAL = [
+  'umask 077',
+  'base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"',
+  '[ -n "$base" ] || exit 1',
+  'dir="$base/lens-pictures"',
+  'mkdir -p "$dir" || exit 1',
+  '[ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || exit 1',
+  'chmod 700 "$dir" || exit 1',
+  'find "$dir" -type f -mtime +14 -delete 2>/dev/null',
+  'raw="$dir/local.$$.raw"',
+  'if [ "$3" != "-" ]; then',
+  '  cd "$1" || exit 1',
+  '  size=$(git cat-file -s "$3:./$2" 2>/dev/null) || exit 1',
+  '  [ "$size" -le "$4" ] || exit 1',
+  '  git cat-file blob "$3:./$2" > "$raw" 2>/dev/null || { rm -f "$raw"; exit 1; }',
+  'else',
+  '  src="$1/$2"',
+  '  [ -f "$src" ] && [ ! -L "$src" ] || exit 1',
+  '  [ "$(wc -c < "$src" | tr -d " ")" -le "$4" ] || exit 1',
+  '  cp "$src" "$raw" || exit 1',
+  'fi',
+  'if command -v shasum >/dev/null 2>&1; then name=$(shasum -a 256 < "$raw" | cut -c1-64)',
+  'elif command -v sha256sum >/dev/null 2>&1; then name=$(sha256sum < "$raw" | cut -c1-64)',
+  'else rm -f "$raw"; exit 1; fi',
+  '[ "${#name}" -eq 64 ] || { rm -f "$raw"; exit 1; }',
+  'case "$name" in *[!0-9a-f]*) rm -f "$raw"; exit 1 ;; esac',
+  'made="$dir/$name.$$.png"; png="$dir/$name.png"',
+  'if [ ! -s "$png" ] || [ -L "$png" ]; then',
+  '  rm -f "$png"',
+  '  magic=$(od -An -tx1 -N12 "$raw" | tr -d " \\n")',
+  '  case "$magic" in',
+  '    89504e470d0a1a0a*|ffd8ff*|474946383?61*|52494646????????57454250)',
+  // Brought down to a side the terminal draws, and made a PNG, in one go
+  // where a tool for it is here; a PNG is kept as it is where none is.
+  // (sips makes a small picture larger when asked for a side, so it is
+  // asked only where the picture is over it.)
+  '      if command -v sips >/dev/null 2>&1; then',
+  '        sips -s format png "$raw" --out "$made" >/dev/null 2>&1',
+  '        wide=$(sips -g pixelWidth "$made" 2>/dev/null | awk "/pixelWidth/ {print \\$2}")',
+  '        tall=$(sips -g pixelHeight "$made" 2>/dev/null | awk "/pixelHeight/ {print \\$2}")',
+  '        if [ "${wide:-0}" -gt "$5" ] || [ "${tall:-0}" -gt "$5" ]; then sips -Z "$5" "$made" >/dev/null 2>&1; fi',
+  '      elif command -v magick >/dev/null 2>&1; then magick "$raw[0]" -resize "$5x$5>" "png:$made" >/dev/null 2>&1',
+  '      elif command -v convert >/dev/null 2>&1; then convert "$raw[0]" -resize "$5x$5>" "png:$made" >/dev/null 2>&1',
+  '      else case "$magic" in 89504e470d0a1a0a*) cp "$raw" "$made" ;; esac; fi',
+  '      rm -f "$raw"',
+  '      [ -s "$made" ] && mv -f "$made" "$png" || { rm -f "$made"; exit 1; } ;;',
+  '    *) rm -f "$raw"; exit 1 ;;',
+  '  esac',
+  'else',
+  '  rm -f "$raw"; touch "$png"',
+  'fi',
+  '[ -s "$png" ] || exit 1',
+  'set -- $(od -An -tu1 -j16 -N8 "$png")',
+  '[ "$#" -eq 8 ] || exit 1',
+  'printf "%s\\n%s %s\\n" "$png" "$(( (($1 * 256 + $2) * 256 + $3) * 256 + $4 ))" "$(( (($5 * 256 + $6) * 256 + $7) * 256 + $8 ))"',
+].join('\n')
+
+// A picture of the folder under review, ready to draw: the file as it
+// stands, or as `commit` left it. Undefined where the path is not a plain
+// one inside the folder, the commit is not a plain name, or what is there is
+// no picture a tool here can make a PNG.
+export const localPicture = async (
+  run: Run,
+  repo: string,
+  path: string,
+  commit = '',
+): Promise<Picture | undefined> => {
+  const isInside = !path.startsWith('/') && !path.split('/').includes('..') && !/[\x00-\x1f\x7f]/.test(path)
+  const isNamed = commit === '' || /^[0-9A-Za-z_][0-9A-Za-z._/@{}^~-]{0,200}$/.test(commit)
+
+  if (!repo.startsWith('/') || !isInside || !isNamed || !isPictureFile(path)) {
+    return undefined
+  }
+
+  const ran = await run(['sh', '-c', LOCAL, 'sh', repo, path, commit === '' ? '-' : commit, String(LOCAL_BYTES), String(LOCAL_SIDE)], {
+    timeoutMs: 40_000,
+  })
+  const [file = '', size = ''] = ran.stdout.trim().split('\n')
+  const [width = 0, height = 0] = size.split(' ').map(Number)
+
+  return ran.exitCode === 0 &&
+    /^\/[\x20-\x7e]{1,900}\/lens-pictures\/[0-9a-f]{64}\.png$/.test(file) &&
+    Number.isInteger(width) &&
+    Number.isInteger(height) &&
+    width >= 1 &&
+    height >= 1 &&
+    width <= PICTURE_PIXELS &&
+    height <= PICTURE_PIXELS
+    ? { file, width, height }
+    : undefined
+}
