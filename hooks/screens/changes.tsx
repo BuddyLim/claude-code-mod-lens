@@ -3,6 +3,7 @@
 // the lines they are on. It is as long as the changes, so the pane scrolls
 // it; a very long comparison is drawn up to a limit, and the rest by name.
 
+import type { Span } from '../../types'
 import type { PatchFile, PatchLine } from '../patch'
 import type { Comment } from '../review'
 import { wrapText } from '../text'
@@ -47,6 +48,9 @@ export type ChangesModel = {
   reviewed: readonly string[]
   // How many new files git does not track yet, which its diff leaves out.
   untracked: number
+  // Each file's lines as the highlighter coloured them, by path, for those
+  // read so far: a file not here yet is drawn plain.
+  colors: ReadonlyMap<string, readonly (readonly Span[])[]>
   // How many rows of code are drawn: the page stops at the first file they
   // have no room for.
   limit: number
@@ -112,6 +116,8 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
 
   let budget = model.limit
   let hidden = 0
+  // The files whose code is drawn, for the hooks module to have highlighted.
+  const shownPaths: string[] = []
   // About how many rows the page takes as drawn, for telling when the
   // person has scrolled near its end.
   let rows = 8 + shell.notes.length
@@ -127,6 +133,20 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
     const drawn = new Set(file.hunks.flatMap(hunk => hunk.lines.map(line => line.line)))
     const size = file.hunks.reduce((sum, hunk) => sum + hunk.lines.length + 1, 0)
     const isCut = hidden > 0 || (!isDone && budget < Math.min(size, 40))
+    // A line in the colours the code view gives it, once the file has been
+    // highlighted: the file as the comparison's new side has it, so a
+    // removed line, which that side lacks, stays in the one colour. A line
+    // whose text is not what the highlighter read is left plain.
+    const spans = model.colors.get(file.path)
+    const colored = (line: PatchLine) => {
+      const found = line.line === 0 ? undefined : spans?.[line.line - 1]
+
+      return found === undefined ||
+        found.length === 0 ||
+        clean(found.map(span => span[1]).join('')) !== clean(line.text)
+        ? undefined
+        : found.map(span => (span[0] === '' ? clean(span[1]) : <Text color={span[0]}>{clean(span[1])}</Text>))
+    }
     const lineRow = (line: PatchLine) => (
       <Text wrap="truncate-end">
         <Text
@@ -142,7 +162,7 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
             line.kind === '+' ? ADDED_BACKGROUND : line.kind === '-' ? REMOVED_BACKGROUND : undefined
           }
         >
-          {clean(line.text) || ' '}
+          {colored(line) ?? (clean(line.text) || ' ')}
         </Text>
       </Text>
     )
@@ -157,6 +177,10 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
 
     if (!isDone) {
       budget -= size
+    }
+
+    if (!isDone && !file.isBinary) {
+      shownPaths.push(file.path)
     }
 
     // A comment takes about three rows: who, and a line or two of what.
@@ -295,5 +319,10 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
     </Box>
   )
 
-  return { tree, rows: rows + general.slice(-CONVERSATION).length * 3, isCut: hidden > 0 }
+  return {
+    tree,
+    rows: rows + general.slice(-CONVERSATION).length * 3,
+    isCut: hidden > 0,
+    shown: shownPaths,
+  }
 }

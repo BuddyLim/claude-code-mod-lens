@@ -269,6 +269,15 @@ let requestsCache: { repo: string; list: Listed[] } | undefined
 // screen opens or is refreshed; `patchWanted` is the key being read.
 let patchCache: { key: string; files: PatchFile[]; refusal: string } | undefined
 let patchWanted: string | undefined
+// The files of that page as the highlighter coloured them, by path, and the
+// ones asked for: written by `colorPage` as each stretch of the page is drawn.
+let pageColors: { key: string; lines: Map<string, Span[][]>; asked: Set<string> } = {
+  key: '',
+  lines: new Map(),
+  asked: new Set(),
+}
+// How many files are highlighted at a time.
+const COLORED_AT_ONCE = 6
 // The page and length the changes screen last grew from, so one drawing
 // near its end asks for the next stretch once.
 let pageGrownAt = ''
@@ -970,6 +979,55 @@ const loadPatch = async (
     patchCache = { key, ...read }
     patchWanted = undefined
     await update($, view, (last): View => ({ ...last }))
+  }
+}
+
+// Highlights the files the changes screen has drawn and not yet coloured, a
+// few at a time, drawing the page again as each few come in. A file is read
+// as the comparison's new side has it: the target commit's, or the working
+// tree's.
+const colorPage = async (
+  $: EngineInterface,
+  key: string,
+  repo: string,
+  target: string,
+  paths: readonly string[],
+): Promise<void> => {
+  if (pageColors.key !== key) {
+    pageColors = { key, lines: new Map(), asked: new Set() }
+  }
+
+  const held = pageColors
+  const wanted = paths.filter(path => !held.asked.has(path))
+
+  for (const path of wanted) {
+    held.asked.add(path)
+  }
+
+  const run = runOf($)
+
+  for (let at = 0; at < wanted.length; at += COLORED_AT_ONCE) {
+    await Promise.all(
+      wanted.slice(at, at + COLORED_AT_ONCE).map(async path => {
+        const committed = target === '' ? undefined : await git.fileAt(run, repo, path, target)
+        const { lines, note } = await readSource(
+          run,
+          file => $.fs.read(file).catch(() => ''),
+          repo,
+          path,
+          committed,
+        )
+
+        // Where the highlighter did not run there are no colours to add.
+        if (note === '') {
+          held.lines.set(path, lines)
+        }
+      }),
+    )
+
+    if (pageColors === held) {
+      await update($, view, (last): View => ({ ...last }))
+    }
   }
 }
 
@@ -1875,6 +1933,7 @@ export const register: Register = (on, options) => {
           {
             shell,
             limit: now.pageRows,
+            colors: pageColors.key === pageKey ? pageColors.lines : new Map(),
             title: isOfBranch
               ? `${requestLabel}: your branch as it stands`
               : shell.request !== ''
@@ -1897,6 +1956,7 @@ export const register: Register = (on, options) => {
             refresh: () => {
               rescan()
               patchCache = undefined
+              pageColors = { key: '', lines: new Map(), asked: new Set() }
               set((last): View => ({ ...last }))
             },
             // A file opens as the comparison has it, and back returns here.
@@ -1916,6 +1976,14 @@ export const register: Register = (on, options) => {
       if (drawn.isCut && scrolled >= drawn.rows && pageGrownAt !== `${pageKey}\n${now.pageRows}`) {
         pageGrownAt = `${pageKey}\n${now.pageRows}`
         more()
+      }
+
+      // The files just drawn are highlighted, where they have not been.
+      if (
+        page !== undefined &&
+        drawn.shown.some(path => pageColors.key !== pageKey || !pageColors.asked.has(path))
+      ) {
+        void colorPage($, pageKey, repo, target, drawn.shown)
       }
 
       return framed(drawn.tree)
@@ -2314,6 +2382,7 @@ export const register: Register = (on, options) => {
             openChanges: () => {
               // Read again each time it is opened: the files may have changed.
               patchCache = undefined
+              pageColors = { key: '', lines: new Map(), asked: new Set() }
               pageGrownAt = ''
               set((last): View => ({ ...last, screen: 'changes', pageRows: PAGE_STEP }))
             },
