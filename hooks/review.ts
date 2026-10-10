@@ -312,6 +312,11 @@ export type Comment = {
   thread?: string
 }
 
+// Whether a comment is on its file as a whole: it names a file and no line,
+// and is neither one that lost its line to an edit nor one on a removed line.
+export const isOnWholeFile = (one: Comment): boolean =>
+  one.path !== '' && one.line === 0 && one.isOutdated !== true && one.oldLine === undefined
+
 type Json = Record<string, unknown>
 
 type Place = {
@@ -773,6 +778,46 @@ const gitlabPost = async (
     return { error: 'This merge request has changed since it was opened here: reopen it, then comment again' }
   }
 
+  // A comment on the file as a whole is placed by its path alone.
+  if (at.line === 0) {
+    const whole = await call(
+      run,
+      glab(
+        place,
+        '-X',
+        'POST',
+        `${gitlabRequest(place)}/discussions`,
+        '-f',
+        `body=${body}`,
+        '-F',
+        `position=${JSON.stringify({
+          position_type: 'file',
+          base_sha: baseSha,
+          start_sha: startSha,
+          head_sha: headSha,
+          old_path: at.path,
+          new_path: at.path,
+        })}`,
+      ),
+    )
+
+    if (whole.exitCode !== 0) {
+      return { error: whyFailed(place, whole, 'comment on') }
+    }
+
+    try {
+      const comment = fromGitlabDiscussion(JSON.parse(whole.stdout), headSha)[0]
+
+      if (!comment) {
+        throw new Error('no note')
+      }
+
+      return { comment: { ...comment, path: comment.path || at.path, line: 0 } }
+    } catch {
+      return { error: `The comment may have been posted on ${place.label}, but glab's answer could not be read: reload to check` }
+    }
+  }
+
   // GitLab places a note by old and new line together. Git knows both when the commits are here;
   // when they are not, the new line alone is sent, which GitLab accepts for added lines.
   const outside = { error: `Line ${at.line} of ${at.path} is not part of this merge request's diff` }
@@ -1023,7 +1068,8 @@ export const postComment = async (
     return { error: 'Write something before posting the comment' }
   }
 
-  if (at.path === '' || !Number.isInteger(at.line) || at.line < 1 || at.commit === '') {
+  // Line 0 is the file as a whole, which both forges take a comment on.
+  if (at.path === '' || !Number.isInteger(at.line) || at.line < 0 || at.commit === '') {
     return { error: 'Pick a line of a file in the request to comment on' }
   }
 
@@ -1051,10 +1097,7 @@ export const postComment = async (
       `commit_id=${at.commit}`,
       '-f',
       `path=${at.path}`,
-      '-F',
-      `line=${at.line}`,
-      '-f',
-      'side=RIGHT',
+      ...(at.line === 0 ? ['-f', 'subject_type=file'] : ['-F', `line=${at.line}`, '-f', 'side=RIGHT']),
     ),
   )
 

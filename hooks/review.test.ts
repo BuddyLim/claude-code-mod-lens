@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   fetchComments,
   forgeOf,
+  isOnWholeFile,
   parseRequest,
   postComment,
   postGeneral,
@@ -596,6 +597,24 @@ test('a GitHub comment is posted on the right side of the head commit', async ()
   expect(sent).toEqual([['git', 'remote', 'get-url', 'origin'], GH_POST])
 })
 
+test('a GitHub comment on line 0 is posted on the file as a whole', async () => {
+  const sent: string[][] = []
+
+  const run: Run = async argv => {
+    sent.push(argv)
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : ok(JSON.stringify(ghLine(9, { body: 'needs a test', user: { login: 'me' }, line: null, subject_type: 'file' })))
+  }
+  const posted = await postComment(run, '12', { ...AT, line: 0 }, 'needs a test')
+
+  // It names the file and no line, and is not taken for one that lost its line.
+  expect(posted).toMatchObject({ comment: { path: 'src/a.ts', line: 0, isOutdated: false } })
+  expect('comment' in posted && isOnWholeFile(posted.comment)).toBe(true)
+  expect(sent[1]).toEqual([...GH_POST.slice(0, 8), 'body=needs a test', ...GH_POST.slice(9, 13), '-f', 'subject_type=file'])
+})
+
 const glPosted = (position: Record<string, unknown> | undefined) =>
   ok(JSON.stringify({ id: 'd9', individual_note: false, notes: [note(9, position ? { position } : { type: null })] }))
 
@@ -705,7 +724,7 @@ test('posting says in one sentence why it did not happen', async () => {
     error: 'PR #12 was not found in acme/app, or you may not see it',
   })
   expect(await postComment(fake({}).run, '12', AT, '  ')).toEqual({ error: 'Write something before posting the comment' })
-  expect(await postComment(fake({}).run, '12', { ...AT, line: 0 }, 'x')).toEqual({
+  expect(await postComment(fake({}).run, '12', { ...AT, line: -1 }, 'x')).toEqual({
     error: 'Pick a line of a file in the request to comment on',
   })
 

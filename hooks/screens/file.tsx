@@ -40,6 +40,9 @@ import {
 } from './frame'
 import { isMarkdownFile } from './markdown'
 
+// What `commentLine` holds while the comment being typed is on the file as a
+// whole, not on a line of it.
+export const FILE_COMMENT = -1
 // The blame column: a short hash, eight letters of the author, how long ago.
 const BLAME_WIDTH = 21
 // How many lines of a looked-up name's type and docs the file screen shows.
@@ -174,6 +177,8 @@ export type FileActions = {
   replyOn: (line: number) => void
   resolveOn: (line: number, isResolved: boolean) => void
   cancelComment: () => void
+  // Opens the box for a comment on the file as a whole.
+  commentOnFile: () => void
   // Leaves resolved threads out, or shows them again; lists every thread.
   toggleResolved: () => void
   listThreads: () => void
@@ -288,6 +293,8 @@ export const fileScreen = (
     (isDiff ? 1 : 0) +
     (isFinding ? 3 : 0) +
     (isCommenting ? 1 : 0) +
+    // The box a comment on the file as a whole is typed in.
+    (isCommenting && commentLine === FILE_COMMENT ? 3 : 0) +
     // The main row of buttons, and the box of the rest when it is open.
     Math.ceil(100 / columns) +
     (isMore ? 2 + Math.ceil(170 / Math.max(20, columns - 4)) : 0) +
@@ -1213,13 +1220,39 @@ export const fileScreen = (
         {/* The comment row: a line number picks the line, and only Enter or
             the post button sends anything to the forge. */}
         {isCommenting && Input !== undefined && (
-          <Box height={1} overflow="hidden">
+          <Box height={1} overflow="hidden" columnGap={2}>
+            {/* The file as a whole can be commented on too, on no line. */}
+            <Box flexShrink={0}>
+              <Button
+                plain
+                key="comment-file"
+                label={commentLine === FILE_COMMENT ? 'whole file ✓' : 'whole file'}
+                onPress={actions.commentOnFile}
+              />
+            </Box>
             <Text color={COMMENT_COLOR} wrap="truncate-end">
               {COMMENT_ICON}{' '}
-              {commentLine === 0
-                ? 'Commenting: press a line number to write on that line, or reply on a thread.'
-                : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
+              {commentLine === FILE_COMMENT
+                ? 'Writing on the file as a whole: Enter posts it.'
+                : commentLine === 0
+                  ? 'Commenting: press a line number to write on that line, "whole file" for the file, or reply on a thread.'
+                  : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
             </Text>
+          </Box>
+        )}
+        {isCommenting && Input !== undefined && commentLine === FILE_COMMENT && (
+          <Box height={3} columnGap={2} borderStyle="round" borderColor={COMMIT_BOX} paddingX={1} overflow="hidden">
+            <Input
+              key={`comment-file-text:${model.commentRound}`}
+              label="comment on this file"
+              placeholder="what to say of the file as a whole, then Enter"
+              submitLabel="post"
+              autoFocus
+              onInput={actions.typeComment}
+              onSubmit={value => actions.postComment(value)}
+            />
+            <Button key="comment-file-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+            <Button key="comment-file-cancel" label="cancel" onPress={actions.cancelComment} />
           </Box>
         )}
         {/* The find row: typing narrows the matches, Enter goes to the next. */}

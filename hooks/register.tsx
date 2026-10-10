@@ -45,6 +45,7 @@ import type { Comment, Listed, Run as ForgeRun } from './review'
 import {
   fetchComments,
   parseRequest,
+  isOnWholeFile,
   postComment,
   postGeneral,
   quoteOf,
@@ -61,7 +62,7 @@ import { tail } from './run'
 import type { Job } from './scan'
 import { allFilesOf, historyOf, isQueued, noteTouched, scanRepo } from './scan'
 import type { FileWindow, Insight } from './screens/file'
-import { fileScreen } from './screens/file'
+import { FILE_COMMENT, fileScreen } from './screens/file'
 import type { Shell } from './screens/frame'
 import { frame, kitOf } from './screens/frame'
 import type { GraphWindow } from './screens/graph'
@@ -1320,7 +1321,7 @@ const postReview = async (
 
   commentDraft = ''
   commentRound += 1
-  $.ui.toast(`Comment posted on line ${line}`)
+  $.ui.toast(line === 0 ? `Comment posted on ${path}` : `Comment posted on line ${line}`)
   await update($, view, last => ({ ...last, commentLine: 0 }))
 }
 
@@ -2598,10 +2599,10 @@ export const register: Register = (on, options) => {
     const talk =
       commit === target
         ? comments
-            // A ledger finding on the file as a whole has no line of its own:
-            // it is shown on the file's first, and says so.
+            // A comment or a ledger finding on the file as a whole has no
+            // line of its own: it is shown on the file's first, and says so.
             .map(one =>
-              one.path === file && one.line === 0 && isFinding(one)
+              one.path === file && isOnWholeFile(one)
                 ? { ...one, line: 1, body: `(whole file) ${one.body}` }
                 : one,
             )
@@ -2863,6 +2864,15 @@ export const register: Register = (on, options) => {
           commentRound += 1
           set(was => ({ ...was, commentLine: 0, replyTo: '' }))
         },
+        commentOnFile: () => {
+          commentDraft = ''
+          commentRound += 1
+          set(was => ({
+            ...was,
+            commentLine: was.commentLine === FILE_COMMENT ? 0 : FILE_COMMENT,
+            replyTo: '',
+          }))
+        },
         typeComment: text => {
           commentDraft = text
         },
@@ -2881,7 +2891,8 @@ export const register: Register = (on, options) => {
             requestTyped,
             target,
             file,
-            now.commentLine,
+            // Line 0 is the file as a whole.
+            now.commentLine === FILE_COMMENT ? 0 : now.commentLine,
             entered ?? commentDraft,
           )
         },

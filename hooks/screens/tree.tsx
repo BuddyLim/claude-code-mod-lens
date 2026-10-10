@@ -9,6 +9,7 @@ import { countLabel, diagsOf } from '../diags'
 import type { Stash } from '../git'
 import { isFinding } from '../ledger'
 import type { Comment } from '../review'
+import { isOnWholeFile } from '../review'
 import { clamp, fitStash, wrapText } from '../text'
 import type { TreeRow } from '../tree'
 import { buildTree, iconOf, visibleTree } from '../tree'
@@ -999,7 +1000,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
                   request's comment with none has lost its line to an edit. */}
               <Text color={talkColor(one)} wrap="truncate-end">
                 {' '}
-                ({isFinding(one) ? 'whole file' : 'outdated'}) · {said(one)}
+                ({isOnWholeFile(one) ? 'whole file' : one.oldLine !== undefined ? 'removed line' : 'outdated'}) · {said(one)}
               </Text>
             </Box>
           ),
