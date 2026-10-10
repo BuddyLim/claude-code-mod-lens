@@ -297,10 +297,10 @@ export const moreBelow = ({ Box, Text }: Kit, tree: ReturnType<typeof frame>, ro
   ) : (
     <Box flexDirection="column">
       {tree}
-      {/* Bright on the comparison's own orange, and in the middle of the
-          row, where it is not taken for part of what it lies over. */}
+      {/* Quiet: the comparison's orange on grey, in the middle of the row,
+          where it is not taken for part of what it lies over. */}
       <Box position="absolute" top={Math.max(0, row)} left={0} right={0} justifyContent="center">
-        <Text backgroundColor={COMPARE_COLOR} color="black" bold>
+        <Text backgroundColor={SKELETON_COLOR} color={COMPARE_COLOR}>
           {'  '}
           {label}
           {'  '}
