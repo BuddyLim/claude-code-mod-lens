@@ -1142,6 +1142,8 @@ export type Listed = {
   isDraft: boolean
   branch: string
   when: string
+  // Whether it is still open, was merged, or was closed without merging.
+  state: 'open' | 'merged' | 'closed'
   // The first line or two of what its description says, as plain text; ''
   // for a request that says nothing.
   summary: string
@@ -1160,7 +1162,9 @@ const GITHUB_STANDING =
 const GITLAB_STANDING =
   'query($path:ID!){project(fullPath:$path){mergeRequests(state:opened,first:50,sort:UPDATED_DESC){nodes{iid approved approvedBy(first:1){nodes{username}} headPipeline{status}}}}}'
 
-export const listRequests = async (run: Run): Promise<Listed[]> => {
+// `isPast` lists the requests that are over in place of the open ones: those
+// merged and those closed without it, the latest to change first.
+export const listRequests = async (run: Run, isPast = false): Promise<Listed[]> => {
   const place = await locate(run, '1')
 
   if ('error' in place) {
@@ -1168,19 +1172,40 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
   }
 
   const isGitlab = place.forge === 'gitlab'
-  const [listed, signedIn, stood] = await Promise.all([
+  const gitlabList = (state: string, count: number) =>
     call(
       run,
-      isGitlab
-        ? glab(place, `projects/${encodeURIComponent(place.repo)}/merge_requests?state=opened&per_page=50`)
-        : gh(place, `repos/${place.repo}/pulls?state=open&per_page=50`),
+      glab(
+        place,
+        `projects/${encodeURIComponent(place.repo)}/merge_requests?state=${state}&order_by=updated_at&per_page=${count}`,
+      ),
       20_000,
-    ),
+    )
+  // GitLab lists one state at a time, so the two that are over are asked
+  // side by side and read as one list (two answers back to back).
+  const past = async (): Promise<Awaited<ReturnType<typeof call>>> => {
+    if (!isGitlab) {
+      return call(run, gh(place, `repos/${place.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50`), 20_000)
+    }
+
+    const [merged, closed] = await Promise.all([gitlabList('merged', 30), gitlabList('closed', 20)])
+
+    return merged.exitCode !== 0 && closed.exitCode !== 0
+      ? merged
+      : { exitCode: 0, stdout: `${merged.exitCode === 0 ? merged.stdout : ''}${closed.exitCode === 0 ? closed.stdout : ''}`, stderr: '' }
+  }
+  const [listed, signedIn, stood] = await Promise.all([
+    isPast
+      ? past()
+      : isGitlab
+        ? gitlabList('opened', 50)
+        : call(run, gh(place, `repos/${place.repo}/pulls?state=open&per_page=50`), 20_000),
     // Who is asking, to tell their own requests from the rest.
     call(run, isGitlab ? glab(place, 'user') : gh(place, 'user'), 20_000),
     // Whether each one's checks pass, and what its reviews come to: the
     // list itself does not say, on either forge, so they are asked beside it.
-    call(
+    // (Requests that are over are listed without it: it is of no use there.)
+    isPast ? Promise.resolve({ exitCode: 1, stdout: '', stderr: '' }) : call(
       run,
       isGitlab
         ? glab(place, 'graphql', '-f', `query=${GITLAB_STANDING}`, '-f', `path=${place.repo}`)
@@ -1247,7 +1272,7 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
   }
 
   try {
-    return values(listed.stdout).flatMap(raw => {
+    const rows: Listed[] = values(listed.stdout).flatMap(raw => {
       const one = record(raw)
       const number = whole(isGitlab ? one.iid : one.number)
       const by = record(isGitlab ? one.author : one.user)
@@ -1265,6 +1290,18 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
               isDraft: (isGitlab ? (one.draft ?? one.work_in_progress) : one.draft) === true,
               branch: plain(text(isGitlab ? one.source_branch : record(one.head).ref)).slice(0, 200),
               when: text(one.updated_at),
+              // GitHub calls a merged request closed, and says when it was merged.
+              state: (isGitlab
+                ? text(one.state) === 'merged'
+                  ? 'merged'
+                  : text(one.state) === 'closed'
+                    ? 'closed'
+                    : 'open'
+                : typeof one.merged_at === 'string' && one.merged_at !== ''
+                  ? 'merged'
+                  : text(one.state) === 'closed'
+                    ? 'closed'
+                    : 'open') as Listed['state'],
               checks: standing.get(number)?.checks ?? '',
               decision: standing.get(number)?.decision ?? '',
               summary:
@@ -1278,6 +1315,9 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
             },
           ]
     })
+
+    // Those that are over come latest first, whichever kind each is.
+    return isPast ? rows.filter(one => one.state !== 'open').sort((a, b) => b.when.localeCompare(a.when)) : rows
   } catch {
     return []
   }

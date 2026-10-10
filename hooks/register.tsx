@@ -289,6 +289,9 @@ let branchRequest:
 // The repo's open pull or merge requests, for the compare panel to offer.
 // Written by `loadRequests`, when the panel opens.
 let requestsCache: { repo: string; list: Listed[] } | undefined
+// Whether the list is of the requests that are over (merged or closed) in
+// place of the open ones.
+let requestsPast = false
 
 // The whole comparison as one page, for the changes screen: what git said of
 // the repo, base and target in `key`. Written by `loadPatch`, when that
@@ -1120,7 +1123,13 @@ const loadOverview = async ($: EngineInterface, repo: string, typed: string): Pr
 }
 
 const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => {
-  requestsCache = { repo, list: await listRequests(forgeRun(runOf($), repo)) }
+  const isPast = requestsPast
+  const list = await listRequests(forgeRun(runOf($), repo), isPast)
+
+  // An answer for the other list, asked for before the switch, is let go.
+  if (isPast === requestsPast) {
+    requestsCache = { repo, list }
+  }
   await update($, view, nudged)
 }
 
@@ -2413,6 +2422,13 @@ export const register: Register = (on, options) => {
                 void loadRequests($, repo)
               }
 
+              // Back to the list is out of the request altogether: the
+              // comparison it was read as ends with it, so the list (and
+              // the tree behind it) is the working tree's again.
+              if (now.overviewFrom === 'requests') {
+                rescan()
+              }
+
               // Leaving the request's page this way, the tree is nobody's
               // next step: it has nothing behind it to go back to.
               set(
@@ -2420,6 +2436,7 @@ export const register: Register = (on, options) => {
                   ...last,
                   screen: last.overviewFrom === 'requests' ? 'requests' : 'tree',
                   codeFrom: 'tree',
+                  ...(last.overviewFrom === 'requests' ? { base: 'HEAD', target: '', baseWorktree: '' } : {}),
                 }),
               )
             },
@@ -2487,6 +2504,30 @@ export const register: Register = (on, options) => {
     if (now.screen === 'requests') {
       const prefix = `${repo}\n`
 
+      // A request has been pressed: its page is drawn at once, as it is
+      // while the forge is asked about it, so the bars that stand for it do
+      // not change shape when the request has been opened and is being read.
+      if (requestOpening !== '') {
+        const still = (): void => undefined
+
+        return framed(
+          overviewScreen(
+            kit,
+            {
+              shell,
+              label: `${requestOpening.startsWith('!') ? 'MR' : 'PR'} ${requestOpening}`,
+              overview: undefined,
+              refusal: '',
+              pictures: pictureCache,
+              now: await $.clock.now(),
+              asking: '',
+              isActing: false,
+            },
+            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, help: still },
+          ),
+        )
+      }
+
       return framed(
         requestsScreen(
           kit,
@@ -2494,7 +2535,7 @@ export const register: Register = (on, options) => {
             shell,
             list: requestsCache?.repo === repo ? requestsCache.list : undefined,
             current: requestTyped,
-            opening: requestOpening,
+            isPast: requestsPast,
             reviewed: Object.fromEntries(
               Object.entries(now.reviewed)
                 .filter(([key]) => key.startsWith(prefix))
@@ -2505,6 +2546,13 @@ export const register: Register = (on, options) => {
           {
             back: () => set((last): View => ({ ...last, screen: 'tree', codeFrom: 'tree' })),
             refresh: () => {
+              requestsCache = undefined
+              void loadRequests($, repo)
+              set(nudged)
+            },
+            // Between the open requests and those that are over.
+            togglePast: () => {
+              requestsPast = !requestsPast
               requestsCache = undefined
               void loadRequests($, repo)
               set(nudged)

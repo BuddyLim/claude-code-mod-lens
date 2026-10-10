@@ -13,9 +13,8 @@ export type RequestsModel = {
   list: readonly Listed[] | undefined
   // The request under review now, as it is typed ("#12"); '' for none.
   current: string
-  // The request being opened, as it is typed; '' for none. While one is, the
-  // list gives way to the shape of its page, and nothing can be pressed.
-  opening: string
+  // Which requests are listed: the open ones, or those merged or closed.
+  isPast: boolean
   // How many of each request's files are ticked as reviewed, by what it is
   // typed as.
   reviewed: Readonly<Record<string, number>>
@@ -29,6 +28,8 @@ export type RequestsActions = {
   // Starts a review of a request (its head against where it forked) and
   // shows what it is first: its overview, from which its code is a key away.
   open: (typed: string) => void
+  // Between the open requests and those merged or closed.
+  togglePast: () => void
   help: () => void
 }
 
@@ -79,7 +80,11 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
               </Text>
             )}
             {one.decision === 'REVIEW_REQUIRED' && <Text color="yellow"> ● review required</Text>}
-            {one.isDraft && <Text color="yellow"> draft</Text>}
+            {/* How one that is over ended: merged in the forges' own purple,
+                closed without it in red. */}
+            {one.state === 'merged' && <Text color="#a371f7"> ⇄ merged</Text>}
+            {one.state === 'closed' && <Text color="red"> ✖ closed</Text>}
+            {one.isDraft && one.state === 'open' && <Text color="yellow"> draft</Text>}
             {one.typed === model.current && <Text color="green"> ◀ open</Text>}
           </Box>
           <Text dimColor wrap="truncate-end">
@@ -106,36 +111,24 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
     )
   }
 
-  // A request has been pressed: the page it opens on is drawn in bars, under
-  // what is known of it already (its number and title, from the list).
-  if (model.opening !== '') {
-    const opened = (list ?? []).find(one => one.typed === model.opening)
-
-    return (
-      <Box flexDirection="column">
-        {statusLine(kit, shell)}
-        <Text dimColor>Opening {model.opening}…</Text>
-        <Box height={1} overflow="hidden">
-          <Text bold wrap="truncate-end">
-            {isGitlab ? 'MR' : 'PR'} {model.opening}
-            {opened === undefined || opened.title === '' ? '' : `: ${opened.title}`}
-          </Text>
-        </Box>
-        {skeleton(kit, [0.8, 0.4, 0, 0.22, 0.5, 0.35, 0.45, 0, 0.18, 0.9, 0.95, 0.7, 0, 0.85, 0.6, 0.9, 0.3], shell.columns - 2)}
-      </Box>
-    )
-  }
-
   return (
     <Box flexDirection="column">
       {statusLine(kit, shell)}
       <Box columnGap={2} flexWrap="wrap">
         <Button plain key="back" hotkey="b" label="back" onPress={actions.back} />
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
+        <Button
+          plain
+          key="past"
+          hotkey="p"
+          label={model.isPast ? 'open requests' : 'merged and closed'}
+          onPress={actions.togglePast}
+        />
         {helpButton(kit, actions.help)}
       </Box>
       <Text bold>
-        Open {isGitlab ? 'merge' : 'pull'} requests{list === undefined ? '' : ` (${list.length})`}
+        {model.isPast ? 'Merged and closed' : 'Open'} {isGitlab ? 'merge' : 'pull'} requests
+        {list === undefined ? '' : ` (${list.length})`}
       </Text>
       <Text dimColor wrap="truncate-end">
         Press a request to see what it is, then its code: nothing is checked out.
@@ -146,7 +139,8 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
         skeleton(kit, [0, 0.35, 0.7, 0.55, 0, 0.3, 0.6, 0.45, 0, 0.4, 0.75, 0.5], shell.columns - 2, 'Asking the forge…')}
       {list !== undefined && list.length === 0 && (
         <Text dimColor>
-          None are open, or the forge could not be asked (gh or glab installed and signed in?).
+          {model.isPast ? 'None are merged or closed' : 'None are open'}, or the forge could not be asked (gh or glab
+          installed and signed in?).
         </Text>
       )}
       {mine.length > 0 && <Text> </Text>}
@@ -155,7 +149,7 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
       {others.length > 0 && <Text> </Text>}
       {others.length > 0 && (
         <Text bold>
-          {mine.length > 0 ? 'Others' : 'Open'} ({others.length})
+          {mine.length > 0 ? 'Others' : model.isPast ? 'Merged and closed' : 'Open'} ({others.length})
         </Text>
       )}
       {others.map(row)}

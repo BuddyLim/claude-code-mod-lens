@@ -1228,3 +1228,47 @@ test('the open requests say whether their checks pass and how their reviews stan
 
   expect((await listRequests(silent)).map(one => [one.typed, one.checks])).toEqual([['#12', '']])
 })
+
+test('the requests that are over are listed as merged or closed, latest first, on both forges', async () => {
+  const asked: string[] = []
+  const github: Run = async argv => {
+    const line = argv.join(' ')
+
+    asked.push(line)
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : line.includes('pulls?state=closed')
+        ? ok(
+            JSON.stringify([
+              { number: 5, title: 'Dropped', state: 'closed', merged_at: null, updated_at: '2026-01-01T00:00:00Z', user: { login: 'ann' } },
+              { number: 6, title: 'Landed', state: 'closed', merged_at: '2026-02-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z', user: { login: 'bob' } },
+            ]),
+          )
+        : ok(JSON.stringify({ login: 'ann' }))
+  }
+
+  expect((await listRequests(github, true)).map(one => [one.typed, one.state, one.isMine])).toEqual([
+    ['#6', 'merged', false],
+    ['#5', 'closed', true],
+  ])
+  // How their checks stood is not asked: it is of no use for one that is over.
+  expect(asked.some(line => line.includes('graphql'))).toBe(false)
+
+  const gitlab: Run = async argv => {
+    const line = argv.join(' ')
+
+    return argv[0] === 'git'
+      ? ok('https://gitlab.com/acme/app.git\n')
+      : line.includes('state=merged')
+        ? ok(JSON.stringify([{ iid: 8, title: 'Landed', state: 'merged', updated_at: '2026-03-01T00:00:00Z', author: { username: 'ann' } }]))
+        : line.includes('state=closed')
+          ? ok(JSON.stringify([{ iid: 9, title: 'Dropped', state: 'closed', updated_at: '2026-04-01T00:00:00Z', author: { username: 'ann' } }]))
+          : ok(JSON.stringify({ username: 'zed' }))
+  }
+
+  expect((await listRequests(gitlab, true)).map(one => [one.typed, one.state])).toEqual([
+    ['!9', 'closed'],
+    ['!8', 'merged'],
+  ])
+})

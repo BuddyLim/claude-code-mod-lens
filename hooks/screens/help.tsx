@@ -149,6 +149,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['press a request', 'its number or its title: see what it is (title, description, checks), then f for its files or d for every change'],
         ['Yours / Others', 'the requests you opened come first'],
         ['n reviewed', 'how many of its files you have ticked'],
+        ['p', 'switch between the open requests and those merged or closed'],
         ['r', 'ask the forge again'],
         ['b', 'back to the file tree'],
       ],
