@@ -784,10 +784,79 @@ const oldLineOf = (diff: string, line: number): { isAdded: true } | { isAdded: f
   return { isAdded: false, oldLine: line - shift }
 }
 
+// Where the base's counter of lines stands at a line of the head version,
+// read from the same diff: for an unchanged line that is the line it was;
+// for an added one, the line of the base it was put in before. It is the
+// middle part of the name GitLab knows a line of a diff by.
+const oldPosOf = (diff: string, line: number): number => {
+  let shift = 0
+
+  for (const hunk of diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const from = Number(hunk[1])
+    const removed = hunk[2] === undefined ? 1 : Number(hunk[2])
+    const start = Number(hunk[3])
+    const added = hunk[4] === undefined ? 1 : Number(hunk[4])
+
+    if (added > 0 && line >= start && line < start + added) {
+      // After what the hunk removed; with nothing removed, `from` is the
+      // line the addition follows.
+      return removed === 0 ? from + 1 : from + removed
+    }
+
+    if (added > 0 ? start + added - 1 < line : start < line) {
+      shift += added - removed
+    }
+  }
+
+  return line - shift
+}
+
+// The name GitLab knows a line of a diff by: the SHA-1 of the file's path,
+// then where the base's and the head's counters of lines stand at it.
+export const gitlabLineCode = async (path: string, oldPos: number, newPos: number): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(path))
+
+  return `${[...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')}_${oldPos}_${newPos}`
+}
+
+// The file's path in the base (another, for a renamed file) and how it
+// changed there (`M`, `A`, `R100`, ...; '' for a file the request does not
+// touch), by its path in the head.
+const gitlabOldPath = async (
+  run: Run,
+  baseSha: string,
+  headSha: string,
+  path: string,
+): Promise<{ status: string; oldPath: string } | undefined> => {
+  const changed = await call(run, ['git', 'diff', '--name-status', '-M', '-z', baseSha, headSha, '--'], LOCAL_MS)
+
+  if (changed.exitCode !== 0) {
+    return undefined
+  }
+
+  const fields = changed.stdout.split('\0')
+  let found = { status: '', oldPath: path }
+
+  for (let index = 0; index < fields.length - 1; ) {
+    const kind = fields[index] ?? ''
+    const isMoved = /^[RC]/.test(kind)
+    const from = fields[index + 1] ?? ''
+    const to = isMoved ? (fields[index + 2] ?? '') : from
+
+    if (to === path) {
+      found = { status: kind, oldPath: from }
+    }
+
+    index += isMoved ? 3 : 2
+  }
+
+  return found
+}
+
 const gitlabPost = async (
   run: Run,
   place: Place,
-  at: { path: string; line: number; commit: string },
+  at: { path: string; line: number; commit: string; startLine?: number; oldLine?: number },
   body: string,
 ): Promise<{ comment: Comment } | { error: string }> => {
   const request = await call(run, glab(place, gitlabRequest(place)))
@@ -814,6 +883,49 @@ const gitlabPost = async (
 
   if (headSha !== at.commit) {
     return { error: 'This merge request has changed since it was opened here: reopen it, then comment again' }
+  }
+
+  // A comment on a removed line is placed by that line of the base alone,
+  // under the name the file had there.
+  if ((at.oldLine ?? 0) > 0) {
+    const was = await gitlabOldPath(run, baseSha, headSha, at.path)
+    const gone = await call(
+      run,
+      glab(
+        place,
+        '-X',
+        'POST',
+        `${gitlabRequest(place)}/discussions`,
+        '-f',
+        `body=${body}`,
+        '-F',
+        `position=${JSON.stringify({
+          position_type: 'text',
+          base_sha: baseSha,
+          start_sha: startSha,
+          head_sha: headSha,
+          old_path: was?.oldPath ?? at.path,
+          new_path: at.path,
+          old_line: at.oldLine,
+        })}`,
+      ),
+    )
+
+    if (gone.exitCode !== 0) {
+      return { error: whyFailed(place, gone, 'comment on') }
+    }
+
+    try {
+      const comment = fromGitlabDiscussion(JSON.parse(gone.stdout), headSha)[0]
+
+      if (!comment) {
+        throw new Error('no note')
+      }
+
+      return { comment: { ...comment, path: comment.path || at.path, line: 0, oldLine: at.oldLine as number } }
+    } catch {
+      return { error: `The comment may have been posted on ${place.label}, but glab's answer could not be read: reload to check` }
+    }
   }
 
   // A comment on the file as a whole is placed by its path alone.
@@ -861,32 +973,20 @@ const gitlabPost = async (
   const outside = { error: `Line ${at.line} of ${at.path} is not part of this merge request's diff` }
   let oldPath = at.path
   let oldLine = 0
+  // The file's own diff, kept for the names of the lines a comment on
+  // several of them runs from and to.
+  let fileDiff: string | undefined
 
-  const changed = await call(run, ['git', 'diff', '--name-status', '-M', '-z', baseSha, headSha, '--'], LOCAL_MS)
+  const was = await gitlabOldPath(run, baseSha, headSha, at.path)
 
-  if (changed.exitCode === 0) {
-    const fields = changed.stdout.split('\0')
-    let status = ''
+  if (was !== undefined) {
+    oldPath = was.oldPath
 
-    for (let index = 0; index < fields.length - 1; ) {
-      const kind = fields[index] ?? ''
-      const isMoved = /^[RC]/.test(kind)
-      const from = fields[index + 1] ?? ''
-      const to = isMoved ? (fields[index + 2] ?? '') : from
-
-      if (to === at.path) {
-        status = kind
-        oldPath = from
-      }
-
-      index += isMoved ? 3 : 2
-    }
-
-    if (status === '' || status.startsWith('D')) {
+    if (was.status === '' || was.status.startsWith('D')) {
       return outside
     }
 
-    if (!status.startsWith('A')) {
+    if (!was.status.startsWith('A')) {
       const diff = await call(
         run,
         ['git', 'diff', '--no-color', '--no-ext-diff', '-U0', '-M', baseSha, headSha, '--', ...new Set([oldPath, at.path])],
@@ -895,6 +995,10 @@ const gitlabPost = async (
       const where = diff.exitCode === 0 ? oldLineOf(diff.stdout, at.line) : { isAdded: true as const }
 
       oldLine = where.isAdded ? 0 : where.oldLine
+      fileDiff = diff.exitCode === 0 ? diff.stdout : undefined
+    } else {
+      // A new file is all one addition: every line was put in before line 1.
+      fileDiff = ''
     }
   }
 
@@ -910,20 +1014,36 @@ const gitlabPost = async (
     new_line: at.line,
     ...(oldLine > 0 ? { old_line: oldLine } : {}),
   }
+  const startLine = at.startLine !== undefined && at.startLine > 0 && at.startLine < at.line ? at.startLine : 0
+  const send = (where: object, said: string) =>
+    call(
+      run,
+      glab(place, '-X', 'POST', `${gitlabRequest(place)}/discussions`, '-f', `body=${said}`, '-F', `position=${JSON.stringify(where)}`),
+    )
+  // A comment on several lines names the first and the last of them the way
+  // GitLab knows a line of a diff. Those names are worked out here from
+  // git's own diff, so where GitLab does not take them (or they could not
+  // be worked out) the comment still goes: on the last line, saying which
+  // lines it is about.
+  const named = async (line: number): Promise<{ line_code: string; type: 'new' } | undefined> => {
+    if (fileDiff === undefined) {
+      return undefined
+    }
 
-  const posted = await call(
-    run,
-    glab(
-      place,
-      '-X',
-      'POST',
-      `${gitlabRequest(place)}/discussions`,
-      '-f',
-      `body=${body}`,
-      '-F',
-      `position=${JSON.stringify(position)}`,
-    ),
-  )
+    // In a new file every line is an addition before the base's line 1.
+    const isNew = was?.status.startsWith('A') === true
+
+    return { line_code: await gitlabLineCode(at.path, isNew ? 1 : oldPosOf(fileDiff, line), line), type: 'new' }
+  }
+  const range = startLine === 0 ? undefined : { start: await named(startLine), end: await named(at.line) }
+  const ranged =
+    range?.start !== undefined && range.end !== undefined
+      ? await send({ ...position, line_range: range }, body)
+      : undefined
+  const posted =
+    ranged !== undefined && ranged.exitCode === 0
+      ? ranged
+      : await send(position, startLine === 0 ? body : `Lines ${startLine}–${at.line}: ${body}`)
 
   if (posted.exitCode !== 0) {
     return { error: whyFailed(place, posted, 'comment on', at) }
@@ -992,7 +1112,7 @@ export const requestOfBranch = async (
     const number = whole(isGitlab ? first.iid : first.number)
 
     // What it is called, and the branch it asks to be merged into.
-    const title = text(first.title)
+    const title = plain(text(first.title)).slice(0, 300)
     const baseRef = isGitlab ? text(first.target_branch) : text(record(first.base).ref)
     // Its page on the forge.
     const url = isGitlab ? text(first.web_url) : text(first.html_url)
@@ -1169,9 +1289,11 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
   }
 
   if (place.forge === 'gitlab') {
-    const [seen, approvals] = await Promise.all([
+    const [seen, approvals, listed, signedIn] = await Promise.all([
       call(run, glab(place, gitlabRequest(place))),
       call(run, glab(place, `${gitlabRequest(place)}/approvals`)),
+      call(run, glab(place, `${gitlabRequest(place)}/commits?per_page=100`)),
+      call(run, glab(place, 'user'), 20_000),
     ])
 
     if (seen.exitCode !== 0) {
@@ -1182,12 +1304,68 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
       const one = record(JSON.parse(seen.stdout))
       const pipeline = record(one.head_pipeline)
       let approved: unknown[] = []
+      let isApproved = false
+      let isShort = false
 
       try {
-        approved = values(JSON.stringify(record(JSON.parse(approvals.stdout)).approved_by ?? []))
+        const answer = record(JSON.parse(approvals.stdout))
+
+        approved = values(JSON.stringify(answer.approved_by ?? []))
+        isApproved = answer.approved === true
+        isShort = count(answer.approvals_left) > 0
       } catch {
         approved = []
       }
+
+      // Each of an answer's parts is read alone: one the forge did not give
+      // leaves its own list empty and the rest as they are.
+      const list = (ran: { exitCode: number; stdout: string }): Json[] => {
+        try {
+          return ran.exitCode === 0 ? values(ran.stdout).map(record) : []
+        } catch {
+          return []
+        }
+      }
+      let me = ''
+
+      try {
+        me = signedIn.exitCode === 0 ? text(record(JSON.parse(signedIn.stdout)).username) : ''
+      } catch {
+        me = ''
+      }
+
+      const approvers = new Set(approved.map(raw => text(record(record(raw).user).username)))
+      // The pipeline's jobs are its checks, each with its own page; and the
+      // commit the person last looked at is the head the request had when
+      // they last wrote on it: GitLab keeps each head it has had (its
+      // versions) and when, and each note's time.
+      const [jobs, notes, versions] = await Promise.all([
+        count(pipeline.id) > 0
+          ? call(run, glab(place, `projects/${encodeURIComponent(place.repo)}/pipelines/${count(pipeline.id)}/jobs?per_page=100`))
+          : Promise.resolve({ exitCode: 1, stdout: '', stderr: '' }),
+        me === ''
+          ? Promise.resolve({ exitCode: 1, stdout: '', stderr: '' })
+          : call(run, glab(place, `${gitlabRequest(place)}/notes?sort=desc&order_by=created_at&per_page=100`)),
+        me === ''
+          ? Promise.resolve({ exitCode: 1, stdout: '', stderr: '' })
+          : call(run, glab(place, `${gitlabRequest(place)}/versions`)),
+      ])
+      const lastSaid = text(
+        list(notes).find(note => text(record(note.author).username) === me && note.system !== true)?.created_at,
+      )
+      const seenAt =
+        lastSaid === ''
+          ? ''
+          : text(
+              list(versions)
+                .filter(version => text(version.created_at) !== '' && text(version.created_at) <= lastSaid)
+                .sort((one, other) => (text(one.created_at) < text(other.created_at) ? 1 : -1))[0]?.head_commit_sha,
+            )
+      const checks = list(jobs).map(job => ({
+        name: [text(job.stage), text(job.name)].filter(part => part !== '').join(': '),
+        state: text(job.status),
+        url: text(job.web_url),
+      }))
 
       return {
         overview: tidyOverview({
@@ -1200,22 +1378,35 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
           base: text(one.target_branch),
           head: text(one.source_branch),
           mergeable: text(one.detailed_merge_status) || text(one.merge_status),
-          decision: approved.length > 0 ? 'APPROVED' : '',
+          decision: isApproved && !isShort ? 'APPROVED' : isShort ? 'REVIEW_REQUIRED' : approved.length > 0 ? 'APPROVED' : '',
+          // Its jobs, where they could be listed; else the pipeline as one.
           checks:
-            text(pipeline.status) === ''
-              ? []
-              : [{ name: 'pipeline', state: text(pipeline.status), url: text(pipeline.web_url) }],
-          reviews: approved.map(raw => ({
-            author: text(record(record(raw).user).username),
-            state: 'APPROVED',
-            when: '',
-          })),
-          commits: [],
+            checks.length > 0
+              ? checks
+              : text(pipeline.status) === ''
+                ? []
+                : [{ name: 'pipeline', state: text(pipeline.status), url: text(pipeline.web_url) }],
+          // Who has approved, then who was asked to review and has not.
+          reviews: [
+            ...[...approvers].map(author => ({ author, state: 'APPROVED', when: '' })),
+            ...(Array.isArray(one.reviewers) ? one.reviewers : [])
+              .map(raw => text(record(raw).username))
+              .filter(author => author !== '' && !approvers.has(author))
+              .map(author => ({ author, state: 'REVIEW_REQUESTED', when: '' })),
+          ],
+          // GitLab lists the newest first: oldest first here, as GitHub's are.
+          commits: list(listed)
+            .map(commit => ({
+              hash: text(commit.short_id) || text(commit.id).slice(0, 7),
+              subject: text(commit.title),
+              author: text(commit.author_name),
+            }))
+            .reverse(),
           labels: (Array.isArray(one.labels) ? one.labels : []).map(named).filter(label => label !== ''),
           additions: 0,
           deletions: 0,
           files: Number.parseInt(text(one.changes_count), 10) || 0,
-          lastReviewed: '',
+          lastReviewed: seenAt,
         }),
       }
     } catch {
@@ -1494,17 +1685,13 @@ export const postComment = async (
   }
 
   if (place.forge === 'gitlab') {
-    // GitLab places a note on a removed line by a key of its own making,
-    // which is not worked out here.
-    if (oldLine > 0) {
-      return { error: 'Commenting on a removed line is not done for GitLab from here yet: comment on a line beside it' }
-    }
-
+    // A removed line, a whole file, one line or several: each is placed
+    // GitLab's own way there.
     return gitlabPost(
       run,
       place,
-      at,
-      startLine === 0 ? body : `Lines ${startLine}–${at.line}: ${body}`,
+      { ...at, ...(oldLine > 0 ? { oldLine } : {}), ...(startLine > 0 ? { startLine } : {}) },
+      body,
     )
   }
 
@@ -1880,8 +2067,24 @@ const submitVerdict = async (
   prefix: string,
 ): Promise<string> => {
   if (place.forge === 'gitlab') {
+    // GitLab takes "changes requested" as a quick action in a comment: the
+    // line `/request_changes` on its own, which it acts on and does not
+    // show. An older GitLab that does not know it shows it as text, under
+    // the summary that says the same.
     if (verdict === 'request-changes') {
-      return 'GitLab has no call for requesting changes here: submit a comment saying what to change'
+      const asked = await call(
+        run,
+        glab(
+          place,
+          '-X',
+          'POST',
+          `${gitlabRequest(place)}/notes`,
+          '-f',
+          `body=${body === '' ? 'Changes requested.' : body}\n\n/request_changes`,
+        ),
+      )
+
+      return asked.exitCode === 0 ? '' : whyFailed(place, asked, 'comment on')
     }
 
     if (verdict === 'approve') {

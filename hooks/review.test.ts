@@ -13,6 +13,8 @@ import {
   resolveRequest,
   submitDrafted,
   changeComment,
+  gitlabLineCode,
+  readOverview,
   markViewed,
   readViewed,
   fold,
@@ -865,6 +867,159 @@ test('a GitLab comment carries the three commits, and the old line of an unchang
 
   await postComment(bare.run, '!34', AT, 'Why?')
   expect(bare.sent.at(-1)).toEqual(glPost({ ...position, old_path: 'src/a.ts' }))
+})
+
+test('GitLab takes a comment on several lines, on a removed line, and a request for changes', async () => {
+  const position = {
+    position_type: 'text',
+    base_sha: 'base',
+    start_sha: 'start',
+    head_sha: 'f'.repeat(40),
+    old_path: 'src/old.ts',
+    new_path: 'src/a.ts',
+  }
+  const git = {
+    [GL_NAMES]: ok('M\0README.md\0R090\0src/old.ts\0src/a.ts\0'),
+    [`git diff --no-color --no-ext-diff -U0 -M base ${'f'.repeat(40)} -- src/old.ts src/a.ts`]: ok(
+      'diff --git a/src/old.ts b/src/a.ts\n@@ -9,0 +10,3 @@ x\n+a\n+b\n+c\n@@ -48,2 +50,0 @@ y\n-d\n-e\n',
+    ),
+  }
+  const where = (argv: string[] | undefined) =>
+    JSON.parse((argv?.find(part => part.startsWith('position=')) ?? 'position={}').slice('position='.length)) as Record<string, unknown>
+
+  // The name of a line is the SHA-1 of its file's path, then the two counters.
+  expect(await gitlabLineCode('README.md', 1, 1)).toBe('8ec9a00bfd09b3190ac6b22251dbb1aa95a0579d_1_1')
+
+  // Several lines: the first and the last are named GitLab's way. Lines 11
+  // and 12 were added before the base's line 10; line 40 was line 37.
+  const ranged = glRun(git, glPosted({ ...position, new_line: 40, old_line: 37 }))
+
+  await postComment(ranged.run, '!34', { ...AT, startLine: 11 }, 'Why?')
+  expect(where(ranged.sent.at(-1))).toEqual({
+    ...position,
+    new_line: 40,
+    old_line: 37,
+    line_range: {
+      start: { line_code: await gitlabLineCode('src/a.ts', 10, 11), type: 'new' },
+      end: { line_code: await gitlabLineCode('src/a.ts', 37, 40), type: 'new' },
+    },
+  })
+  expect(ranged.sent.filter(argv => argv.includes('POST')).length).toBe(1)
+
+  // Where GitLab does not take the range, the comment still goes: on the
+  // last line, saying which lines it is about.
+  const posts: string[][] = []
+  const refusing: Run = async argv => {
+    const line = argv.join(' ')
+
+    if (argv.includes('POST')) {
+      posts.push(argv)
+
+      return posts.length === 1 ? failed('HTTP 400') : glPosted({ ...position, new_line: 40, old_line: 37 })
+    }
+
+    return line === GITHUB
+      ? ok('git@gitlab.com:group/sub/app.git\n')
+      : line === GL_MR
+        ? ok(JSON.stringify({ diff_refs: { base_sha: 'base', start_sha: 'start', head_sha: 'f'.repeat(40) } }))
+        : (git[line] ?? failed('fatal: bad object'))
+  }
+
+  expect('comment' in (await postComment(refusing, '!34', { ...AT, startLine: 11 }, 'Why?'))).toBe(true)
+  expect(posts.length).toBe(2)
+  expect('line_range' in where(posts[1])).toBe(false)
+  expect(posts[1]?.includes('body=Lines 11–40: Why?')).toBe(true)
+
+  // A removed line is placed by its line in the base, under the name the
+  // file had there.
+  const gone = glRun(git, glPosted({ ...position, old_line: 48 }))
+  const removed = await postComment(gone.run, '!34', { ...AT, line: 0, oldLine: 48 }, 'Why?')
+
+  expect(where(gone.sent.at(-1))).toEqual({ ...position, old_line: 48 })
+  expect(removed).toMatchObject({ comment: { path: 'src/a.ts', line: 0, oldLine: 48 } })
+
+  // Changes are requested with the quick action GitLab acts on.
+  const asked = glRun({}, ok('{}'))
+
+  expect((await submitDrafted(asked.run, '!34', 'request-changes', 'Needs a test', { drafts: [], commit: '', prefix: '' })).refusal).toBe('')
+  expect(asked.sent.at(-1)?.slice(-2)).toEqual(['-f', 'body=Needs a test\n\n/request_changes'])
+})
+
+test('a GitLab overview has the pipeline’s jobs, the commits, who reviewed, and where you last looked', async () => {
+  const answers: Record<string, unknown> = {
+    [GL_MR]: {
+      title: 'Add it',
+      description: 'Why it is added.',
+      author: { username: 'cat' },
+      state: 'opened',
+      draft: true,
+      web_url: 'https://gitlab.com/group/sub/app/-/merge_requests/34',
+      target_branch: 'main',
+      source_branch: 'topic',
+      detailed_merge_status: 'mergeable',
+      head_pipeline: { id: 77, status: 'failed', web_url: 'https://gitlab.com/p/77' },
+      reviewers: [{ username: 'dog' }, { username: 'owl' }],
+      labels: ['feature'],
+      changes_count: '4',
+    },
+    [`${GL_MR}/approvals`]: { approved: false, approvals_left: 1, approved_by: [{ user: { username: 'dog' } }] },
+    [`${GL_MR}/commits?per_page=100`]: [
+      { short_id: 'bbbbbbb', title: 'Second', author_name: 'Cat' },
+      { short_id: 'aaaaaaa', title: 'First', author_name: 'Cat' },
+    ],
+    [`${GL} user`]: { username: 'me' },
+    [`${GL} projects/group%2Fsub%2Fapp/pipelines/77/jobs?per_page=100`]: [
+      { stage: 'test', name: 'unit', status: 'success', web_url: 'https://gitlab.com/j/1' },
+      { stage: 'test', name: 'lint', status: 'failed', web_url: 'https://gitlab.com/j/2' },
+    ],
+    [`${GL_MR}/notes?sort=desc&order_by=created_at&per_page=100`]: [
+      { author: { username: 'cat' }, created_at: '2026-02-09T00:00:00Z', system: false },
+      { author: { username: 'me' }, created_at: '2026-02-05T00:00:00Z', system: false },
+    ],
+    [`${GL_MR}/versions`]: [
+      { head_commit_sha: 'c'.repeat(40), created_at: '2026-02-08T00:00:00Z' },
+      { head_commit_sha: 'b'.repeat(40), created_at: '2026-02-04T00:00:00Z' },
+      { head_commit_sha: 'a'.repeat(40), created_at: '2026-02-01T00:00:00Z' },
+    ],
+  }
+  const run: Run = async argv => {
+    const line = argv.join(' ')
+
+    return line === GITHUB
+      ? ok('git@gitlab.com:group/sub/app.git\n')
+      : line in answers
+        ? ok(JSON.stringify(answers[line]))
+        : failed(`unexpected: ${line}`)
+  }
+  const got = await readOverview(run, '!34')
+
+  expect('overview' in got ? got.overview : got.error).toMatchObject({
+    title: 'Add it',
+    body: 'Why it is added.',
+    author: 'cat',
+    isDraft: true,
+    base: 'main',
+    head: 'topic',
+    mergeable: 'mergeable',
+    decision: 'REVIEW_REQUIRED',
+    checks: [
+      { name: 'test: unit', state: 'success', url: 'https://gitlab.com/j/1' },
+      { name: 'test: lint', state: 'failed', url: 'https://gitlab.com/j/2' },
+    ],
+    reviews: [
+      { author: 'dog', state: 'APPROVED' },
+      { author: 'owl', state: 'REVIEW_REQUESTED' },
+    ],
+    // Oldest first, as GitHub lists them.
+    commits: [
+      { hash: 'aaaaaaa', subject: 'First', author: 'Cat' },
+      { hash: 'bbbbbbb', subject: 'Second', author: 'Cat' },
+    ],
+    labels: ['feature'],
+    files: 4,
+    // The head the request had when you last wrote on it.
+    lastReviewed: 'b'.repeat(40),
+  })
 })
 
 test('posting says in one sentence why it did not happen', async () => {

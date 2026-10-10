@@ -1031,7 +1031,7 @@ const loadOverview = async ($: EngineInterface, repo: string, typed: string): Pr
     overviewWanted = undefined
     overviewCache =
       'error' in answer
-        ? { key, overview: undefined, refusal: answer.error }
+        ? { key, overview: undefined, refusal: plain(answer.error).slice(0, 300) }
         : { key, overview: answer.overview, refusal: '' }
     await update($, view, nudged)
   }
@@ -2699,11 +2699,13 @@ export const register: Register = (on, options) => {
               requestTyped === ''
                 ? undefined
                 : {
-                    label: requestLabel,
-                    title: aboutRequest?.overview?.title ?? ofBranch?.title ?? '',
+                    // Whatever the forge said is drawn as plain text of a
+                    // bounded length, whichever answer it came in.
+                    label: plain(requestLabel).slice(0, 80),
+                    title: plain(aboutRequest?.overview?.title ?? ofBranch?.title ?? '').slice(0, 300),
                     lines: sampleOf(aboutRequest?.overview?.body ?? '', ABOUT_LINES, Math.max(20, shell.columns - 4)),
                     isLoading: aboutRequest === undefined,
-                    refusal: aboutRequest?.refusal ?? '',
+                    refusal: plain(aboutRequest?.refusal ?? '').slice(0, 300),
                   },
             stats: found.stats,
             dirty: found.dirty,
