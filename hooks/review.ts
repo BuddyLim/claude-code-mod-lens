@@ -1,7 +1,7 @@
 // Pull request / merge request lookup: turns what the user typed into two refs that exist locally.
 // Handle-free on purpose: every command goes through the `run` the caller passes in.
 
-import { plain, plainBlock } from './media'
+import { plain, plainBlock, sampleOf } from './media'
 
 // `stdin` is what the command reads, where it is given one (a JSON body).
 export type Run = (
@@ -1022,6 +1022,9 @@ export type Listed = {
   isDraft: boolean
   branch: string
   when: string
+  // The first line or two of what its description says, as plain text; ''
+  // for a request that says nothing.
+  summary: string
 }
 
 export const listRequests = async (run: Run): Promise<Listed[]> => {
@@ -1070,12 +1073,21 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
         : [
             {
               typed: `${isGitlab ? '!' : '#'}${number}`,
-              title: text(one.title),
-              author,
+              // What people wrote is made plain before it is handed on.
+              title: plain(text(one.title)).slice(0, 300),
+              author: plain(author).slice(0, 100),
               isMine: me !== '' && author === me,
               isDraft: (isGitlab ? (one.draft ?? one.work_in_progress) : one.draft) === true,
-              branch: text(isGitlab ? one.source_branch : record(one.head).ref),
+              branch: plain(text(isGitlab ? one.source_branch : record(one.head).ref)).slice(0, 200),
               when: text(one.updated_at),
+              summary:
+                sampleOf(
+                  typeof (isGitlab ? one.description : one.body) === 'string'
+                    ? ((isGitlab ? one.description : one.body) as string)
+                    : '',
+                  2,
+                  240,
+                ).join(' · '),
             },
           ]
     })

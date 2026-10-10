@@ -49,32 +49,42 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
     ]
       .filter(part => part !== '')
       .join(' · ')
-    const marks = `${one.isDraft ? ' draft' : ''}${one.typed === model.current ? ' ◀ open' : ''}`
-    const room = shell.columns - one.typed.length - trail.length - marks.length - 5
-    const title = one.title.length > room ? `${one.title.slice(0, Math.max(1, room - 1))}…` : one.title
+    // A request takes rows of its own whatever the pane's width: its number
+    // with who and when; its title, cut to the pane; and the first words of
+    // its description. Nothing shares a row with the title, so a narrow
+    // pane cuts it short and no more.
+    const room = Math.max(8, shell.columns - 4)
+    const cut = (text: string): string => (text.length > room ? `${text.slice(0, room - 1)}…` : text)
 
     return (
-      <Box height={1} overflow="hidden">
-        <Box flexShrink={0}>
-          <Text color={isGitlab ? GITLAB_COLOR : undefined}>{isGitlab ? GITLAB_ICON : GITHUB_ICON} </Text>
-          <Button plain key={`request:${one.typed}`} label={one.typed} onPress={() => actions.open(one.typed)} />
+      <Box flexDirection="column" marginBottom={1}>
+        <Box height={1} overflow="hidden">
+          <Box flexShrink={0}>
+            <Text color={isGitlab ? GITLAB_COLOR : undefined}>{isGitlab ? GITLAB_ICON : GITHUB_ICON} </Text>
+            <Button plain key={`request:${one.typed}`} label={one.typed} onPress={() => actions.open(one.typed)} />
+            {one.isDraft && <Text color="yellow"> draft</Text>}
+            {one.typed === model.current && <Text color="green"> ◀ open</Text>}
+          </Box>
+          <Text dimColor wrap="truncate-end">
+            {'  '}
+            {trail}
+          </Text>
         </Box>
-        <Box flexGrow={1} flexShrink={1}>
-          <Text> </Text>
-          {room >= 4 && (
-            <Button
-              plain
-              key={`request-changes:${one.typed}`}
-              label={title}
-              onPress={() => actions.openChanges(one.typed)}
-            />
-          )}
-          {one.isDraft && <Text color="yellow"> draft</Text>}
-          {one.typed === model.current && <Text color="green"> ◀ open</Text>}
+        <Box height={1} overflow="hidden" marginLeft={2}>
+          <Button
+            plain
+            key={`request-changes:${one.typed}`}
+            label={cut(one.title === '' ? '(no title)' : one.title)}
+            onPress={() => actions.openChanges(one.typed)}
+          />
         </Box>
-        <Box flexShrink={0} marginLeft={1}>
-          <Text dimColor>{trail}</Text>
-        </Box>
+        {one.summary !== '' && (
+          <Box height={1} overflow="hidden" marginLeft={2}>
+            <Text dimColor italic wrap="truncate-end">
+              {cut(one.summary)}
+            </Text>
+          </Box>
+        )}
       </Box>
     )
   }

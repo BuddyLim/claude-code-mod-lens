@@ -124,6 +124,48 @@ export const mediaOf = (markdown: string): Media[] => {
   return [...found.values()]
 }
 
+// The first few lines of a description, to show what it says at a glance:
+// its text without the marks markdown is written with (a heading's `#`, a
+// list's bullet, emphasis, a link's address, a picture, a tag), each line
+// held to `width` and no more than `count` of them. Empty for a description
+// that says nothing. What it is cut from is bounded, as in `mediaOf`.
+export const sampleOf = (markdown: string, count: number, width: number): string[] => {
+  const lines: string[] = []
+  let isCode = false
+
+  for (const raw of plainBlock(markdown.slice(0, SCANNED)).split('\n')) {
+    if (/^\s*(```|~~~)/.test(raw)) {
+      isCode = !isCode
+      continue
+    }
+
+    const line = isCode
+      ? raw.trim()
+      : plain(
+          raw
+            .replace(/<!--[^>]{0,2000}-->/g, ' ')
+            .replace(/!\[[^\]\n]{0,300}\]\([^)\s]{0,2000}\)/g, ' ')
+            .replace(/\[([^\]\n]{1,300})\]\([^)\s]{0,2000}\)/g, '$1')
+            .replace(/<[^>\n]{0,1000}>/g, ' ')
+            .replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+(?:\[[ xX]\]\s+)?|\d{1,4}[.)]\s+|>\s?)+/, '')
+            .replace(/(\*\*|__|\*|_|`|~~)/g, ''),
+        )
+
+    // A rule, a table's dashes or a line the marks were all of is no line.
+    if (line === '' || /^[-=|:\s]+$/.test(line)) {
+      continue
+    }
+
+    lines.push(line.length > width ? `${line.slice(0, Math.max(1, width - 1))}…` : line)
+
+    if (lines.length >= count) {
+      break
+    }
+  }
+
+  return lines
+}
+
 // The site a link goes to, to say beside whatever it is called: a name is
 // the writer's to choose, where it leads is not.
 export const hostOf = (url: string): string => /^https?:\/\/([^/?#\s]{1,200})/i.exec(url)?.[1]?.toLowerCase() ?? ''

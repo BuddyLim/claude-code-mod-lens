@@ -39,7 +39,7 @@ import type { InlayHint, SemanticToken } from './lsp-types'
 import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
-import { plain, plainBlock } from './media'
+import { plain, plainBlock, sampleOf } from './media'
 import type { PatchFile } from './patch'
 import { CONTEXT, CONTEXTS, applyHunk, hunkMark, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
@@ -323,6 +323,8 @@ const nudged = (last: View): View => ({ ...last, redraws: (last.redraws ?? 0) + 
 const REVIEWED_KEPT = 40
 // And how many ticked files of each.
 const REVIEWED_PATHS = 2000
+// How many lines of a request's description the file tree shows.
+const ABOUT_LINES = 3
 // The most comments one review holds unsent.
 const DRAFTS_KEPT = 200
 
@@ -2036,6 +2038,15 @@ export const register: Register = (on, options) => {
       void loadMe($, repo)
     }
 
+    // And what the request says of itself is read once, for the file tree
+    // to show its title and the first lines of its description.
+    const aboutKey = `${repo}\n${requestTyped}`
+    const aboutRequest = requestTyped !== '' && overviewCache?.key === aboutKey ? overviewCache : undefined
+
+    if (requestTyped !== '' && aboutRequest === undefined && overviewWanted !== aboutKey) {
+      void loadOverview($, repo, requestTyped)
+    }
+
     // The comments written for the review and not sent yet are drawn where
     // they will sit, as comments of their own kind.
     const drafts = requestTyped === '' ? [] : (now.drafts[`${repo}\n${requestTyped}`] ?? [])
@@ -2684,6 +2695,16 @@ export const register: Register = (on, options) => {
             shell,
             files: found.files.filter(one => isListed(one.path)),
             filter: now.filter,
+            about:
+              requestTyped === ''
+                ? undefined
+                : {
+                    label: requestLabel,
+                    title: aboutRequest?.overview?.title ?? ofBranch?.title ?? '',
+                    lines: sampleOf(aboutRequest?.overview?.body ?? '', ABOUT_LINES, Math.max(20, shell.columns - 4)),
+                    isLoading: aboutRequest === undefined,
+                    refusal: aboutRequest?.refusal ?? '',
+                  },
             stats: found.stats,
             dirty: found.dirty,
             diags: found.diags,

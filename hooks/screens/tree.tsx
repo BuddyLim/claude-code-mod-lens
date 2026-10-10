@@ -80,6 +80,14 @@ export type TreeModel = {
   isDiscarding: boolean
   // Whether the box of less-used keys is open.
   isMore: boolean
+  // The request under review, at a glance: how it is spoken of ("PR #12"),
+  // its title, and the first lines of its description as plain text (none
+  // while the forge is still being asked, or when it says nothing).
+  // Undefined with no request under review.
+  // `refusal` is why the forge could not be asked, '' when it was.
+  about:
+    | { label: string; title: string; lines: readonly string[]; isLoading: boolean; refusal: string }
+    | undefined
   // What the lists are narrowed by ('' for nothing): only files whose path
   // holds it are in them.
   filter: string
@@ -885,6 +893,37 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           </Box>
         </Box>
       )}
+      {/* The request under review: what it is called, and the first lines of
+          what it says of itself. Each has a row of its own, cut to the pane,
+          so a narrow pane shows less of it and never a broken row. */}
+      {model.about !== undefined && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Box height={1} overflow="hidden">
+            <Text bold wrap="truncate-end">
+              {model.about.label}
+              {model.about.title === '' ? '' : `: ${model.about.title}`}
+            </Text>
+          </Box>
+          {model.about.lines.map(line => (
+            <Box height={1} overflow="hidden" marginLeft={2}>
+              <Text dimColor italic wrap="truncate-end">
+                {line}
+              </Text>
+            </Box>
+          ))}
+          <Box height={1} overflow="hidden" marginLeft={2}>
+            <Text dimColor wrap="truncate-end">
+              {model.about.isLoading
+                ? 'Reading what it says…'
+                : model.about.refusal !== ''
+                  ? `Its description was not read: ${model.about.refusal}`
+                  : model.about.lines.length === 0
+                  ? 'It has no description.'
+                  : 'e: all of its description, its checks and its reviews'}
+            </Text>
+          </Box>
+        </Box>
+      )}
       {/* A filter in force says so wherever the box it was typed in is, with
           a way to lift it: lists that look short for no reason mislead. */}
       {model.filter !== '' && (
@@ -908,7 +947,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         return [
           // A clear row sets each group apart from the one above it.
           at > 0 && <Text> </Text>,
-          <Text bold>
+          <Text bold wrap="truncate-end">
             {group.title} ({group.files.length})
             {model.canMark && !group.isPickable
               ? ` · ${group.files.filter(one => seen.has(one.path)).length} reviewed`
@@ -943,7 +982,9 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           ) : (
             asked.typed
           )}
-          {asked.title === '' ? '' : `: ${asked.title}`} ({asked.files.length})
+          {/* Its title is said above, with what it is about, where it has
+              a row to itself; this heading stays short enough for any pane. */}{' '}
+          ({asked.files.length} {asked.files.length === 1 ? 'file' : 'files'})
           {model.canMark ? ` · ${asked.files.filter(one => seen.has(one.path)).length} reviewed` : ''}
         </Text>
       )}

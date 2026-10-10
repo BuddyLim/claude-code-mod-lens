@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MEDIA_KEPT, SCANNED, hostOf, mediaOf } from './media'
+import { MEDIA_KEPT, SCANNED, hostOf, mediaOf, sampleOf } from './media'
 
 test('the pictures, videos and documents of a description are listed in order, each once', async () => {
   const body = [
@@ -44,6 +44,36 @@ test('a description is read as untrusted: bounded, and with nothing a terminal w
   expect(mediaOf(`${' '.repeat(SCANNED)}![late](https://example.com/late.png)`)).toEqual([])
   expect(mediaOf(Array.from({ length: 500 }, (_, at) => `![p](https://example.com/${at}.png)`).join('\n')).length).toBe(MEDIA_KEPT)
   expect(Date.now() - started < 1500).toBe(true)
+})
+
+test('a description is sampled as the first lines of what it says, without its marks', async () => {
+  const body = [
+    '<!-- a template note -->',
+    '## What this does',
+    '',
+    '- Adds **the thing** and a [link](https://example.com/x) to it',
+    '![shot](https://example.com/a.png)',
+    '---',
+    '| a | b |',
+    '|---|---|',
+    '1. Then `code` and ~~less~~ of it',
+    '```ts',
+    'const kept = 1',
+    '```',
+    '> a quoted line that goes on for quite a while longer than the room there is for it',
+  ].join('\n')
+
+  expect(sampleOf(body, 5, 40)).toEqual([
+    'What this does',
+    'Adds the thing and a link to it',
+    '| a | b |',
+    'Then code and less of it',
+    'const kept = 1',
+  ])
+  expect(sampleOf(body, 2, 40).length).toBe(2)
+  expect(sampleOf(body, 9, 30)[5]).toBe('a quoted line that goes on fo…')
+  expect(sampleOf('', 3, 40)).toEqual([])
+  expect(sampleOf('\n\n---\n', 3, 40)).toEqual([])
 })
 
 test('plain links, and what is no link at all, are left out', async () => {

@@ -234,6 +234,12 @@ test('the overview draws what a request says, where it stands and what it links 
 
   const ui = await $.ui.mount(PANE)
 
+  // The file tree says what the request is and the first lines of what it
+  // says of itself, each on a row of its own.
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /^PR #12: Add the thing$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^It adds the thing\.$/ })).toBeDefined()
+
   await ui.press({ key: 'overview' })
   await ui.drawn()
   expect(await ui.find({ type: 'Text', text: /PR #12: Add the thing/ })).toBeDefined()
@@ -379,5 +385,40 @@ test('the code view opens a changed file on its diff, with the rewritten words l
   // And cut down to the changes, the file still draws.
   await ui.press({ key: 'diff' })
   await ui.drawn()
+  await ui.unmount()
+})
+
+test('the requests list gives a title and a description sample rows of their own, cut to a narrow pane', async ($, on) => {
+  const title = 'A very long title that goes on well past what a narrow pane can show on one row'
+
+  host(on, {
+    ...IN_REPO,
+    'remote get-url origin': 'https://github.com/acme/app.git\n',
+    'pulls?state=open&per_page': JSON.stringify([
+      {
+        number: 7,
+        title,
+        user: { login: 'ann' },
+        draft: true,
+        head: { ref: 'topic' },
+        updated_at: '',
+        body: '## Why\n\nBecause the old way was **slow**.\n',
+      },
+    ]),
+    'github.com user': JSON.stringify({ login: 'ann' }),
+  })
+  await $.command.run(lens(REPO))
+
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 } })
+
+  await ui.press({ key: 'requests' })
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /Yours \(1\)/ })).toBeDefined()
+
+  const shown = (await ui.find({ key: 'request-changes:#7' }))?.text ?? ''
+
+  // The title is its own button, cut to the pane with a mark that it goes on.
+  expect(shown.length <= 36 && shown.endsWith('…') && title.startsWith(shown.slice(0, -1))).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^Why · Because the old way was .*…$/ })).toBeDefined()
   await ui.unmount()
 })
