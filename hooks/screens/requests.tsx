@@ -75,6 +75,7 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
                 {stateOf(one.decision)[0]} {one.decision === 'APPROVED' ? 'approved' : 'changes asked'}
               </Text>
             )}
+            {one.decision === 'REVIEW_REQUIRED' && <Text color="yellow"> ● review required</Text>}
             {one.isDraft && <Text color="yellow"> draft</Text>}
             {one.typed === model.current && <Text color="green"> ◀ open</Text>}
           </Box>

@@ -1193,7 +1193,7 @@ test('the open requests say whether their checks pass and how their reviews stan
   expect(listed.map(one => [one.typed, one.checks, one.decision, one.isMine])).toEqual([
     ['#12', 'FAILURE', 'CHANGES_REQUESTED', true],
     // No checks and no review: nothing is said of either.
-    ['#13', '', '', false],
+    ['#13', 'NONE', '', false],
     // One the standing did not name is still listed.
     ['#14', '', '', false],
   ])

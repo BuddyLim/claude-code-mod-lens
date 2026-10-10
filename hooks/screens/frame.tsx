@@ -164,7 +164,9 @@ export const checksWord = (state: string): string => {
     ? ''
     : FAILED.has(word)
       ? 'checks fail'
-      : word === 'SKIPPED' || word === 'NEUTRAL'
+      : word === 'NONE'
+        ? 'no checks'
+        : word === 'SKIPPED' || word === 'NEUTRAL'
         ? 'checks skipped'
         : PASSED.has(word)
           ? 'checks pass'
@@ -176,7 +178,7 @@ export const checksWord = (state: string): string => {
 // The mark and colour of a run of checks as a whole: as `stateOf`, but
 // skipped checks are not drawn as passed.
 export const checksMark = (state: string): [mark: string, color: string] =>
-  /^(SKIPPED|NEUTRAL)$/i.test(state.trim()) ? ['○', 'gray'] : stateOf(state)
+  /^(SKIPPED|NEUTRAL|NONE)$/i.test(state.trim()) ? ['○', 'gray'] : stateOf(state)
 
 // The mark of a link that opens a page elsewhere.
 export const LINK_ICON = '\u{f08e}'

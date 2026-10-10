@@ -1216,7 +1216,9 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
       const commit = record(record((Array.isArray(record(node.commits).nodes) ? (record(node.commits).nodes as unknown[]) : [])[0]).commit)
 
       standing.set(Number(isGitlab ? node.iid : node.number), {
-        checks: plain(text(isGitlab ? record(node.headPipeline).status : record(commit.statusCheckRollup).state)).slice(0, 40),
+        // A request the forge answered for that has no checks says so (NONE):
+        // the row then tells "none" from "the forge was not asked".
+        checks: plain(text(isGitlab ? record(node.headPipeline).status : record(commit.statusCheckRollup).state)).slice(0, 40) || 'NONE',
         // GitLab calls a request approved when it needs no approval at all,
         // so it is said to be only where someone did approve it.
         decision: plain(
