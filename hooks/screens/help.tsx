@@ -20,6 +20,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['x', 'stop comparing (while a comparison is on)'],
         ['o', 'write a comment on the request as a whole'],
         ['press a name', 'in Conversation: read that comment in full, and quote-reply to it'],
+        ['e', 'the request under review at a glance: description, checks, reviews, commits'],
         ['p', 'list the open pull or merge requests, yours first, to review one'],
         ['d', 'every change on one page, to scroll through'],
         ['☐ on a request', 'tick a file as reviewed; it stays ticked between sessions'],
@@ -143,6 +144,19 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['press a title', 'the same, opened on the page of every change'],
         ['Yours / Others', 'the requests you opened come first'],
         ['n reviewed', 'how many of its files you have ticked'],
+        ['r', 'ask the forge again'],
+        ['b', 'back to the file tree'],
+      ],
+    ],
+  ],
+  overview: [
+    [
+      'Overview',
+      [
+        ['Where it stands', 'whether it can be merged, what its reviews come to, and its checks'],
+        ['Description', 'what the request says it does, rendered'],
+        ['Pictures, videos and files', 'what the description links to: each opens in the browser'],
+        ['s', 'compare the request with the commit you last reviewed it at'],
         ['r', 'ask the forge again'],
         ['b', 'back to the file tree'],
       ],

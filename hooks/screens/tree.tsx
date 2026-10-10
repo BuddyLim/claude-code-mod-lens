@@ -25,6 +25,7 @@ import {
   GITLAB_ICON,
   LEDGER_COLOR,
   LEDGER_ICON,
+  LINK_ICON,
   PENDING_COLOR,
   RESOLVED_COLOR,
   STASH_COLOR,
@@ -51,8 +52,6 @@ const BODY_STEP = 8
 // What keeps the rows and folders of a request's files apart from the same
 // files and folders listed above them.
 const REQUEST_SPACE = 'pr:'
-// The mark of a link that opens a page elsewhere.
-const LINK_ICON = '\u{f08e}'
 
 export type TreeModel = {
   shell: Shell
@@ -183,6 +182,8 @@ export type TreeActions = {
   // Opens the list of open requests, and the page of every change.
   openRequests: () => void
   openChanges: () => void
+  // Opens what the request under review is: its description, checks, reviews.
+  openOverview: () => void
   // Ticks or unticks a file of the request under review as reviewed.
   toggleReviewed: (path: string) => void
 }
@@ -725,6 +726,9 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         )}
         {!model.isPlain && (
           <Button plain key="requests" hotkey="p" label="requests" onPress={actions.openRequests} />
+        )}
+        {shell.reviewing !== '' && (
+          <Button plain key="overview" hotkey="e" label="overview" onPress={actions.openOverview} />
         )}
         {shell.reviewing !== '' && (
           <Button

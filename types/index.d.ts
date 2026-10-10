@@ -77,7 +77,7 @@ export type View = {
   base: string
   // `requests` lists the repo's open pull or merge requests; `changes` is the
   // whole comparison on one page.
-  screen: 'tree' | 'file' | 'graph' | 'list' | 'requests' | 'changes'
+  screen: 'tree' | 'file' | 'graph' | 'list' | 'requests' | 'changes' | 'overview'
   file: string
   // The first line the file screen's window shows, 1-based.
   top: number

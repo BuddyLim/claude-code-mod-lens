@@ -121,6 +121,8 @@ export const COMMENT_COLOR = '#c586c0'
 export const GITHUB_ICON = '\u{f09b}'
 export const GITLAB_ICON = '\u{f296}'
 export const GITLAB_COLOR = '#fc6d26'
+// The mark of a link that opens a page elsewhere.
+export const LINK_ICON = '\u{f08e}'
 // A ledger finding is drawn as a thread too, with a mark and a colour of its
 // own: it comes from a review run in this session, not from the forge.
 export const LEDGER_ICON = '\u{f0ae}'

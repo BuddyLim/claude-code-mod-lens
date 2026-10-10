@@ -193,3 +193,54 @@ test('the page of every change lights rewritten words, and its jump keys move th
   await ui.drawn()
   await ui.unmount()
 })
+
+test('the overview draws what a request says, where it stands and what it links to', async ($, on) => {
+  const seen = {
+    title: 'Add the thing',
+    body: '## What\n\nIt adds **the thing**.\n\n![a shot](https://example.com/shot.png)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+    author: { login: 'ann' },
+    state: 'OPEN',
+    isDraft: false,
+    url: 'https://github.com/acme/app/pull/12',
+    baseRefName: 'main',
+    headRefName: 'feature',
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'BLOCKED',
+    reviewDecision: 'CHANGES_REQUESTED',
+    statusCheckRollup: [
+      { name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'https://ci.example.com/1' },
+      { name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example.com/2' },
+      { context: 'deploy', state: 'PENDING', targetUrl: '' },
+    ],
+    latestReviews: [{ author: { login: 'bob' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-10-09T00:00:00Z', commit: { oid: 'c'.repeat(40) } }],
+    commits: [{ oid: 'd'.repeat(40), messageHeadline: 'Add it', authors: [{ login: 'ann' }] }],
+    labels: [{ name: 'feature' }],
+    additions: 10,
+    deletions: 2,
+    changedFiles: 3,
+  }
+  const clock = host(on, {
+    ...IN_REPO,
+    'remote get-url origin': 'https://github.com/acme/app.git\n',
+    '--abbrev-ref': 'feature\n',
+    'pulls?state=open&head=': JSON.stringify([{ number: 12, title: 'Add the thing', base: { ref: 'main' }, html_url: 'https://github.com/acme/app/pull/12' }]),
+    'gh pr view 12': JSON.stringify(seen),
+    'gh api': '[]',
+  })
+
+  await $.session.start({ cwd: REPO } as never)
+  await $.command.run(lens(REPO))
+  await clock.advance(2000)
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'overview' })
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /PR #12: Add the thing/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 passed, 1 failed, 1 still going/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /changes requested/ })).toBeDefined()
+  // The description is handed to the surface as markdown, and its picture is listed as a link.
+  expect(await ui.find({ type: 'Markdown' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Pictures, videos and files \(1\)/ })).toBeDefined()
+  await ui.unmount()
+})

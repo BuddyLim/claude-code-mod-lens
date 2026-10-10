@@ -1079,6 +1079,184 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
   }
 }
 
+// What a request is, beyond its code: what it says it does, whether its
+// checks pass, who has reviewed it, whether it can be merged, and its
+// commits. `lastReviewed` is the commit the person signed in to the forge's
+// CLI last reviewed it at ('' when they have not, or the forge did not say).
+export type Overview = {
+  title: string
+  body: string
+  author: string
+  state: string
+  isDraft: boolean
+  url: string
+  base: string
+  head: string
+  // What the forge says of merging it ("MERGEABLE", "CONFLICTING", ...) and
+  // of its reviews as a whole ("APPROVED", "CHANGES_REQUESTED", ...), in its
+  // own words; '' where it did not say.
+  mergeable: string
+  decision: string
+  checks: { name: string; state: string; url: string }[]
+  reviews: { author: string; state: string; when: string }[]
+  commits: { hash: string; subject: string; author: string }[]
+  labels: string[]
+  additions: number
+  deletions: number
+  files: number
+  lastReviewed: string
+}
+
+const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+
+// Reads a request's overview from the forge. `typed` is what the person
+// typed to open it.
+export const readOverview = async (run: Run, typed: string): Promise<{ overview: Overview } | { error: string }> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place
+  }
+
+  if (place.forge === 'gitlab') {
+    const [seen, approvals] = await Promise.all([
+      call(run, glab(place, gitlabRequest(place))),
+      call(run, glab(place, `${gitlabRequest(place)}/approvals`)),
+    ])
+
+    if (seen.exitCode !== 0) {
+      return { error: whyFailed(place, seen, 'read') }
+    }
+
+    try {
+      const one = record(JSON.parse(seen.stdout))
+      const pipeline = record(one.head_pipeline)
+      let approved: unknown[] = []
+
+      try {
+        approved = values(JSON.stringify(record(JSON.parse(approvals.stdout)).approved_by ?? []))
+      } catch {
+        approved = []
+      }
+
+      return {
+        overview: {
+          title: text(one.title),
+          body: typeof one.description === 'string' ? one.description : '',
+          author: text(record(one.author).username),
+          state: text(one.state),
+          isDraft: (one.draft ?? one.work_in_progress) === true,
+          url: text(one.web_url),
+          base: text(one.target_branch),
+          head: text(one.source_branch),
+          mergeable: text(one.detailed_merge_status) || text(one.merge_status),
+          decision: approved.length > 0 ? 'APPROVED' : '',
+          checks:
+            text(pipeline.status) === ''
+              ? []
+              : [{ name: 'pipeline', state: text(pipeline.status), url: text(pipeline.web_url) }],
+          reviews: approved.map(raw => ({
+            author: text(record(record(raw).user).username),
+            state: 'APPROVED',
+            when: '',
+          })),
+          commits: [],
+          labels: (Array.isArray(one.labels) ? one.labels : []).map(named).filter(label => label !== ''),
+          additions: 0,
+          deletions: 0,
+          files: Number.parseInt(text(one.changes_count), 10) || 0,
+          lastReviewed: '',
+        },
+      }
+    } catch {
+      return { error: `glab's answer about ${place.label} could not be read` }
+    }
+  }
+
+  const [seen, signedIn] = await Promise.all([
+    call(run, [
+      'gh',
+      'pr',
+      'view',
+      String(place.number),
+      '--repo',
+      `${place.host}/${place.repo}`,
+      '--json',
+      'title,body,author,state,isDraft,url,baseRefName,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,latestReviews,commits,labels,additions,deletions,changedFiles',
+    ]),
+    call(run, gh(place, 'user'), 20_000),
+  ])
+
+  if (seen.exitCode !== 0) {
+    return { error: whyFailed(place, seen, 'read') }
+  }
+
+  try {
+    const one = record(JSON.parse(seen.stdout))
+    let me = ''
+
+    try {
+      me = signedIn.exitCode === 0 ? text(record(JSON.parse(signedIn.stdout)).login) : ''
+    } catch {
+      me = ''
+    }
+
+    const reviews = (Array.isArray(one.latestReviews) ? one.latestReviews : []).map(raw => {
+      const review = record(raw)
+
+      return {
+        author: text(record(review.author).login),
+        state: text(review.state),
+        when: text(review.submittedAt),
+        commit: text(record(review.commit).oid),
+      }
+    })
+
+    return {
+      overview: {
+        title: text(one.title),
+        body: typeof one.body === 'string' ? one.body : '',
+        author: text(record(one.author).login),
+        state: text(one.state),
+        isDraft: one.isDraft === true,
+        url: text(one.url),
+        base: text(one.baseRefName),
+        head: text(one.headRefName),
+        mergeable: [text(one.mergeable), text(one.mergeStateStatus)].filter(part => part !== '').join(' · '),
+        decision: text(one.reviewDecision),
+        checks: (Array.isArray(one.statusCheckRollup) ? one.statusCheckRollup : []).map(raw => {
+          const check = record(raw)
+
+          return {
+            name: text(check.name) || text(check.context),
+            // A run still going has no conclusion yet: its status says so.
+            state: text(check.conclusion) || text(check.state) || text(check.status),
+            url: text(check.detailsUrl) || text(check.targetUrl),
+          }
+        }),
+        reviews: reviews.map(({ author, state, when }) => ({ author, state, when })),
+        commits: (Array.isArray(one.commits) ? one.commits : []).map(raw => {
+          const commit = record(raw)
+          const by = record((Array.isArray(commit.authors) ? commit.authors : [])[0])
+
+          return {
+            hash: text(commit.oid).slice(0, 7),
+            subject: text(commit.messageHeadline),
+            author: text(by.login) || text(by.name),
+          }
+        }),
+        labels: (Array.isArray(one.labels) ? one.labels : []).map(raw => text(record(raw).name)).filter(label => label !== ''),
+        additions: count(one.additions),
+        deletions: count(one.deletions),
+        files: count(one.changedFiles),
+        lastReviewed: me === '' ? '' : (reviews.find(review => review.author === me)?.commit ?? ''),
+      },
+    }
+  } catch {
+    return { error: `gh's answer about ${place.label} could not be read` }
+  }
+}
+
 export const fetchComments = async (run: Run, typed: string): Promise<{ comments: Comment[] } | { error: string }> => {
   const place = await locate(run, typed)
 

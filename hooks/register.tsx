@@ -41,8 +41,9 @@ import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
 import type { PatchFile } from './patch'
 import { readPatch } from './patch'
-import type { Comment, Draft, Listed, Run as ForgeRun } from './review'
+import type { Comment, Draft, Listed, Overview, Run as ForgeRun } from './review'
 import {
+  readOverview,
   draftComment,
   draftId,
   isDraft,
@@ -75,6 +76,7 @@ import { listScreen } from './screens/list'
 import { isMarkdownFile, markdownScreen } from './screens/markdown'
 import type { ChangesWindow } from './screens/changes'
 import { changesScreen } from './screens/changes'
+import { overviewScreen } from './screens/overview'
 import { recentsScreen } from './screens/recents'
 import { requestsScreen } from './screens/requests'
 import { treeScreen } from './screens/tree'
@@ -979,6 +981,28 @@ const findBranchRequest = async ($: EngineInterface, repo: string): Promise<stri
 
 // Asks the forge for the repo's open requests and has the compare panel,
 // which is already open, drawn again with them.
+// The overview of the request under review, as the forge gave it, or why it
+// did not. Written by `loadOverview`, when the overview screen opens.
+let overviewCache: { key: string; overview: Overview | undefined; refusal: string } | undefined
+let overviewWanted: string | undefined
+
+const loadOverview = async ($: EngineInterface, repo: string, typed: string): Promise<void> => {
+  const key = `${repo}\n${typed}`
+
+  overviewWanted = key
+
+  const answer = await readOverview(forgeRun(runOf($), repo), typed)
+
+  if (overviewWanted === key) {
+    overviewWanted = undefined
+    overviewCache =
+      'error' in answer
+        ? { key, overview: undefined, refusal: answer.error }
+        : { key, overview: answer.overview, refusal: '' }
+    await update($, view, nudged)
+  }
+}
+
 const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => {
   requestsCache = { repo, list: await listRequests(forgeRun(runOf($), repo)) }
   await update($, view, nudged)
@@ -1735,7 +1759,8 @@ export const register: Register = (on, options) => {
       e.origin.kind !== 'person' ||
       now.screen === 'tree' ||
       now.screen === 'list' ||
-      now.screen === 'requests'
+      now.screen === 'requests' ||
+      now.screen === 'overview'
     ) {
       return next(e)
     }
@@ -2041,6 +2066,49 @@ export const register: Register = (on, options) => {
       if (seenKey !== '') {
         void toggleReviewed($, seenKey, path)
       }
+    }
+
+    if (now.screen === 'overview') {
+      const key = `${repo}\n${requestTyped}`
+      const held = overviewCache?.key === key ? overviewCache : undefined
+
+      if (held === undefined && overviewWanted !== key && requestTyped !== '') {
+        void loadOverview($, repo, requestTyped)
+      }
+
+      return framed(
+        overviewScreen(
+          kit,
+          {
+            shell,
+            label: requestLabel,
+            overview: held?.overview,
+            refusal: requestTyped === '' ? 'No request is under review' : (held?.refusal ?? ''),
+            now: await $.clock.now(),
+          },
+          {
+            back: () => set((last): View => ({ ...last, screen: 'tree' })),
+            refresh: () => {
+              overviewCache = undefined
+              set(nudged)
+            },
+            // What has come in since the person last reviewed it: the
+            // request's head against the commit that review was of.
+            sinceReview: () => {
+              const from = held?.overview?.lastReviewed ?? ''
+
+              if (from === '') {
+                $.ui.toast('You have not reviewed this request yet')
+              } else if (target === '') {
+                $.ui.toast('Open the request from the requests list (p) first, then compare')
+              } else {
+                void startCompare($, repo, target, from)
+              }
+            },
+            help,
+          },
+        ),
+      )
     }
 
     if (now.screen === 'requests') {
@@ -2546,6 +2614,11 @@ export const register: Register = (on, options) => {
             scrollBody: line => set(last => ({ ...last, bodyTop: line })),
             applyStash: ref => void applyStash($, repo, ref, false),
             popStash: ref => void applyStash($, repo, ref, true),
+            openOverview: () => {
+              // Asked again each time it is opened: checks and reviews move.
+              overviewCache = undefined
+              set((last): View => ({ ...last, screen: 'overview' }))
+            },
             openRequests: () => {
               void loadRequests($, repo)
               set((last): View => ({ ...last, screen: 'requests' }))
