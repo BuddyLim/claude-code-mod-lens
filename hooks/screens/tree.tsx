@@ -970,35 +970,6 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           <Text dimColor>press a name to read it all</Text>
         </Box>
       )}
-      {/* The box a comment on the request as a whole is typed in: a new one,
-          or an answer that starts by quoting the comment it answers. Nothing
-          is sent until Enter or its button. */}
-      {canTalk && Input !== undefined && model.talkReply !== '' && (
-        <Box flexDirection="column" borderStyle="round" borderColor={COMMENT_COLOR} paddingX={1}>
-          {quoted !== undefined && (
-            <Text dimColor wrap="truncate-end">
-              &gt; {quoted.author}: {quoted.body.replace(/\s+/g, ' ')}
-            </Text>
-          )}
-          <Input
-            key={`talk-text:${model.talkRound}:${model.talkReply}`}
-            label={quoted === undefined ? 'comment' : 'reply'}
-            placeholder={
-              quoted === undefined
-                ? 'a comment on the request as a whole'
-                : `your answer to ${quoted.author}; their comment is quoted above it`
-            }
-            submitLabel="post"
-            autoFocus
-            onInput={actions.typeTalk}
-            onSubmit={value => actions.postTalk(value)}
-          />
-          <Box columnGap={2}>
-            <Button key="talk-post" variant="primary" label="post" onPress={() => actions.postTalk()} />
-            <Button key="talk-cancel" label="cancel" onPress={() => actions.writeTalk('')} />
-          </Box>
-        </Box>
-      )}
       {comments
         .filter(one => one.line === 0)
         .slice(-CONVERSATION_ROWS)
@@ -1104,6 +1075,36 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
             </Box>
           ),
         )}
+      {/* The box a comment on the request as a whole is typed in: a new one,
+          or an answer that starts by quoting the comment it answers. It sits
+          under the conversation, where the next thing said will go. Nothing
+          is sent until Enter or its button. */}
+      {canTalk && Input !== undefined && model.talkReply !== '' && (
+        <Box flexDirection="column" borderStyle="round" borderColor={COMMENT_COLOR} paddingX={1}>
+          {quoted !== undefined && (
+            <Text dimColor wrap="truncate-end">
+              &gt; {quoted.author}: {quoted.body.replace(/\s+/g, ' ')}
+            </Text>
+          )}
+          <Input
+            key={`talk-text:${model.talkRound}:${model.talkReply}`}
+            label={quoted === undefined ? 'comment' : 'reply'}
+            placeholder={
+              quoted === undefined
+                ? 'a comment on the request as a whole'
+                : `your answer to ${quoted.author}; their comment is quoted above it`
+            }
+            submitLabel="post"
+            autoFocus
+            onInput={actions.typeTalk}
+            onSubmit={value => actions.postTalk(value)}
+          />
+          <Box columnGap={2}>
+            <Button key="talk-post" variant="primary" label="post" onPress={() => actions.postTalk()} />
+            <Button key="talk-cancel" label="cancel" onPress={() => actions.writeTalk('')} />
+          </Box>
+        </Box>
+      )}
       {comments.some(one => one.line === 0) && <Text> </Text>}
       {others.length > 0 && (
         <Text bold>
