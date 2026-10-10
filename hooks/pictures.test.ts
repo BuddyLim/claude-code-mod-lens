@@ -37,23 +37,22 @@ test('a fetched picture is what the command said, and nothing is fetched that sh
   }
   const url = 'https://github.com/user-attachments/assets/1111-aaaa'
 
-  expect(await fetchPicture(run('/tmp/x/lens-pictures/p1.png\n640 320\n'), url, 'github.com', 'p1')).toEqual({
-    file: '/tmp/x/lens-pictures/p1.png',
+  expect(await fetchPicture(run('/home/x/.cache/lens-pictures/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png\n640 320\n'), url, 'github.com')).toEqual({
+    file: '/home/x/.cache/lens-pictures/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
     width: 640,
     height: 320,
   })
   // The address rides as an argument of a fixed script, with the size it may be.
   expect(asked[0]?.slice(0, 2)).toEqual(['sh', '-c'])
-  expect(asked[0]?.slice(3)).toEqual(['sh', url, 'p1', String(2 * 1024 * 1024)])
+  expect(asked[0]?.slice(3)).toEqual(['sh', url, String(2 * 1024 * 1024)])
 
   // A failed fetch, a file somewhere else, or a size no picture has, is no picture.
-  expect(await fetchPicture(run('', 1), url, 'github.com', 'p1')).toBe(undefined)
-  expect(await fetchPicture(run('/etc/passwd\n640 320\n'), url, 'github.com', 'p1')).toBe(undefined)
-  expect(await fetchPicture(run('/tmp/x/lens-pictures/p1.png\n99999 320\n'), url, 'github.com', 'p1')).toBe(undefined)
+  expect(await fetchPicture(run('', 1), url, 'github.com')).toBe(undefined)
+  expect(await fetchPicture(run('/etc/passwd\n640 320\n'), url, 'github.com')).toBe(undefined)
+  expect(await fetchPicture(run('/home/x/.cache/lens-pictures/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png\n99999 320\n'), url, 'github.com')).toBe(undefined)
 
-  // Another site's picture, or a name that is not a plain one, is not asked for at all.
+  // Another site's picture is not asked for at all.
   asked.length = 0
-  expect(await fetchPicture(run('x'), 'https://example.com/a.png', 'github.com', 'p1')).toBe(undefined)
-  expect(await fetchPicture(run('x'), url, 'github.com', '../p1')).toBe(undefined)
+  expect(await fetchPicture(run('x'), 'https://example.com/a.png', 'github.com')).toBe(undefined)
   expect(asked).toEqual([])
 })

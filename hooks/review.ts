@@ -1145,7 +1145,20 @@ export type Listed = {
   // The first line or two of what its description says, as plain text; ''
   // for a request that says nothing.
   summary: string
+  // Whether its checks pass ("SUCCESS", "FAILURE", "PENDING", GitLab's
+  // "RUNNING", ...) and what its reviews come to ("APPROVED", ...), in the
+  // forge's own words; '' where it has none or the forge did not say.
+  checks: string
+  decision: string
 }
+
+// The standing of each open request, asked of each forge its own way: the
+// state its last commit's checks add up to (GitHub), or its head pipeline's
+// (GitLab), and whether it is approved.
+const GITHUB_STANDING =
+  'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:50,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}'
+const GITLAB_STANDING =
+  'query($path:ID!){project(fullPath:$path){mergeRequests(state:opened,first:50,sort:UPDATED_DESC){nodes{iid approved headPipeline{status}}}}}'
 
 export const listRequests = async (run: Run): Promise<Listed[]> => {
   const place = await locate(run, '1')
@@ -1155,7 +1168,7 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
   }
 
   const isGitlab = place.forge === 'gitlab'
-  const [listed, signedIn] = await Promise.all([
+  const [listed, signedIn, stood] = await Promise.all([
     call(
       run,
       isGitlab
@@ -1165,10 +1178,50 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
     ),
     // Who is asking, to tell their own requests from the rest.
     call(run, isGitlab ? glab(place, 'user') : gh(place, 'user'), 20_000),
+    // Whether each one's checks pass, and what its reviews come to: the
+    // list itself does not say, on either forge, so they are asked beside it.
+    call(
+      run,
+      isGitlab
+        ? glab(place, 'graphql', '-f', `query=${GITLAB_STANDING}`, '-f', `path=${place.repo}`)
+        : gh(
+            place,
+            'graphql',
+            '-f',
+            `query=${GITHUB_STANDING}`,
+            '-f',
+            `owner=${place.repo.split('/')[0] ?? ''}`,
+            '-f',
+            `name=${place.repo.split('/')[1] ?? ''}`,
+          ),
+      20_000,
+    ),
   ])
 
   if (listed.exitCode !== 0) {
     return []
+  }
+
+  // Each request's standing by its number; none where the forge did not say.
+  const standing = new Map<number, { checks: string; decision: string }>()
+
+  try {
+    const data = record(record(JSON.parse(stood.stdout)).data)
+    const nodes = isGitlab
+      ? record(record(data.project).mergeRequests).nodes
+      : record(record(data.repository).pullRequests).nodes
+
+    for (const raw of stood.exitCode === 0 && Array.isArray(nodes) ? (nodes as unknown[]) : []) {
+      const node = record(raw)
+      const commit = record(record((Array.isArray(record(node.commits).nodes) ? (record(node.commits).nodes as unknown[]) : [])[0]).commit)
+
+      standing.set(Number(isGitlab ? node.iid : node.number), {
+        checks: plain(text(isGitlab ? record(node.headPipeline).status : record(commit.statusCheckRollup).state)).slice(0, 40),
+        decision: plain(isGitlab ? (node.approved === true ? 'APPROVED' : '') : text(node.reviewDecision)).slice(0, 40),
+      })
+    }
+  } catch {
+    standing.clear()
   }
 
   let me = ''
@@ -1200,6 +1253,8 @@ export const listRequests = async (run: Run): Promise<Listed[]> => {
               isDraft: (isGitlab ? (one.draft ?? one.work_in_progress) : one.draft) === true,
               branch: plain(text(isGitlab ? one.source_branch : record(one.head).ref)).slice(0, 200),
               when: text(one.updated_at),
+              checks: standing.get(number)?.checks ?? '',
+              decision: standing.get(number)?.decision ?? '',
               summary:
                 sampleOf(
                   typeof (isGitlab ? one.description : one.body) === 'string'

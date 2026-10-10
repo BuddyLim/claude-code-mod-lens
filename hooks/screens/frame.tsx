@@ -123,6 +123,23 @@ export const COMMENT_COLOR = '#c586c0'
 export const GITHUB_ICON = '\u{f09b}'
 export const GITLAB_ICON = '\u{f296}'
 export const GITLAB_COLOR = '#fc6d26'
+// A check's or a review's state, in whichever forge's words, as a mark and a
+// colour: what passed, what failed, what is still going or waiting.
+export const stateOf = (state: string): [mark: string, color: string] => {
+  const word = state.toUpperCase()
+
+  return /SUCCESS|APPROVED|PASSED|MERGEABLE|CLEAN|NEUTRAL|SKIPPED/.test(word)
+    ? ['✓', 'green']
+    : /FAIL|ERROR|CHANGES_REQUESTED|CONFLICT|TIMED_OUT|CANCEL|ACTION_REQUIRED|BLOCKED|DIRTY/.test(word)
+      ? ['✖', 'red']
+      : ['●', 'yellow']
+}
+
+// The same in a few words, for a row that has no room for the forge's own:
+// "checks pass", "checks fail", "checks running".
+export const checksWord = (state: string): string =>
+  state === '' ? '' : `checks ${{ '✓': 'pass', '✖': 'fail', '●': 'running' }[stateOf(state)[0]] ?? 'running'}`
+
 // The mark of a link that opens a page elsewhere.
 export const LINK_ICON = '\u{f08e}'
 // A ledger finding is drawn as a thread too, with a mark and a colour of its
@@ -148,6 +165,8 @@ export const RESOLVED_COLOR = '#9a8444'
 export const BODY_ROWS = 12
 // The most files listed under a commit or a stash.
 export const COMMIT_FILES = 40
+// The rows left clear above every screen (the frame draws one blank row).
+export const TOP_MARGIN = 1
 // The border drawn round every screen while a comparison is on.
 const COMPARE_COLOR = '#ffab40'
 
@@ -222,19 +241,21 @@ export const frame = (
   // while a comment is being written.
   color = COMPARE_COLOR,
 ) => {
-  const framed = isComparing ? (
-    <Box
-      key="pin"
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={color}
-      paddingX={padding}
-    >
-      {screen}
-    </Box>
-  ) : (
-    <Box key="pin" flexDirection="column" paddingX={padding}>
-      {screen}
+  // Every screen starts a row down from the pane's own top edge, border and
+  // all: the row is part of what the pane is held at, so a screen that draws
+  // its own window keeps it too.
+  const framed = (
+    <Box key="pin" flexDirection="column">
+      <Text> </Text>
+      {isComparing ? (
+        <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={padding}>
+          {screen}
+        </Box>
+      ) : (
+        <Box flexDirection="column" paddingX={padding}>
+          {screen}
+        </Box>
+      )}
     </Box>
   )
 

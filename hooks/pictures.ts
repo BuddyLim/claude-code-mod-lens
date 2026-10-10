@@ -56,26 +56,44 @@ export const cellsOf = (
     : { columns: Math.max(1, Math.round((rows * 2 * picture.width) / picture.height)), rows: Math.max(1, rows) }
 }
 
-// Fetches one address into a folder of its own, makes what came a PNG, and
-// prints the file and its size. $1 the address, $2 the name to keep it
-// under, $3 the most bytes. The picture is told by its first bytes, never by
-// its name; what is no picture, or one no tool here can make a PNG, fails.
+// Fetches one address into a folder that is the person's alone, makes what
+// came a PNG, and prints the file and its size. $1 the address, $2 the most
+// bytes. The folder is in the person's own cache, never the shared /tmp, and
+// is refused where it is a link or someone else's. The file is named by the
+// SHA-256 of the address, worked out here, so two addresses never share one.
+// The address is taken as it is written (no braces or brackets are spread
+// into many), and the picture is told by its first bytes, never by its name;
+// what is no picture, or one no tool here can make a PNG, fails.
 const FETCH = [
-  'dir="${TMPDIR:-/tmp}/lens-pictures"',
-  'mkdir -p "$dir" && chmod 700 "$dir" || exit 1',
-  'raw="$dir/$2.raw"; png="$dir/$2.png"',
-  'if [ ! -s "$png" ]; then',
-  '  curl -sSL --proto "=https" --proto-redir "=https" --max-redirs 5 --max-time 20 --max-filesize "$3" -o "$raw" -- "$1" || { rm -f "$raw"; exit 1; }',
-  '  [ "$(wc -c < "$raw" | tr -d " ")" -le "$3" ] || { rm -f "$raw"; exit 1; }',
+  'umask 077',
+  'base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"',
+  '[ -n "$base" ] || exit 1',
+  'dir="$base/lens-pictures"',
+  'mkdir -p "$dir" || exit 1',
+  '[ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || exit 1',
+  'chmod 700 "$dir" || exit 1',
+  'if command -v shasum >/dev/null 2>&1; then name=$(printf %s "$1" | shasum -a 256 | cut -c1-64)',
+  'elif command -v sha256sum >/dev/null 2>&1; then name=$(printf %s "$1" | sha256sum | cut -c1-64)',
+  'else exit 1; fi',
+  '[ "${#name}" -eq 64 ] || exit 1',
+  'case "$name" in *[!0-9a-f]*) exit 1 ;; esac',
+  // Pictures not looked at for two weeks go, so the folder does not grow.
+  'find "$dir" -type f -mtime +14 -delete 2>/dev/null',
+  'raw="$dir/$name.$$.raw"; made="$dir/$name.$$.png"; png="$dir/$name.png"',
+  'if [ ! -s "$png" ] || [ -L "$png" ]; then',
+  '  rm -f "$png"',
+  '  curl -sSL --globoff --proto "=https" --proto-redir "=https" --max-redirs 5 --max-time 20 --max-filesize "$2" -o "$raw" -- "$1" || { rm -f "$raw"; exit 1; }',
+  '  [ "$(wc -c < "$raw" | tr -d " ")" -le "$2" ] || { rm -f "$raw"; exit 1; }',
   '  magic=$(od -An -tx1 -N12 "$raw" | tr -d " \\n")',
   '  case "$magic" in',
-  '    89504e470d0a1a0a*) mv "$raw" "$png" ;;',
+  '    89504e470d0a1a0a*) mv -f "$raw" "$png" ;;',
   '    ffd8ff*|474946383?61*|52494646????????57454250)',
-  '      if command -v sips >/dev/null 2>&1; then sips -s format png "$raw" --out "$png" >/dev/null 2>&1',
-  '      elif command -v magick >/dev/null 2>&1; then magick "$raw[0]" "png:$png" >/dev/null 2>&1',
-  '      elif command -v convert >/dev/null 2>&1; then convert "$raw[0]" "png:$png" >/dev/null 2>&1',
-  '      else rm -f "$raw"; exit 1; fi',
-  '      rm -f "$raw" ;;',
+  '      if command -v sips >/dev/null 2>&1; then sips -s format png "$raw" --out "$made" >/dev/null 2>&1',
+  '      elif command -v magick >/dev/null 2>&1; then magick "$raw[0]" "png:$made" >/dev/null 2>&1',
+  '      elif command -v convert >/dev/null 2>&1; then convert "$raw[0]" "png:$made" >/dev/null 2>&1',
+  '      fi',
+  '      rm -f "$raw"',
+  '      [ -s "$made" ] && mv -f "$made" "$png" || { rm -f "$made"; exit 1; } ;;',
   '    *) rm -f "$raw"; exit 1 ;;',
   '  esac',
   'fi',
@@ -88,24 +106,18 @@ const FETCH = [
 
 // Fetches a picture and answers where it is and how big, or undefined where
 // it is not one lens fetches, could not be fetched, or is no picture to
-// draw. `name` is the file's own, of letters and digits: the caller's count.
-export const fetchPicture = async (
-  run: Run,
-  url: string,
-  forge: string,
-  name: string,
-): Promise<Picture | undefined> => {
-  if (!isFetched(url, forge) || !/^[a-z0-9-]{1,64}$/.test(name)) {
+// draw.
+export const fetchPicture = async (run: Run, url: string, forge: string): Promise<Picture | undefined> => {
+  if (!isFetched(url, forge)) {
     return undefined
   }
 
-  const ran = await run(['sh', '-c', FETCH, 'sh', url, name, String(PICTURE_BYTES)], { timeoutMs: 40_000 })
+  const ran = await run(['sh', '-c', FETCH, 'sh', url, String(PICTURE_BYTES)], { timeoutMs: 40_000 })
   const [file = '', size = ''] = ran.stdout.trim().split('\n')
   const [width = 0, height = 0] = size.split(' ').map(Number)
 
   return ran.exitCode === 0 &&
-    file.startsWith('/') &&
-    file.endsWith(`/lens-pictures/${name}.png`) &&
+    /^\/[\x20-\x7e]{1,900}\/lens-pictures\/[0-9a-f]{64}\.png$/.test(file) &&
     Number.isInteger(width) &&
     Number.isInteger(height) &&
     width >= 1 &&

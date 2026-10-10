@@ -227,7 +227,7 @@ test('the overview draws what a request says, where it stands and what it links 
     'gh pr view 12': JSON.stringify(seen),
     'gh api': '[]',
     // A picture of the description, fetched: where it was put, and its size.
-    'lens-pictures': '/tmp/t/lens-pictures/{argv5}.png\n640 320\n',
+    'lens-pictures': '/Users/t/.cache/lens-pictures/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png\n640 320\n',
   })
 
   await $.session.start({ cwd: REPO } as never)
@@ -241,6 +241,8 @@ test('the overview draws what a request says, where it stands and what it links 
   await ui.drawn()
   expect(await ui.find({ type: 'Text', text: /^PR #12: Add the thing$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^It adds the thing\.$/ })).toBeDefined()
+  // And how it stands, once the forge has said: its checks and its reviews.
+  expect(await ui.find({ type: 'Text', text: /1 of 3 checks fail/ })).toBeDefined()
 
   await ui.press({ key: 'overview' })
   await ui.drawn()
@@ -430,6 +432,7 @@ test('the requests list gives a title and a description sample rows of their own
       },
     ]),
     'github.com user': JSON.stringify({ login: 'ann' }),
+    'statusCheckRollup{state}': JSON.stringify({ data: { repository: { pullRequests: { nodes: [{ number: 7, reviewDecision: 'APPROVED', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } }] } } } }),
   })
   await $.command.run(lens(REPO))
 
@@ -438,6 +441,9 @@ test('the requests list gives a title and a description sample rows of their own
   await ui.press({ key: 'requests' })
   await ui.drawn()
   expect(await ui.find({ type: 'Text', text: /Yours \(1\)/ })).toBeDefined()
+  // How it stands is on its first row: its checks, and its reviews.
+  expect(await ui.find({ type: 'Text', text: /checks fail/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /approved/ })).toBeDefined()
 
   const shown = (await ui.find({ key: 'request-changes:#7' }))?.text ?? ''
 

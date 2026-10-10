@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   fetchComments,
+  listRequests,
   forgeOf,
   isOnWholeFile,
   parseRequest,
@@ -1160,4 +1161,66 @@ test('an answer in the conversation quotes what it answers, and is posted as a c
   expect(await postGeneral(fake({}).run, '#12', '  ')).toEqual({
     error: 'Write something before posting the comment',
   })
+})
+
+test('the open requests say whether their checks pass and how their reviews stand, on both forges', async () => {
+  const github: Run = async argv => {
+    const line = argv.join(' ')
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : line.includes('graphql')
+        ? ok(
+            JSON.stringify({
+              data: {
+                repository: {
+                  pullRequests: {
+                    nodes: [
+                      { number: 12, reviewDecision: 'CHANGES_REQUESTED', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
+                      { number: 13, reviewDecision: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] } },
+                    ],
+                  },
+                },
+              },
+            }),
+          )
+        : line.includes('pulls?state=open')
+          ? ok(JSON.stringify([{ number: 12, title: 'One', user: { login: 'ann' } }, { number: 13, title: 'Two', user: { login: 'bob' } }, { number: 14, title: 'Three', user: { login: 'bob' } }]))
+          : ok(JSON.stringify({ login: 'ann' }))
+  }
+  const listed = await listRequests(github)
+
+  expect(listed.map(one => [one.typed, one.checks, one.decision, one.isMine])).toEqual([
+    ['#12', 'FAILURE', 'CHANGES_REQUESTED', true],
+    // No checks and no review: nothing is said of either.
+    ['#13', '', '', false],
+    // One the standing did not name is still listed.
+    ['#14', '', '', false],
+  ])
+
+  const gitlab: Run = async argv => {
+    const line = argv.join(' ')
+
+    return argv[0] === 'git'
+      ? ok('https://gitlab.com/acme/app.git\n')
+      : line.includes('graphql')
+        ? ok(JSON.stringify({ data: { project: { mergeRequests: { nodes: [{ iid: '34', approved: true, headPipeline: { status: 'RUNNING' } }] } } } }))
+        : line.includes('merge_requests?state=opened')
+          ? ok(JSON.stringify([{ iid: 34, title: 'One', author: { username: 'ann' } }]))
+          : ok(JSON.stringify({ username: 'zed' }))
+  }
+
+  expect((await listRequests(gitlab)).map(one => [one.typed, one.checks, one.decision])).toEqual([['!34', 'RUNNING', 'APPROVED']])
+
+  // A forge that will not say how they stand still lists them.
+  const silent: Run = async argv =>
+    argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : argv.join(' ').includes('graphql')
+        ? failed('no')
+        : argv.join(' ').includes('pulls?state=open')
+          ? ok(JSON.stringify([{ number: 12, title: 'One', user: { login: 'ann' } }]))
+          : failed('no')
+
+  expect((await listRequests(silent)).map(one => [one.typed, one.checks])).toEqual([['#12', '']])
 })

@@ -12,7 +12,7 @@ import { cellsOf } from '../pictures'
 import type { Overview, RequestAct } from '../review'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMIT_BOX, LINK_ICON, helpButton, statusLine } from './frame'
+import { COMMIT_BOX, LINK_ICON, helpButton, stateOf, statusLine } from './frame'
 
 // The most of a description that is drawn, and the size of each piece of it:
 // an element's text is bounded, and so is the tree as a whole.
@@ -55,18 +55,6 @@ export type OverviewActions = {
   ask: (act: RequestAct | '') => void
   act: (act: RequestAct) => void
   help: () => void
-}
-
-// A check's or a review's state as a mark and a colour: what passed, what
-// failed, what is still going.
-const stateOf = (state: string): [mark: string, color: string] => {
-  const word = state.toUpperCase()
-
-  return /SUCCESS|APPROVED|PASSED|MERGEABLE|CLEAN|NEUTRAL|SKIPPED/.test(word)
-    ? ['✓', 'green']
-    : /FAIL|ERROR|CHANGES_REQUESTED|CONFLICT|TIMED_OUT|CANCEL|ACTION_REQUIRED|BLOCKED|DIRTY/.test(word)
-      ? ['✖', 'red']
-      : ['●', 'yellow']
 }
 
 const MEDIA_WORD: Record<Media['kind'], string> = { image: 'picture', video: 'video', file: 'file' }

@@ -79,7 +79,7 @@ import { allFilesOf, historyOf, isQueued, noteTouched, scanRepo } from './scan'
 import type { FileWindow, Insight } from './screens/file'
 import { FILE_COMMENT, fileScreen } from './screens/file'
 import type { Shell } from './screens/frame'
-import { COMMENT_COLOR, frame, kitOf } from './screens/frame'
+import { COMMENT_COLOR, TOP_MARGIN, frame, kitOf, stateOf } from './screens/frame'
 import type { GraphWindow } from './screens/graph'
 import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
@@ -1028,22 +1028,45 @@ let requestActing = false
 const pictureCache = new Map<string, Picture | 'loading' | 'none'>()
 const PICTURES_KEPT = 200
 
-// A plain name for the file a picture is kept in, from its address: the same
-// address is the same file, so it is fetched once.
-const pictureName = (url: string): string => {
-  let hash = 2166136261
-
-  for (const char of url) {
-    hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 16777619) >>> 0
-  }
-
+// Lets the oldest pictures go once more are held than are kept.
+const trimPictures = (): void => {
   if (pictureCache.size > PICTURES_KEPT) {
     for (const old of [...pictureCache.keys()].slice(0, pictureCache.size - PICTURES_KEPT)) {
       pictureCache.delete(old)
     }
   }
+}
 
-  return `p-${hash.toString(16)}-${url.length}`
+// How a request stands, in a few parts for a row of the file tree: its
+// checks (the worst of them says how they stand), what its reviews come to,
+// and whether it merges. Each part is the state that colours it, in the
+// forge's own word, and the words to say.
+const standingOf = (overview: Overview | undefined): [state: string, words: string][] => {
+  if (overview === undefined) {
+    return []
+  }
+
+  const marks = overview.checks.map(check => stateOf(check.state)[0])
+  const failed = marks.filter(mark => mark === '✖').length
+  const going = marks.filter(mark => mark === '●').length
+
+  return [
+    ...(overview.checks.length === 0
+      ? []
+      : [
+          failed > 0
+            ? (['FAILURE', `${failed} of ${marks.length} checks fail`] as [string, string])
+            : going > 0
+              ? (['PENDING', `${going} of ${marks.length} checks running`] as [string, string])
+              : (['SUCCESS', `${marks.length} ${marks.length === 1 ? 'check passes' : 'checks pass'}`] as [string, string]),
+        ]),
+    ...(overview.decision === ''
+      ? []
+      : [[overview.decision, overview.decision.toLowerCase().replace(/_/g, ' ')] as [string, string]]),
+    ...(overview.mergeable === ''
+      ? []
+      : [[overview.mergeable, overview.mergeable.toLowerCase().replace(/_/g, ' ')] as [string, string]]),
+  ]
 }
 
 const loadOverview = async ($: EngineInterface, repo: string, typed: string): Promise<void> => {
@@ -2103,7 +2126,7 @@ export const register: Register = (on, options) => {
 
     const shell: Shell = {
       columns: (e.props.bodyColumns ?? 80) - inset - 2 * settings.sidePadding,
-      rows: (e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30) - inset,
+      rows: (e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30) - inset - TOP_MARGIN,
       inset,
       padding: settings.sidePadding,
       repoName: repo.split('/').pop() ?? '',
@@ -2278,8 +2301,9 @@ export const register: Register = (on, options) => {
         .filter(one => !pictureCache.has(one.url))
 
       for (const one of wantedPictures) {
+        trimPictures()
         pictureCache.set(one.url, 'loading')
-        void fetchPicture(runOf($), one.url, forge, pictureName(one.url)).then(picture => {
+        void fetchPicture(runOf($), one.url, forge).then(picture => {
           pictureCache.set(one.url, picture ?? 'none')
 
           return update($, view, nudged)
@@ -2776,6 +2800,7 @@ export const register: Register = (on, options) => {
                     lines: sampleOf(aboutRequest?.overview?.body ?? '', ABOUT_LINES, Math.max(20, shell.columns - 4)),
                     isLoading: aboutRequest === undefined,
                     refusal: plain(aboutRequest?.refusal ?? '').slice(0, 300),
+                    standing: standingOf(aboutRequest?.overview),
                   },
             stats: found.stats,
             dirty: found.dirty,

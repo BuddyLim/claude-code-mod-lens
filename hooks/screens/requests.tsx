@@ -5,7 +5,7 @@
 import { ageOf } from '../git'
 import type { Listed } from '../review'
 import type { Kit, Shell } from './frame'
-import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, helpButton, statusLine } from './frame'
+import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksWord, helpButton, stateOf, statusLine } from './frame'
 
 export type RequestsModel = {
   shell: Shell
@@ -61,6 +61,20 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
           <Box flexShrink={0}>
             <Text color={isGitlab ? GITLAB_COLOR : undefined}>{isGitlab ? GITLAB_ICON : GITHUB_ICON} </Text>
             <Button plain key={`request:${one.typed}`} label={one.typed} onPress={() => actions.open(one.typed)} />
+            {/* Whether its checks pass, and whether it is approved or has
+                changes asked for: a mark each, in the colour of how it stands. */}
+            {one.checks !== '' && (
+              <Text color={stateOf(one.checks)[1]}>
+                {' '}
+                {stateOf(one.checks)[0]} {checksWord(one.checks)}
+              </Text>
+            )}
+            {/APPROVED|CHANGES_REQUESTED/.test(one.decision) && (
+              <Text color={stateOf(one.decision)[1]}>
+                {' '}
+                {stateOf(one.decision)[0]} {one.decision === 'APPROVED' ? 'approved' : 'changes asked'}
+              </Text>
+            )}
             {one.isDraft && <Text color="yellow"> draft</Text>}
             {one.typed === model.current && <Text color="green"> ◀ open</Text>}
           </Box>

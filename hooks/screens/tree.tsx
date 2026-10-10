@@ -36,6 +36,7 @@ import {
   notesOf,
   said,
   statusLine,
+  stateOf,
   talkColor,
   talkIcon,
 } from './frame'
@@ -86,7 +87,16 @@ export type TreeModel = {
   // Undefined with no request under review.
   // `refusal` is why the forge could not be asked, '' when it was.
   about:
-    | { label: string; title: string; lines: readonly string[]; isLoading: boolean; refusal: string }
+    | {
+        label: string
+        title: string
+        lines: readonly string[]
+        isLoading: boolean
+        refusal: string
+        // How it stands, a part each: the state that colours it (the
+        // forge's own word) and what to say of it ("2 checks fail").
+        standing: readonly (readonly [state: string, words: string])[]
+      }
     | undefined
   // What b goes back to, as it is spoken of ("PR #12"), when the files were
   // opened from the request's own page; '' when there is nothing behind.
@@ -913,6 +923,17 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
               {model.about.title === '' ? '' : `: ${model.about.title}`}
             </Text>
           </Box>
+          {/* How it stands, in a row: its checks, its reviews, whether it
+              merges. Each in the colour of its own state. */}
+          {model.about.standing.length > 0 && (
+            <Box height={1} overflow="hidden" marginLeft={2} columnGap={2}>
+              {model.about.standing.map(([state, words]) => (
+                <Text color={stateOf(state)[1]}>
+                  {stateOf(state)[0]} {words}
+                </Text>
+              ))}
+            </Box>
+          )}
           {model.about.lines.map(line => (
             <Box height={1} overflow="hidden" marginLeft={2}>
               <Text dimColor italic wrap="truncate-end">
