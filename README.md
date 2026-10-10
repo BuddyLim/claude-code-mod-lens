@@ -56,6 +56,16 @@ the problem or it was already there.
   `d` puts every change of the comparison on one page to scroll through, with
   the comments under their lines. While a request is under review each file
   has a box to tick once you have read it; the ticks are kept between sessions.
+- **A review from start to finish.** `e` is the request at a glance: its
+  description rendered, checks, reviews, whether it merges, and merge, close
+  or check out from there. Comments wait for the review and go with your
+  verdict; they can be on a line, several lines, a removed line or a whole
+  file, be edited, deleted or offered as a suggested change. Ticks follow
+  GitHub's own "Viewed" marks.
+- **More on the page of changes.** Words that changed are lit; the two sides
+  can sit side by side (`v`); `f` searches; `n` `p` `j` `k` `c` `x` jump by
+  file, change and comment; and a change of your working tree is staged or
+  undone a hunk at a time.
 - **Folders without git.** A folder in no repository opens too: every file of
   it is listed, its code files are checked, and anything else is left alone.
   Nothing is compared there, so there is no diff, graph or commit box.
