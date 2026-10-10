@@ -756,8 +756,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
       </Box>
       {/* The less-used keys open in a box of their own (m): a key works
           while its button is drawn, so the box is where these live. */}
-      {model.isMore && (
-        <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+      {/* Folded, the box is still drawn, at no height, so its keys answer
+          whether or not it is open. */}
+      {(
+        <Box
+          flexDirection="column"
+          {...(model.isMore
+            ? { borderStyle: 'round' as const, borderDimColor: true, paddingX: 1 }
+            : { height: 0, overflow: 'hidden' as const })}
+        >
           <Box columnGap={2} flexWrap="wrap">
             <Button
               plain
@@ -792,7 +799,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           </Box>
           {/* A name anywhere in the project, by typing part of it: the
               language server of the first changed file it can read searches. */}
-          {Input !== undefined && (
+          {model.isMore && Input !== undefined && (
             <Box height={1} overflow="hidden">
               <Input
                 key="symbol-search"

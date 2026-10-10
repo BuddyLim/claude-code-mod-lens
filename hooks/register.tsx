@@ -94,7 +94,7 @@ import {
   settledView,
   totalsOf,
 } from './state'
-import { stepShown } from './changes'
+import { selectedLines, stepShown } from './changes'
 import { clamp, foldEnd } from './text'
 
 const PANE = 'lens'
@@ -1289,6 +1289,8 @@ const postReview = async (
   path: string,
   line: number,
   body: string,
+  // The first line, when the comment is on several (`line` is the last).
+  from = 0,
 ): Promise<void> => {
   if (body.trim() === '') {
     $.ui.toast('Type the comment first')
@@ -1305,7 +1307,7 @@ const postReview = async (
   const answer = await postComment(
     run,
     typed,
-    { path: `${prefix}${path}`, line, commit: head },
+    { path: `${prefix}${path}`, line, commit: head, ...(from > 0 && from < line ? { startLine: from } : {}) },
     body.trim(),
   )
 
@@ -1322,7 +1324,7 @@ const postReview = async (
   commentDraft = ''
   commentRound += 1
   $.ui.toast(line === 0 ? `Comment posted on ${path}` : `Comment posted on line ${line}`)
-  await update($, view, last => ({ ...last, commentLine: 0 }))
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0 }))
 }
 
 // Answers the thread whose first comment is `root`, on the forge.
@@ -1362,7 +1364,7 @@ const postReply = async (
   commentDraft = ''
   commentRound += 1
   $.ui.toast(`Replied to ${root.author}`)
-  await update($, view, last => ({ ...last, commentLine: 0, replyTo: '' }))
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, replyTo: '' }))
 }
 
 // Marks the thread `root` starts as resolved, or open again, on the forge.
@@ -2655,6 +2657,7 @@ export const register: Register = (on, options) => {
         canComment,
         isCommenting,
         commentLine: now.commentLine,
+        commentFrom: now.commentFrom,
         replyTo: now.replyTo,
         hidesResolved: now.hidesResolved,
         commentRound,
@@ -2709,7 +2712,7 @@ export const register: Register = (on, options) => {
           // While commenting on a request, a line number picks the line
           // to comment on.
           isCommenting
-            ? set(last => ({ ...last, commentLine: n, replyTo: '' }))
+            ? set(last => ({ ...last, commentLine: n, commentFrom: 0, replyTo: '' }))
             : // The fold is the function or class the server says starts
               // here; without a server, what the indentation suggests.
               void sendToComposer(
@@ -2847,7 +2850,7 @@ export const register: Register = (on, options) => {
           const root = rootOn(n)
 
           if (root !== undefined) {
-            set(was => ({ ...was, isCommenting: true, commentLine: n, replyTo: root.id }))
+            set(was => ({ ...was, isCommenting: true, commentLine: n, commentFrom: 0, replyTo: root.id }))
           }
         },
         resolveOn: (n, isResolved) => {
@@ -2862,7 +2865,7 @@ export const register: Register = (on, options) => {
         cancelComment: () => {
           commentDraft = ''
           commentRound += 1
-          set(was => ({ ...was, commentLine: 0, replyTo: '' }))
+          set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '' }))
         },
         commentOnFile: () => {
           commentDraft = ''
@@ -2870,6 +2873,29 @@ export const register: Register = (on, options) => {
           set(was => ({
             ...was,
             commentLine: was.commentLine === FILE_COMMENT ? 0 : FILE_COMMENT,
+            commentFrom: 0,
+            replyTo: '',
+          }))
+        },
+        // The lines the person last dragged over become the lines the
+        // comment is on: the box opens under the last of them.
+        commentOnSelection: async (from, to) => {
+          const picked = selectedLines((await $.ui.selection())?.text ?? '', texts, from, to)
+
+          if (picked === undefined) {
+            $.ui.toast('Drag over the lines to comment on first, then press [selected lines]', {
+              timeoutMs: 8000,
+            })
+
+            return
+          }
+
+          commentDraft = ''
+          commentRound += 1
+          set(was => ({
+            ...was,
+            commentLine: picked[1],
+            commentFrom: picked[0] === picked[1] ? 0 : picked[0],
             replyTo: '',
           }))
         },
@@ -2894,6 +2920,7 @@ export const register: Register = (on, options) => {
             // Line 0 is the file as a whole.
             now.commentLine === FILE_COMMENT ? 0 : now.commentLine,
             entered ?? commentDraft,
+            now.commentFrom,
           )
         },
       },

@@ -306,6 +306,7 @@ export type Comment = {
   isResolved?: boolean // where the forge says
   isOutdated?: boolean // attached to a version of the file that has since changed
   oldLine?: number // for a comment on a removed line: its line in the target's version of the file
+  startLine?: number // for a comment on several lines: the first of them (`line` is the last)
   // What the forge calls the thread it is in, by which the thread is resolved (and, on GitLab,
   // replied to): GitHub's node id of the review thread, GitLab's discussion id. Absent where the
   // forge did not say, and on general comments.
@@ -558,6 +559,9 @@ const fromGithubLine = (raw: unknown, threads: Map<string, ThreadState>): Commen
     ...(thread && thread.id !== '' ? { thread: thread.id } : {}),
     isOutdated,
     ...(isOnOld && line > 0 ? { oldLine: line } : {}),
+    ...(!isOnOld && whole(one.start_line) > 0 && whole(one.start_line) < line
+      ? { startLine: whole(one.start_line) }
+      : {}),
   }
 }
 
@@ -1061,12 +1065,17 @@ export const fetchComments = async (run: Run, typed: string): Promise<{ comments
 export const postComment = async (
   run: Run,
   typed: string,
-  at: { path: string; line: number; commit: string },
+  // `startLine`, where it is before `line`, makes it a comment on those lines
+  // together. GitHub takes the range; on GitLab the comment goes on the last
+  // line and says which lines it is about.
+  at: { path: string; line: number; commit: string; startLine?: number },
   body: string,
 ): Promise<{ comment: Comment } | { error: string }> => {
   if (body.trim() === '') {
     return { error: 'Write something before posting the comment' }
   }
+
+  const startLine = at.startLine !== undefined && at.startLine > 0 && at.startLine < at.line ? at.startLine : 0
 
   // Line 0 is the file as a whole, which both forges take a comment on.
   if (at.path === '' || !Number.isInteger(at.line) || at.line < 0 || at.commit === '') {
@@ -1080,7 +1089,12 @@ export const postComment = async (
   }
 
   if (place.forge === 'gitlab') {
-    return gitlabPost(run, place, at, body)
+    return gitlabPost(
+      run,
+      place,
+      at,
+      startLine === 0 ? body : `Lines ${startLine}–${at.line}: ${body}`,
+    )
   }
 
   // -f keeps the body as typed (-F would read "@file" and turn "true" into a boolean); the line must be a number.
@@ -1098,6 +1112,7 @@ export const postComment = async (
       '-f',
       `path=${at.path}`,
       ...(at.line === 0 ? ['-f', 'subject_type=file'] : ['-F', `line=${at.line}`, '-f', 'side=RIGHT']),
+      ...(startLine === 0 ? [] : ['-F', `start_line=${startLine}`, '-f', 'start_side=RIGHT']),
     ),
   )
 

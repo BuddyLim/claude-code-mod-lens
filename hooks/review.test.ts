@@ -597,6 +597,27 @@ test('a GitHub comment is posted on the right side of the head commit', async ()
   expect(sent).toEqual([['git', 'remote', 'get-url', 'origin'], GH_POST])
 })
 
+test('a GitHub comment on several lines names the first of them too', async () => {
+  const sent: string[][] = []
+
+  const run: Run = async argv => {
+    sent.push(argv)
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : ok(JSON.stringify(ghLine(9, { body: 'x', user: { login: 'me' }, start_line: 31 })))
+  }
+
+  expect(await postComment(run, '12', { ...AT, startLine: 31 }, 'x')).toMatchObject({
+    comment: { line: 40, startLine: 31 },
+  })
+  expect(sent[1]?.slice(-4)).toEqual(['-F', 'start_line=31', '-f', 'start_side=RIGHT'])
+  // A first line that is not before the last is no range.
+  sent.length = 0
+  await postComment(run, '12', { ...AT, startLine: 40 }, 'x')
+  expect(sent[1]?.includes('start_side=RIGHT')).toBe(false)
+})
+
 test('a GitHub comment on line 0 is posted on the file as a whole', async () => {
   const sent: string[][] = []
 

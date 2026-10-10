@@ -120,6 +120,9 @@ export type FileModel = {
   canComment: boolean
   isCommenting: boolean
   commentLine: number
+  // The first line of the comment being typed when it is on several (then
+  // `commentLine` is the last); 0 when it is on one.
+  commentFrom: number
   // The thread being answered, by its first comment's id; '' for none.
   replyTo: string
   // What the diff is against, by name, when that is not the comparison's
@@ -179,6 +182,9 @@ export type FileActions = {
   cancelComment: () => void
   // Opens the box for a comment on the file as a whole.
   commentOnFile: () => void
+  // Opens the box for a comment on the lines last dragged over with the
+  // mouse, looked for among the lines the window shows (`from` to `to`).
+  commentOnSelection: (from: number, to: number) => void
   // Leaves resolved threads out, or shows them again; lists every thread.
   toggleResolved: () => void
   listThreads: () => void
@@ -295,7 +301,7 @@ export const fileScreen = (
     // The hint, and the row of the whole-file button under it.
     (isCommenting ? 2 : 0) +
     // The box a comment on the file as a whole is typed in.
-    (isCommenting && commentLine === FILE_COMMENT ? 3 : 0) +
+    (isCommenting && commentLine === FILE_COMMENT ? 4 : 0) +
     // The main row of buttons, and the box of the rest when it is open.
     Math.ceil(100 / columns) +
     (isMore ? 2 + Math.ceil(170 / Math.max(20, columns - 4)) : 0) +
@@ -513,7 +519,7 @@ export const fileScreen = (
 
       talkLines.push({
         kind: 'head',
-        text: `${indent}${at === 0 ? talkIcon(one) : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
+        text: `${indent}${at === 0 ? talkIcon(one) : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.startLine === undefined ? '' : ` · lines ${one.startLine}–${one.line}`}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
       })
 
       for (const line of model.isExpanded ? body : body.slice(0, TALK_FOLDED)) {
@@ -539,7 +545,11 @@ export const fileScreen = (
     // for (under the thread, when it answers one). Only Enter or its post
     // button sends anything to the forge.
     const isWriting = isCommenting && commentLine === n && Input !== undefined
-    const writeHeight = isWriting ? 3 : 0
+    // The field has a row to itself and the buttons the one under it, so a
+    // narrow pane does not squeeze the field against them.
+    const writeHeight = isWriting ? 4 : 0
+    // The lines a comment being typed is on, when it is on more than one.
+    const isRange = model.commentFrom > 0 && model.commentFrom < n
     const answered = model.replyTo === '' ? undefined : talk[0]
     const writeRows =
       isWriting && Input !== undefined
@@ -547,24 +557,34 @@ export const fileScreen = (
             <Box
               marginLeft={gutter + 2}
               width={talkWidth}
-              height={3}
-              columnGap={2}
+              height={4}
+              flexDirection="column"
               borderStyle="round"
               borderColor={COMMIT_BOX}
               paddingX={1}
               overflow="hidden"
             >
-              <Input
-                key={`comment-text:${model.commentRound}`}
-                label={answered === undefined ? `comment on line ${n}` : `reply to ${answered.author}`}
-                placeholder="what to say, then Enter"
-                submitLabel="post"
-                autoFocus
-                onInput={actions.typeComment}
-                onSubmit={value => actions.postComment(value)}
-              />
-              <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
-              <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
+              <Box height={1} overflow="hidden">
+                <Input
+                  key={`comment-text:${model.commentRound}`}
+                  label={
+                    answered !== undefined
+                      ? `reply to ${answered.author}`
+                      : isRange
+                        ? `comment on lines ${model.commentFrom}–${n}`
+                        : `comment on line ${n}`
+                  }
+                  placeholder="what to say, then Enter"
+                  submitLabel="post"
+                  autoFocus
+                  onInput={actions.typeComment}
+                  onSubmit={value => actions.postComment(value)}
+                />
+              </Box>
+              <Box height={1} overflow="hidden" columnGap={2}>
+                <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+                <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
+              </Box>
             </Box>,
           ]
         : []
@@ -1057,13 +1077,16 @@ export const fileScreen = (
           />
           {helpButton(kit, actions.help)}
         </Box>
-        {isMore && (
+        {/* Folded, the box is still drawn, at no height: a key works while
+            its button is in the drawing, so the less-used keys answer
+            whether or not the box is open. */}
+        {(
           <Box
             columnGap={2}
             flexWrap="wrap"
-            borderStyle="round"
-            borderDimColor
-            paddingX={1}
+            {...(isMore
+              ? { borderStyle: 'round' as const, borderDimColor: true, paddingX: 1 }
+              : { height: 0, overflow: 'hidden' as const })}
           >
             <Button plain key="top" hotkey="g" label="top" onPress={() => moveTo(1)} />
             <Button
@@ -1228,35 +1251,60 @@ export const fileScreen = (
                 ? 'Writing on the file as a whole: Enter posts it.'
                 : commentLine === 0
                   ? 'Commenting: press a line number to write on that line, or reply on a thread.'
-                  : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
+                  : model.commentFrom > 0 && commentLine > model.commentFrom
+                    ? `Writing on lines ${model.commentFrom}–${commentLine}: Enter posts it.`
+                    : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
             </Text>
           </Box>
         )}
         {/* The file as a whole can be commented on too, on no line: its
             button has the row under the hint to itself. */}
         {isCommenting && Input !== undefined && (
-          <Box height={1} overflow="hidden">
+          <Box height={1} overflow="hidden" columnGap={2}>
             <Button
               plain
               key="comment-file"
               label={commentLine === FILE_COMMENT ? '[whole file ✓]' : '[whole file]'}
               onPress={actions.commentOnFile}
             />
+            {/* Several lines at once: drag over them with the mouse, then
+                press this, and the box opens under the last of them. */}
+            <Button
+              plain
+              key="comment-range"
+              label={
+                model.commentFrom > 0 && commentLine > model.commentFrom
+                  ? `[lines ${model.commentFrom}–${commentLine} ✓]`
+                  : '[selected lines]'
+              }
+              onPress={() => actions.commentOnSelection(top, last)}
+            />
           </Box>
         )}
         {isCommenting && Input !== undefined && commentLine === FILE_COMMENT && (
-          <Box height={3} columnGap={2} borderStyle="round" borderColor={COMMIT_BOX} paddingX={1} overflow="hidden">
-            <Input
-              key={`comment-file-text:${model.commentRound}`}
-              label="comment on this file"
-              placeholder="what to say of the file as a whole, then Enter"
-              submitLabel="post"
-              autoFocus
-              onInput={actions.typeComment}
-              onSubmit={value => actions.postComment(value)}
-            />
-            <Button key="comment-file-post" variant="primary" label="post" onPress={() => actions.postComment()} />
-            <Button key="comment-file-cancel" label="cancel" onPress={actions.cancelComment} />
+          <Box
+            height={4}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={COMMIT_BOX}
+            paddingX={1}
+            overflow="hidden"
+          >
+            <Box height={1} overflow="hidden">
+              <Input
+                key={`comment-file-text:${model.commentRound}`}
+                label="comment on this file"
+                placeholder="what to say of the file as a whole, then Enter"
+                submitLabel="post"
+                autoFocus
+                onInput={actions.typeComment}
+                onSubmit={value => actions.postComment(value)}
+              />
+            </Box>
+            <Box height={1} overflow="hidden" columnGap={2}>
+              <Button key="comment-file-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+              <Button key="comment-file-cancel" label="cancel" onPress={actions.cancelComment} />
+            </Box>
           </Box>
         )}
         {/* The find row: typing narrows the matches, Enter goes to the next. */}

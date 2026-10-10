@@ -128,6 +128,9 @@ export type View = {
   requestTyped: string
   isCommenting: boolean
   commentLine: number
+  // The first line of the comment being typed when it is on several lines
+  // (`commentLine` is then the last); 0 when it is on one.
+  commentFrom: number
   // A working-tree file whose diff is read against a commit other than
   // `base`: a file of the checked-out branch's request, against where the
   // request forked from its target. `path` '' is none.
