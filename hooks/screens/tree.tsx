@@ -698,7 +698,8 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
   return (
     <Box flexDirection="column">
       {statusLine(kit, shell)}
-      <Box gap={2}>
+      {/* The row wraps in a narrow pane, so no key is pushed off its edge. */}
+      <Box columnGap={2} flexWrap="wrap">
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         <Button
           plain

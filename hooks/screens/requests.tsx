@@ -25,6 +25,8 @@ export type RequestsActions = {
   refresh: () => void
   // Starts a review of a request: its head against where it forked.
   open: (typed: string) => void
+  // The same, opened on the page of every change of it.
+  openChanges: (typed: string) => void
   help: () => void
 }
 
@@ -58,7 +60,15 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
           <Button plain key={`request:${one.typed}`} label={one.typed} onPress={() => actions.open(one.typed)} />
         </Box>
         <Box flexGrow={1} flexShrink={1}>
-          <Text wrap="truncate-end"> {room < 4 ? '' : title}</Text>
+          <Text> </Text>
+          {room >= 4 && (
+            <Button
+              plain
+              key={`request-changes:${one.typed}`}
+              label={title}
+              onPress={() => actions.openChanges(one.typed)}
+            />
+          )}
           {one.isDraft && <Text color="yellow"> draft</Text>}
           {one.typed === model.current && <Text color="green"> ◀ open</Text>}
         </Box>
@@ -72,7 +82,7 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
   return (
     <Box flexDirection="column">
       {statusLine(kit, shell)}
-      <Box columnGap={2}>
+      <Box columnGap={2} flexWrap="wrap">
         <Button plain key="back" hotkey="b" label="back" onPress={actions.back} />
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         {helpButton(kit, actions.help)}
@@ -80,7 +90,9 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
       <Text bold>
         Open {isGitlab ? 'merge' : 'pull'} requests{list === undefined ? '' : ` (${list.length})`}
       </Text>
-      <Text dimColor>Press a number to review it: nothing is checked out.</Text>
+      <Text dimColor wrap="truncate-end">
+        Press a number for its files, or a title for every change on one page: nothing is checked out.
+      </Text>
       {list === undefined && <Text dimColor>Asking the forge…</Text>}
       {list !== undefined && list.length === 0 && (
         <Text dimColor>

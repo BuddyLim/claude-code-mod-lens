@@ -137,6 +137,7 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
       'Pull and merge requests',
       [
         ['press a number', 'review that request: its head against where it forked; nothing is checked out'],
+        ['press a title', 'the same, opened on the page of every change'],
         ['Yours / Others', 'the requests you opened come first'],
         ['n reviewed', 'how many of its files you have ticked'],
         ['r', 'ask the forge again'],

@@ -284,7 +284,7 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
   const tree = (
     <Box flexDirection="column">
       {statusLine(kit, shell)}
-      <Box columnGap={2}>
+      <Box columnGap={2} flexWrap="wrap">
         <Button plain key="back" hotkey="b" label="back" onPress={actions.back} />
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         {helpButton(kit, actions.help)}

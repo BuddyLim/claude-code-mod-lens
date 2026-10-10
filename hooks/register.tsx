@@ -287,6 +287,11 @@ const COLORED_AT_ONCE = 6
 // near its end asks for the next stretch once.
 let pageGrownAt = ''
 
+// The view with its count of asked-for drawings one higher: what a module
+// value changing (a list read, a file coloured) writes to have the pane
+// drawn again. A value written back unchanged is no change to draw for.
+const nudged = (last: View): View => ({ ...last, redraws: (last.redraws ?? 0) + 1 })
+
 // How many requests' ticks are kept between sessions.
 const REVIEWED_KEPT = 40
 // And how many ticked files of each.
@@ -965,7 +970,7 @@ const findBranchRequest = async ($: EngineInterface, repo: string): Promise<stri
 // which is already open, drawn again with them.
 const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => {
   requestsCache = { repo, list: await listRequests(forgeRun(runOf($), repo)) }
-  await update($, view, (last): View => ({ ...last }))
+  await update($, view, nudged)
 }
 
 // Reads the whole comparison for the changes screen and has it drawn again.
@@ -985,7 +990,7 @@ const loadPatch = async (
   if (patchWanted === key) {
     patchCache = { key, ...read }
     patchWanted = undefined
-    await update($, view, (last): View => ({ ...last }))
+    await update($, view, nudged)
   }
 }
 
@@ -1033,7 +1038,7 @@ const colorPage = async (
     )
 
     if (pageColors === held) {
-      await update($, view, (last): View => ({ ...last }))
+      await update($, view, nudged)
     }
   }
 }
@@ -1982,11 +1987,22 @@ export const register: Register = (on, options) => {
             refresh: () => {
               requestsCache = undefined
               void loadRequests($, repo)
-              set((last): View => ({ ...last }))
+              set(nudged)
             },
             // A request is a comparison by itself: its head against where it
             // forked, which the file tree then lists.
             open: typed => void startCompare($, repo, '', typed),
+            // The title opens it on the page of every change; where the
+            // request could not be opened, the list stays.
+            openChanges: typed =>
+              void startCompare($, repo, '', typed).then(async () => {
+                if ((await read($, view)).requestTyped === typed) {
+                  patchCache = undefined
+                  pageColors = { key: '', lines: new Map(), asked: new Set() }
+                  pageGrownAt = ''
+                  await update($, view, (last): View => ({ ...last, screen: 'changes', pageRows: PAGE_STEP }))
+                }
+              }),
             help,
           },
         ),
@@ -2043,7 +2059,7 @@ export const register: Register = (on, options) => {
               rescan()
               patchCache = undefined
               pageColors = { key: '', lines: new Map(), asked: new Set() }
-              set((last): View => ({ ...last }))
+              set(nudged)
             },
             // A file opens as the comparison has it, and back returns here.
             open: (path, line) =>

@@ -106,6 +106,9 @@ export type View = {
   // How many rows of code the page of every change draws so far: it grows
   // as the person scrolls toward its end.
   pageRows: number
+  // How many times the hooks module has asked for the pane to be drawn again
+  // because something it holds outside the state changed.
+  redraws: number
   // The first line the picked commit's body box shows, 0-based.
   bodyTop: number
   // The first line the graph screen's window shows, 0-based.

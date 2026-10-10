@@ -53,6 +53,7 @@ export const NO_VIEW: View = {
   origin: 'graph',
   reviewed: {},
   pageRows: 400,
+  redraws: 0,
   bodyTop: 0,
   graphTop: 0,
   target: '',

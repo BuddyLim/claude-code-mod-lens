@@ -22,7 +22,7 @@ export const listScreen = (kit: Kit, shell: Shell, shown: Listing, actions: List
   return (
     <Box flexDirection="column">
       {statusLine(kit, shell)}
-      <Box columnGap={2}>
+      <Box columnGap={2} flexWrap="wrap">
         <Button plain key="back" hotkey="b" label="back" onPress={actions.back} />
         {shown.prompt !== '' && (
           <Button
