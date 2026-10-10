@@ -2137,6 +2137,7 @@ export const register: Register = (on, options) => {
               ),
             toggleReviewed: markReviewed,
             scrollTo: row => set((last): View => ({ ...last, pageTop: row })),
+            say: text => $.ui.toast(text),
             help,
           },
         )

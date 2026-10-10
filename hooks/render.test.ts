@@ -158,3 +158,38 @@ test('the page of every change draws a long comparison a window at a time', asyn
   expect(await ui.find({ key: 'page-file:src/file0.ts' })).toBe(undefined)
   await ui.unmount()
 })
+
+test('the page of every change lights rewritten words, and its jump keys move the window', async ($, on) => {
+  const rewritten = [
+    'diff --git src/a.ts src/a.ts',
+    '--- src/a.ts',
+    '+++ src/a.ts',
+    '@@ -1,3 +1,3 @@',
+    ' const first = 1',
+    '-const limit = 300',
+    '+const limit = 3000',
+    ' const last = 2',
+  ].join('\n')
+
+  host(on, { ...IN_REPO, 'diff --no-color': `${rewritten}\n${bigDiff(6, 60)}` })
+  await $.command.run(lens(REPO))
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'changes' })
+  await ui.drawn()
+  // The one word that differs is a piece of its own in each of the two lines.
+  expect(await ui.find({ type: 'Text', text: '300' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '3000' })).toBeDefined()
+
+  // The next file but one is brought into the window; the first leaves it.
+  await ui.press({ key: 'next-file' })
+  await ui.press({ key: 'next-file' })
+  await ui.drawn()
+  expect(await ui.find({ key: 'page-file:src/file1.ts' })).toBeDefined()
+  expect(await ui.find({ key: 'page-file:src/a.ts' })).toBe(undefined)
+  await ui.press({ key: 'prev-change' })
+  await ui.press({ key: 'next-talk' })
+  await ui.drawn()
+  await ui.unmount()
+})
