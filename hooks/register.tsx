@@ -69,7 +69,8 @@ import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
 import { listScreen } from './screens/list'
 import { isMarkdownFile, markdownScreen } from './screens/markdown'
-import { PAGE_MAX, PAGE_STEP, changesScreen } from './screens/changes'
+import type { ChangesWindow } from './screens/changes'
+import { changesScreen } from './screens/changes'
 import { recentsScreen } from './screens/recents'
 import { requestsScreen } from './screens/requests'
 import { treeScreen } from './screens/tree'
@@ -283,9 +284,8 @@ let pageColors: { key: string; lines: Map<string, Span[][]>; asked: Set<string> 
 }
 // How many files are highlighted at a time.
 const COLORED_AT_ONCE = 6
-// The page and length the changes screen last grew from, so one drawing
-// near its end asks for the next stretch once.
-let pageGrownAt = ''
+// The changes screen's window as last drawn, for the scroll hook.
+let pageWindow: ChangesWindow = { maxTop: 0 }
 
 // The view with its count of asked-for drawings one higher: what a module
 // value changing (a list read, a file coloured) writes to have the pane
@@ -1606,36 +1606,6 @@ export const register: Register = (on, options) => {
     return written
   })
 
-  // PROBE, temporary: can this mod draw inside the parked mod's pane? It adds
-  // one row and one button above whatever parked drew, and notes that it ran.
-  on('ui.render', { component: 'Pane', requestId: 'parked' }, async ($, e, next) => {
-    const drawn = await next(e)
-
-    if (e.surface === 'mobile') {
-      return drawn
-    }
-
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const note = '/private/tmp/claude-501/-Users-limkuangtar/1bc240a9-553a-4558-b97a-56f23b639afe/scratchpad/lens-probe.log'
-    void $.fs.write(note, `render hook ran at ${Date.now()}\n`).catch(() => undefined)
-
-    return (
-      <Box flexDirection="column">
-        <Text color="warning">▶ LENS PROBE: this row is drawn by lens, inside parked's pane</Text>
-        <Button
-          key="lens-probe"
-          label="z: lens probe button"
-          hotkey="z"
-          onPress={() => {
-            void $.fs.write(note, `button pressed at ${Date.now()}\n`).catch(() => undefined)
-            $.ui.toast('Lens probe: lens got the press')
-          }}
-        />
-        {drawn}
-      </Box>
-    )
-  })
-
   // The ledger mod asks the same way, for the place of a finding.
   on('state.set', { plugin: 'ledger', key: 'jump' }, async ($, e, next) => {
     const written = await next(e)
@@ -1672,8 +1642,7 @@ export const register: Register = (on, options) => {
       e.origin.kind !== 'person' ||
       now.screen === 'tree' ||
       now.screen === 'list' ||
-      now.screen === 'requests' ||
-      now.screen === 'changes'
+      now.screen === 'requests'
     ) {
       return next(e)
     }
@@ -1691,6 +1660,18 @@ export const register: Register = (on, options) => {
       !(now.isDiff ?? false)
     ) {
       return next(e)
+    }
+
+    // The page of every change draws its own window too: the wheel and the
+    // scroll keys move its first row.
+    if (now.screen === 'changes') {
+      await update(
+        $,
+        view,
+        (last): View => ({ ...last, pageTop: clamp((last.pageTop ?? 0) + e.by, 0, pageWindow.maxTop) }),
+      )
+
+      return {}
     }
 
     if (now.screen === 'graph') {
@@ -1999,8 +1980,7 @@ export const register: Register = (on, options) => {
                 if ((await read($, view)).requestTyped === typed) {
                   patchCache = undefined
                   pageColors = { key: '', lines: new Map(), asked: new Set() }
-                  pageGrownAt = ''
-                  await update($, view, (last): View => ({ ...last, screen: 'changes', pageRows: PAGE_STEP }))
+                  await update($, view, (last): View => ({ ...last, screen: 'changes', pageTop: 0 }))
                 }
               }),
             help,
@@ -2022,19 +2002,11 @@ export const register: Register = (on, options) => {
         void loadPatch($, repo, pageBase, target)
       }
 
-      // The page grows a stretch at a time, up to the most it draws.
-      const more = (): void =>
-        set(
-          (last): View => ({
-            ...last,
-            pageRows: Math.min(PAGE_MAX, (last.pageRows ?? PAGE_STEP) + PAGE_STEP),
-          }),
-        )
       const drawn = changesScreen(
           kit,
           {
             shell,
-            limit: now.pageRows,
+            top: now.pageTop,
             colors: pageColors.key === pageKey ? pageColors.lines : new Map(),
             title: isOfBranch
               ? `${requestLabel}: your branch as it stands`
@@ -2067,20 +2039,15 @@ export const register: Register = (on, options) => {
                 update($, view, (last): View => ({ ...last, origin: 'changes' })),
               ),
             toggleReviewed: markReviewed,
-            more,
+            scrollTo: row => set((last): View => ({ ...last, pageTop: row })),
             help,
           },
         )
-      // The next stretch is drawn once the person is within a screen or two
-      // of the end of what is there: once for each length the page has had.
-      const scrolled = (e.props.scroll?.offset ?? 0) + 2 * (e.props.scroll?.bodyRows ?? 30)
 
-      if (drawn.isCut && scrolled >= drawn.rows && pageGrownAt !== `${pageKey}\n${now.pageRows}`) {
-        pageGrownAt = `${pageKey}\n${now.pageRows}`
-        more()
-      }
+      pageWindow = drawn.window
 
-      // The files just drawn are highlighted, where they have not been.
+      // The files in and just under the window are highlighted, where they
+      // have not been.
       if (
         page !== undefined &&
         drawn.shown.some(path => pageColors.key !== pageKey || !pageColors.asked.has(path))
@@ -2088,7 +2055,7 @@ export const register: Register = (on, options) => {
         void colorPage($, pageKey, repo, target, drawn.shown)
       }
 
-      return framed(drawn.tree)
+      return framed(drawn.tree, true)
     }
 
     // What the graph and the file tree both offer: a commit or a stash
@@ -2488,8 +2455,7 @@ export const register: Register = (on, options) => {
               // Read again each time it is opened: the files may have changed.
               patchCache = undefined
               pageColors = { key: '', lines: new Map(), asked: new Set() }
-              pageGrownAt = ''
-              set((last): View => ({ ...last, screen: 'changes', pageRows: PAGE_STEP }))
+              set((last): View => ({ ...last, screen: 'changes', pageTop: 0 }))
             },
             toggleReviewed: markReviewed,
             openTalk: id => set((last): View => ({ ...last, talkOpen: id })),

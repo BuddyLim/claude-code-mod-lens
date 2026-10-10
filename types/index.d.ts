@@ -103,9 +103,8 @@ export type View = {
   // The files of each request ticked as reviewed, by the folder under review
   // and what the request is typed as ("/repo\n#12"): kept between sessions.
   reviewed: Record<string, string[]>
-  // How many rows of code the page of every change draws so far: it grows
-  // as the person scrolls toward its end.
-  pageRows: number
+  // The first row the page of every change shows in its window, 0-based.
+  pageTop: number
   // How many times the hooks module has asked for the pane to be drawn again
   // because something it holds outside the state changed.
   redraws: number
