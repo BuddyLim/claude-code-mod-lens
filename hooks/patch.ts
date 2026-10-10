@@ -17,6 +17,9 @@ export type PatchFile = {
   added: number
   deleted: number
   isBinary: boolean
+  // Whether it is a symbolic link on either side: its "text" is the path it
+  // points at, and the file itself is not to be read through.
+  isLink: boolean
 }
 
 // How many lines of unchanged code git shows round each change.
@@ -45,12 +48,18 @@ export const parsePatch = (diff: string): PatchFile[] => {
         added: 0,
         deleted: 0,
         isBinary: false,
+        isLink: false,
       }
       files.push(file)
       hunk = undefined
       oldPath = ''
     } else if (file === undefined) {
       continue
+    } else if (
+      hunk === undefined &&
+      /^(?:(?:new|deleted) file mode|new mode|old mode) 120000$|^index \S+ 120000$/.test(raw)
+    ) {
+      file.isLink = true
     } else if (hunk === undefined && raw.startsWith('rename to ')) {
       file.path = raw.slice('rename to '.length)
     } else if (hunk === undefined && raw.startsWith('Binary files ')) {

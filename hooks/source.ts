@@ -18,6 +18,9 @@ export const readSource = async (
   repo: string,
   path: string,
   committed: string | undefined,
+  // A commit to read the file at, in place of `committed`: git then reads it
+  // beside the highlighter, and the text does not pass through here.
+  commit = '',
 ): Promise<{ lines: Span[][]; note: string }> => {
   const ran = await run(
     [
@@ -27,13 +30,16 @@ export const readSource = async (
       '--with',
       'pygments',
       'python',
+      // Isolated: the folder under review is not on the import path, so a
+      // file of it named like a module the highlighter imports is not run.
+      '-I',
       '-c',
       HIGHLIGHT_PY,
       path,
       '1',
       '10000000',
       // A last argument has the highlighter read the text from stdin.
-      ...(committed === undefined ? [] : ['-']),
+      ...(committed !== undefined ? ['-'] : commit !== '' ? [`git:${commit}:./${path}`] : []),
     ],
     { cwd: repo, timeoutMs: 30_000, ...(committed === undefined ? {} : { stdin: committed }) },
   )

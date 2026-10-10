@@ -67,7 +67,7 @@ import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
 import { listScreen } from './screens/list'
 import { isMarkdownFile, markdownScreen } from './screens/markdown'
-import { PAGE_STEP, changesScreen } from './screens/changes'
+import { PAGE_MAX, PAGE_STEP, changesScreen } from './screens/changes'
 import { recentsScreen } from './screens/recents'
 import { requestsScreen } from './screens/requests'
 import { treeScreen } from './screens/tree'
@@ -284,6 +284,8 @@ let pageGrownAt = ''
 
 // How many requests' ticks are kept between sessions.
 const REVIEWED_KEPT = 40
+// And how many ticked files of each.
+const REVIEWED_PATHS = 2000
 
 // What the folder the breadcrumb last opened holds, written by `loadCrumb`.
 let crumbCache: { dir: string; entries: string[] } | undefined
@@ -1009,13 +1011,13 @@ const colorPage = async (
   for (let at = 0; at < wanted.length; at += COLORED_AT_ONCE) {
     await Promise.all(
       wanted.slice(at, at + COLORED_AT_ONCE).map(async path => {
-        const committed = target === '' ? undefined : await git.fileAt(run, repo, path, target)
         const { lines, note } = await readSource(
           run,
           file => $.fs.read(file).catch(() => ''),
           repo,
           path,
-          committed,
+          undefined,
+          target,
         )
 
         // Where the highlighter did not run there are no colours to add.
@@ -1039,12 +1041,15 @@ const readReviewed = async ($: EngineInterface): Promise<Record<string, string[]
   if (typeof stored === 'object' && stored !== null) {
     for (const [key, paths] of Object.entries(stored)) {
       if (Array.isArray(paths)) {
-        kept[key] = paths.filter((path): path is string => typeof path === 'string')
+        kept[key] = paths
+          .filter((path): path is string => typeof path === 'string')
+          .slice(-REVIEWED_PATHS)
       }
     }
   }
 
-  return kept
+  // What the store holds is held to the same limits as what is written.
+  return Object.fromEntries(Object.entries(kept).slice(-REVIEWED_KEPT))
 }
 
 // Ticks or unticks a file of a request as reviewed, here and in the store.
@@ -1052,7 +1057,9 @@ const readReviewed = async ($: EngineInterface): Promise<Record<string, string[]
 const toggleReviewed = async ($: EngineInterface, key: string, path: string): Promise<void> => {
   await update($, view, (last): View => {
     const { [key]: held = [], ...rest } = last.reviewed ?? {}
-    const paths = held.includes(path) ? held.filter(one => one !== path) : [...held, path]
+    const paths = (
+      held.includes(path) ? held.filter(one => one !== path) : [...held, path]
+    ).slice(-REVIEWED_PATHS)
 
     return {
       ...last,
@@ -1926,8 +1933,14 @@ export const register: Register = (on, options) => {
         void loadPatch($, repo, pageBase, target)
       }
 
+      // The page grows a stretch at a time, up to the most it draws.
       const more = (): void =>
-        set((last): View => ({ ...last, pageRows: (last.pageRows ?? PAGE_STEP) + PAGE_STEP }))
+        set(
+          (last): View => ({
+            ...last,
+            pageRows: Math.min(PAGE_MAX, (last.pageRows ?? PAGE_STEP) + PAGE_STEP),
+          }),
+        )
       const drawn = changesScreen(
           kit,
           {

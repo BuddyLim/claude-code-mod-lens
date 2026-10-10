@@ -9,6 +9,7 @@
 import type { ElementTable, Elements, RenderChildren } from 'claude-code'
 
 import type { Severity } from '../../types'
+import { isFinding } from '../ledger'
 import type { Comment } from '../review'
 
 // The elements of the surface the pane is on. Every surface has the first
@@ -119,6 +120,16 @@ export const COMMENT_COLOR = '#c586c0'
 export const GITHUB_ICON = '\u{f09b}'
 export const GITLAB_ICON = '\u{f296}'
 export const GITLAB_COLOR = '#fc6d26'
+// A ledger finding is drawn as a thread too, with a mark and a colour of its
+// own: it comes from a review run in this session, not from the forge.
+export const LEDGER_ICON = '\u{f0ae}'
+export const LEDGER_COLOR = '#4fc1ff'
+// The mark and the colour of a thread, by its first comment: a ledger
+// finding's, or a request comment's. A resolved thread's colour is the
+// caller's to choose.
+export const talkIcon = (one: Comment): string => (isFinding(one) ? LEDGER_ICON : COMMENT_ICON)
+export const talkColor = (one: Comment | undefined): string =>
+  one !== undefined && isFinding(one) ? LEDGER_COLOR : COMMENT_COLOR
 // The colour of a review thread that has been resolved.
 export const RESOLVED_COLOR = '#9a8444'
 // How many lines of a commit's body show at once.

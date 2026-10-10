@@ -31,11 +31,23 @@ const DIFF = [
   '-two',
   'diff --git logo.png logo.png',
   'Binary files logo.png and logo.png differ',
+  'diff --git latest latest',
+  'new file mode 120000',
+  'index 0000000..1111111',
+  '--- /dev/null',
+  '+++ latest',
+  '@@ -0,0 +1 @@',
+  '+/dev/zero',
+  '\\ No newline at end of file',
   '',
 ].join('\n')
 
 test('a diff is read into files, hunks and lines numbered on the new side', async () => {
-  const [changed, renamed, gone, binary] = parsePatch(DIFF)
+  const [changed, renamed, gone, binary, link] = parsePatch(DIFF)
+
+  // A symbolic link is known for one, so it is never read through.
+  expect(link).toMatchObject({ path: 'latest', isLink: true, added: 1 })
+  expect(changed?.isLink).toBe(false)
 
   expect(changed).toMatchObject({ path: 'src/a.ts', added: 2, deleted: 1, isBinary: false })
   expect(changed?.hunks[0]?.header).toBe('export const a = () => {')

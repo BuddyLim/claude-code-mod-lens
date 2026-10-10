@@ -30,6 +30,8 @@ import {
   COMMENT_ICON,
   RESOLVED_COLOR,
   COMMIT_BOX,
+  talkColor as colorOfTalk,
+  talkIcon,
   MARK,
   helpButton,
   notesOf,
@@ -503,7 +505,7 @@ export const fileScreen = (
 
       talkLines.push({
         kind: 'head',
-        text: `${indent}${at === 0 ? COMMENT_ICON : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
+        text: `${indent}${at === 0 ? talkIcon(one) : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
       })
 
       for (const line of model.isExpanded ? body : body.slice(0, TALK_FOLDED)) {
@@ -522,7 +524,8 @@ export const fileScreen = (
     const isSettled = talk.some(one => one.isResolved === true)
     const canSettle = talk.some(one => one.isResolved !== undefined)
     // A settled thread steps back: a dim gold in place of the comments' purple.
-    const talkColor = isSettled ? RESOLVED_COLOR : COMMENT_COLOR
+    // A ledger finding's thread has a colour of its own.
+    const talkColor = isSettled ? RESOLVED_COLOR : colorOfTalk(talk[0])
     const cardHeight = talk.length === 0 ? 0 : talkLines.length + 2 + (model.canComment ? 1 : 0)
     // The box a comment or a reply is typed in opens under the line it is
     // for (under the thread, when it answers one). Only Enter or its post

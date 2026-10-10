@@ -22,6 +22,8 @@ import {
   GITHUB_ICON,
   GITLAB_COLOR,
   GITLAB_ICON,
+  LEDGER_COLOR,
+  LEDGER_ICON,
   RESOLVED_COLOR,
   STASH_COLOR,
   STASH_ICON,
@@ -30,6 +32,8 @@ import {
   notesOf,
   said,
   statusLine,
+  talkColor,
+  talkIcon,
 } from './frame'
 
 const OTHER_FILES = 100
@@ -231,6 +235,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
     const threads = comments.filter(one => one.path === path && one.replyTo === undefined)
     const settled = threads.filter(one => one.isResolved === true).length
     const open = threads.length - settled
+    const found = threads.filter(one => one.isResolved !== true && isFinding(one)).length
     const isChecked = isCheckable(path)
     const icon = iconOf(path)
     // What happened to the file, in a word and git's usual colour for it.
@@ -281,10 +286,17 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
         {change !== undefined && <Text color={change[1]}>  {change[0]}</Text>}
         {/* The file's review threads (a thread is its first comment): those
             still open in the comments' colour, those resolved in gold. */}
-        {open > 0 && (
+        {open - found > 0 && (
           <Text color={COMMENT_COLOR}>
             {'  '}
-            {COMMENT_ICON} {open}
+            {COMMENT_ICON} {open - found}
+          </Text>
+        )}
+        {/* The ledger's open findings are counted apart, in their colour. */}
+        {found > 0 && (
+          <Text color={LEDGER_COLOR}>
+            {'  '}
+            {LEDGER_ICON} {found}
           </Text>
         )}
         {settled > 0 && <Text color={RESOLVED_COLOR}>  ✓ {settled}</Text>}
@@ -864,15 +876,15 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
           one.path === '' ? (
             <Text wrap="truncate-end">
               {isInSection ? '  ' : ''}
-              {COMMENT_ICON} {said(one)}
+              {talkIcon(one)} {said(one)}
             </Text>
           ) : (
             // A comment on a file names it, and the name opens the file.
             <Box height={1} overflow="hidden">
               <Box flexShrink={0}>
-                <Text color={COMMENT_COLOR}>
+                <Text color={talkColor(one)}>
                   {isInSection ? '  ' : ''}
-                  {COMMENT_ICON}{' '}
+                  {talkIcon(one)}{' '}
                 </Text>
                 <Button
                   plain
@@ -883,7 +895,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
               </Box>
               {/* A ledger finding with no line is on its file as a whole; a
                   request's comment with none has lost its line to an edit. */}
-              <Text color={COMMENT_COLOR} wrap="truncate-end">
+              <Text color={talkColor(one)} wrap="truncate-end">
                 {' '}
                 ({isFinding(one) ? 'whole file' : 'outdated'}) · {said(one)}
               </Text>

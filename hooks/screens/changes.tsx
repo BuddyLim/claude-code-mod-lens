@@ -4,6 +4,7 @@
 // it; a very long comparison is drawn up to a limit, and the rest by name.
 
 import type { Span } from '../../types'
+import { isFinding } from '../ledger'
 import type { PatchFile, PatchLine } from '../patch'
 import type { Comment } from '../review'
 import { wrapText } from '../text'
@@ -13,8 +14,12 @@ import {
   COMMENT_COLOR,
   COMMENT_ICON,
   COMMIT_BOX,
+  LEDGER_COLOR,
+  LEDGER_ICON,
   RESOLVED_COLOR,
   STATUS_WORD,
+  talkColor,
+  talkIcon,
   helpButton,
   notesOf,
   statusLine,
@@ -23,6 +28,9 @@ import {
 // How many rows of code the page draws at first, and how many more each time
 // the person nears its end: a long comparison loads as it is read.
 export const PAGE_STEP = 400
+// The most rows of code the page ever draws: past it, files are opened from
+// the file tree, or made room for by ticking those already read.
+export const PAGE_MAX = 6000
 // The most lines of one comment shown.
 const COMMENT_LINES = 8
 // How many of the conversation's latest comments are shown.
@@ -85,14 +93,14 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
   // One comment under the line it is on (or in the conversation), its text
   // wrapped to the page; an answer is set in a little.
   const commentRows = (one: Comment, lead: string) => {
-    const color = one.isResolved === true ? RESOLVED_COLOR : COMMENT_COLOR
+    const color = one.isResolved === true ? RESOLVED_COLOR : talkColor(one)
     const indent = `${lead}${one.replyTo === undefined ? '' : '  '}`
     const body = wrapText(one.body.trim(), Math.max(20, width - indent.length - 4))
 
     return [
       <Text color={color} bold wrap="truncate-end">
         {indent}
-        {one.replyTo === undefined ? COMMENT_ICON : '↳'} {one.author}
+        {one.replyTo === undefined ? talkIcon(one) : '↳'} {one.author}
         {one.isResolved === true ? '  ✓ resolved' : ''}
         {one.isOutdated === true ? '  (outdated)' : ''}
       </Text>,
@@ -179,7 +187,8 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
       budget -= size
     }
 
-    if (!isDone && !file.isBinary) {
+    // A symbolic link is not read: what it points at is no file of the change.
+    if (!isDone && !file.isBinary && !file.isLink) {
       shownPaths.push(file.path)
     }
 
@@ -208,12 +217,20 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
         {change !== undefined && <Text color={change[1]}>  {change[0]}</Text>}
         <Text color="green">  +{file.added}</Text>
         <Text color="red"> −{file.deleted}</Text>
-        {here.length > 0 && (
-          <Text color={COMMENT_COLOR}>
-            {'  '}
-            {COMMENT_ICON} {here.filter(one => one.replyTo === undefined).length}
-          </Text>
-        )}
+        {/* The file's threads, a request's comments and the ledger's findings
+            counted apart, each in its colour. */}
+        {[false, true].map(isLedger => {
+          const count = here.filter(one => one.replyTo === undefined && isFinding(one) === isLedger).length
+
+          return (
+            count > 0 && (
+              <Text color={isLedger ? LEDGER_COLOR : COMMENT_COLOR}>
+                {'  '}
+                {isLedger ? LEDGER_ICON : COMMENT_ICON} {count}
+              </Text>
+            )
+          )
+        })}
         {isDone && <Text dimColor>  reviewed, folded</Text>}
       </Box>,
       ...(isDone
@@ -308,13 +325,20 @@ export const changesScreen = (kit: Kit, model: ChangesModel, actions: ChangesAct
       {general.slice(-CONVERSATION).flatMap(one => commentRows(one, ''))}
       {pages}
       {hidden > 0 && <Text> </Text>}
-      {hidden > 0 && (
+      {hidden > 0 && model.limit < PAGE_MAX && (
         <Box columnGap={2}>
           <Button plain key="more" hotkey="m" label="load more" onPress={actions.more} />
           <Text dimColor>
             {hidden} more {hidden === 1 ? 'file' : 'files'} below: they load as you scroll on
           </Text>
         </Box>
+      )}
+      {hidden > 0 && model.limit >= PAGE_MAX && (
+        <Text dimColor>
+          {hidden} more {hidden === 1 ? 'file is' : 'files are'} not drawn: the page stops at about{' '}
+          {PAGE_MAX} rows of code. Tick the files you have read to fold them, or open the rest from
+          the file tree.
+        </Text>
       )}
     </Box>
   )
