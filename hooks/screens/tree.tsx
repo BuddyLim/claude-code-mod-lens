@@ -1053,7 +1053,10 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
                   .map(media => (
                     <Box height={1} overflow="hidden" marginLeft={isInSection ? 4 : 2}>
                       <Text dimColor>{media.kind === 'image' ? 'picture ' : `${media.kind} `}</Text>
-                      {Link !== undefined ? (
+                      {/* `mediaOf` keeps http and https links alone; the test
+                          is made here too, as the overview makes it, so the
+                          link does not rest on that one place. */}
+                      {Link !== undefined && /^https?:\/\//i.test(media.url) ? (
                         <Text color={COMMIT_BOX} underline>
                           <Link href={media.url}>
                             {media.label} {LINK_ICON}
