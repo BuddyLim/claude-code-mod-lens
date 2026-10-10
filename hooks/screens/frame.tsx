@@ -287,6 +287,25 @@ export const helpButton = ({ Button }: Kit, onPress: () => void) => (
   <Button plain key="help" hotkey="h" label="keys" onPress={onPress} />
 )
 
+// A drawing with a mark laid over the last row of the window (`row`, counted
+// from the drawing's first) when there is more below than the window shows:
+// `label` is what it says ("↓ 12 more"), '' for nothing below. The mark is
+// laid over the drawing, so nothing under it moves.
+export const moreBelow = ({ Box, Text }: Kit, tree: ReturnType<typeof frame>, row: number, label: string) =>
+  label === '' ? (
+    tree
+  ) : (
+    <Box flexDirection="column">
+      {tree}
+      <Box position="absolute" top={Math.max(0, row)} right={1}>
+        <Text backgroundColor={SKELETON_COLOR} color="white" bold>
+          {' '}
+          {label}{' '}
+        </Text>
+      </Box>
+    </Box>
+  )
+
 // The frame round a screen. While a comparison is on, every screen is drawn
 // inside a bright border, so it cannot be mistaken for the plain view of the
 // working tree. Every screen also keeps a little air on each side, so its

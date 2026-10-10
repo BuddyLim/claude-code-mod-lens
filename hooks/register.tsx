@@ -79,7 +79,8 @@ import { allFilesOf, historyOf, isQueued, noteTouched, scanRepo } from './scan'
 import type { FileWindow, Insight } from './screens/file'
 import { FILE_COMMENT, fileScreen } from './screens/file'
 import type { Shell } from './screens/frame'
-import { COMMENT_COLOR, TOP_MARGIN, frame, kitOf, stateOf } from './screens/frame'
+import { COMMENT_COLOR, TOP_MARGIN, frame, kitOf, moreBelow, stateOf } from './screens/frame'
+import { rowsBelow, rowsOf } from './rows'
 import type { GraphWindow } from './screens/graph'
 import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
@@ -186,6 +187,8 @@ let isLoading = false
 let draft = ''
 let draftBody = ''
 let commentDraft = ''
+// Whether anything has been typed since a comment was put in the field to be changed.
+let commentTouched = false
 // How many comments have been sent or dropped: see `FileModel.commentRound`.
 let commentRound = 0
 // The same for the review being written in the file tree's box.
@@ -348,6 +351,10 @@ let blameCache: { path: string; commit: string; lines: Blamed[] } | undefined
 let graphWindow: GraphWindow = { header: 0, kinds: [], maxTop: 0, bodyMax: 0 }
 let fileWindow: FileWindow = { maxTop: 1, shown: undefined, crumbBox: undefined }
 let wantPin = false
+// How many rows the last drawing of a screen the pane scrolls was reckoned
+// to take, and what the engine then said it took (see `rowsBelow`).
+let paneEstimate = 0
+let paneMeasured: { content: number; estimate: number } | undefined
 
 const noteEdit = async ($: EngineInterface, path: string): Promise<void> => {
   const { repo, isTelling } = await read($, view)
@@ -1994,6 +2001,10 @@ export const register: Register = (on, options) => {
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const now = await read($, view)
 
+    // How tall the drawing came out, in the engine's own count: what says
+    // how much is below the window, in place of the estimate.
+    paneMeasured = { content: e.contentRows, estimate: paneEstimate }
+
     // The screens as long as their lists are pages of the pane's own to scroll.
     if (
       e.origin.kind !== 'person' ||
@@ -2225,12 +2236,37 @@ export const register: Register = (on, options) => {
     // A screen that draws its own window (`isOwn`) needs the pane held one
     // row down (see `frame`): asked for here, done by the timer once the
     // screen has been drawn.
-    const framed = (screen: RenderChildren, isOwn = false, color?: string) => {
+    //
+    // Where there is more below the window than it shows, a mark says so on
+    // its last row. A screen that draws its own window says how many rows it
+    // has left (`left`); for the rest it is worked out from the drawing, and
+    // from the engine's own count once the person has scrolled.
+    const framed = (screen: RenderChildren, isOwn = false, color?: string, left = 0) => {
       if (isOwn) {
         wantPin = (e.props.scroll?.offset ?? 1) !== 1
       }
 
-      return frame(kit, isComparing, settings.sidePadding, screen, isOwn, color)
+      const tree = frame(kit, isComparing, settings.sidePadding, screen, isOwn, color)
+      const scroll = e.props.scroll
+
+      if (scroll === undefined) {
+        return tree
+      }
+
+      if (isOwn) {
+        return moreBelow(kit, tree, scroll.offset + scroll.bodyRows - 1, left > 0 ? `↓ ${left} more` : '')
+      }
+
+      paneEstimate = rowsOf(tree as never, e.props.bodyColumns ?? 80)
+
+      const { below, isExact } = rowsBelow(paneEstimate, { offset: scroll.offset, rows: scroll.bodyRows }, paneMeasured)
+
+      return moreBelow(
+        kit,
+        tree,
+        scroll.offset + scroll.bodyRows - 1,
+        below <= 0 ? '' : isExact ? `↓ ${below} more` : '↓ more',
+      )
     }
 
     // What several screens' actions are made of.
@@ -2767,7 +2803,7 @@ export const register: Register = (on, options) => {
         void colorPage($, pageKey, repo, target, drawn.shown)
       }
 
-      return framed(drawn.tree, true)
+      return framed(drawn.tree, true, undefined, Math.max(0, drawn.window.maxTop - (now.pageTop ?? 0)))
     }
 
     // What the graph and the file tree both offer: a commit or a stash
@@ -2913,7 +2949,7 @@ export const register: Register = (on, options) => {
 
       graphWindow = drawn.window
 
-      return framed(drawn.tree, true)
+      return framed(drawn.tree, true, undefined, Math.max(0, drawn.window.maxTop - (now.graphTop ?? 0)))
     }
 
     if (now.screen === 'tree') {
@@ -3684,6 +3720,7 @@ export const register: Register = (on, options) => {
         // thumbs-up.
         editComment: (id, n) => {
           commentDraft = fold(comments.find(one => one.id === id)?.body ?? '')
+          commentTouched = false
           commentRound += 1
           set(was => ({
             ...was,
@@ -3740,6 +3777,14 @@ export const register: Register = (on, options) => {
         // Back to a comment on the one line the box is under.
         commentOnOneLine: () => set(was => ({ ...was, commentFrom: 0 })),
         typeComment: text => {
+          // A field drawn holding a comment being changed may first report
+          // itself empty, before anything is typed: that is not the person
+          // clearing it, and what the comment said is kept.
+          if (text === '' && now.editing !== '' && !commentTouched) {
+            return
+          }
+
+          commentTouched = true
           commentDraft = text
         },
         // An answer to a thread is posted at once. A comment of its own waits
@@ -3843,6 +3888,6 @@ export const register: Register = (on, options) => {
     fileWindow = drawn.window
 
     // While commenting, the frame is in the comments' colour.
-    return framed(drawn.tree, true, isCommenting ? COMMENT_COLOR : undefined)
+    return framed(drawn.tree, true, isCommenting ? COMMENT_COLOR : undefined, Math.max(0, drawn.window.maxTop - Math.max(1, now.top ?? 1)))
   })
 }
