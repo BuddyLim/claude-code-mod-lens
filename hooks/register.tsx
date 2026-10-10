@@ -3476,6 +3476,7 @@ export const register: Register = (on, options) => {
         editing: now.editing,
         deleting: now.deleting,
         draft: now.editing === '' ? '' : commentDraft,
+        typed: commentDraft,
         replyTo: now.replyTo,
         hidesResolved: now.hidesResolved,
         commentRound,
@@ -3789,6 +3790,9 @@ export const register: Register = (on, options) => {
 
           commentTouched = true
           commentDraft = text
+          // What is typed is drawn in full under the field, so the screen
+          // is drawn again as it changes.
+          set(nudged)
         },
         // An answer to a thread is posted at once. A comment of its own waits
         // with the review's others unless it is asked to go now (`isNow`).

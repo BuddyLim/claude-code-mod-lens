@@ -45,6 +45,9 @@ import { isMarkdownFile } from './markdown'
 
 // The most lines of an unsent comment its card shows.
 const DRAFT_LINES = 6
+// The most rows of what is being typed that are drawn under the field: its
+// last ones, where the typing is.
+const WRITE_ROWS = 8
 // What `commentLine` holds while the comment being typed is on the file as a
 // whole, not on a line of it.
 export const FILE_COMMENT = -1
@@ -145,6 +148,9 @@ export type FileModel = {
   editing: string
   deleting: string
   draft: string
+  // What the comment field holds now, as typed (a new line as "\n"): drawn
+  // in full under the field, which is one line.
+  typed: string
   // The thread being answered, by its first comment's id; '' for none.
   replyTo: string
   // What the diff is against, by name, when that is not the comparison's
@@ -815,7 +821,14 @@ export const fileScreen = (
     const isWriting = isCommenting && commentLine === n && Input !== undefined
     // The field has a row to itself and the buttons the one under it, so a
     // narrow pane does not squeeze the field against them.
-    const writeHeight = isWriting ? 4 : 0
+    // What the field holds is drawn in full under it, wrapped: the field is
+    // one line, and a comment longer than it would otherwise be typed (or
+    // changed) unseen. As many rows as it fills, to a bound.
+    const typedRows = isWriting
+      ? wrapText(model.typed.replace(/\\n/g, '\n'), Math.max(8, talkWidth - 4)).slice(-WRITE_ROWS)
+      : []
+    const shownTyped = typedRows.length > 1 || (typedRows[0] ?? '').length > talkWidth - 30 ? typedRows : []
+    const writeHeight = isWriting ? 4 + shownTyped.length : 0
     // The lines a comment being typed is on, when it is on more than one.
     const isRange = model.commentFrom > 0 && model.commentFrom < n
     // Whether the field holds a comment of the person's own, being changed.
@@ -827,7 +840,7 @@ export const fileScreen = (
             <Box
               marginLeft={gutter + 2}
               width={talkWidth}
-              height={4}
+              height={writeHeight}
               flexDirection="column"
               borderStyle="round"
               borderColor={COMMENT_COLOR}
@@ -857,6 +870,13 @@ export const fileScreen = (
                   onSubmit={value => actions.postComment(value)}
                 />
               </Box>
+              {shownTyped.map(line => (
+                <Box height={1} overflow="hidden">
+                  <Text dimColor wrap="truncate-end">
+                    {line === '' ? ' ' : line}
+                  </Text>
+                </Box>
+              ))}
               <Box height={1} overflow="hidden" columnGap={2}>
                 {/* An answer is posted at once. A comment of its own waits for
                     the review (Enter does that too), or goes now. */}
