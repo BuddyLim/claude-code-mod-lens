@@ -42,6 +42,8 @@ import {
 } from './frame'
 import { isMarkdownFile } from './markdown'
 
+// The most lines of a suggested replacement shown before it is applied.
+const SUGGESTION_SHOWN = 12
 // The most lines of an unsent comment its card shows.
 const DRAFT_LINES = 6
 // What `commentLine` holds while the comment being typed is on the file as a
@@ -648,6 +650,34 @@ export const fileScreen = (
       }
     }
 
+      // While a suggestion is being asked about, the card shows the very
+      // lines that would be written, whether or not it is folded: the yes
+      // is to what is read here, not to a description of it.
+      if (suggesting !== undefined && model.canApply && model.applying === suggesting.id) {
+        const incoming = suggestedLines(suggesting.body) ?? []
+        const isRemoval = incoming.length === 1 && incoming[0] === ''
+        const place =
+          suggesting.startLine === undefined
+            ? `line ${suggesting.line}`
+            : `lines ${suggesting.startLine}–${suggesting.line}`
+
+        talkLines.push({
+          kind: 'head',
+          text: isRemoval ? `Applying this takes ${place} out of your file.` : `Applying this replaces ${place} of your file with:`,
+        })
+
+        for (const line of isRemoval ? [] : incoming.slice(0, SUGGESTION_SHOWN)) {
+          talkLines.push({ kind: 'body', text: `+ ${line}` })
+        }
+
+        if (!isRemoval && incoming.length > SUGGESTION_SHOWN) {
+          talkLines.push({
+            kind: 'more',
+            text: `… and ${incoming.length - SUGGESTION_SHOWN} more lines not shown here: read them in the comment (e expands) before saying yes`,
+          })
+        }
+      }
+
       // What can be done with the thread sits on the card's last row. The
       // ledger's findings are closed in the ledger, and have no thread to
       // answer: theirs holds the way to the prompt alone.
@@ -738,11 +768,9 @@ export const fileScreen = (
                   <Button
                     plain
                     key={`apply-yes:${n}`}
-                    label={`replace ${
-                      suggesting.startLine === undefined
-                        ? `line ${suggesting.line}`
-                        : `lines ${suggesting.startLine}–${suggesting.line}`
-                    } of your file with its ${(suggestedLines(suggesting.body) ?? []).length} from ${suggesting.author}?  yes`}
+                    // The words on the button are the pane's own: nothing a
+                    // commenter wrote is part of what is pressed.
+                    label="yes, write it to my file"
                     onPress={() => actions.applySuggestion(suggesting.id)}
                   />
                 )}

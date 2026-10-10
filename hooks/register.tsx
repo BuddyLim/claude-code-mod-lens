@@ -3230,6 +3230,25 @@ export const register: Register = (on, options) => {
           }
 
           const full = `${repo}/${file}`
+          // The file written is a plain file inside the folder under
+          // review: not a link (which a branch can add, pointing anywhere),
+          // and not one reached through a linked folder. The shell says
+          // where its folder really is; the name rides as an argument.
+          const real = await runOf($)(
+            ['sh', '-c', '[ -f "$1" ] && [ ! -L "$1" ] && cd "$(dirname "$1")" && pwd -P', 'sh', full],
+            { timeoutMs: 10_000 },
+          )
+          const root = await git.findFolder(runOf($), repo)
+          const folder = real.stdout.trim()
+
+          if (real.exitCode !== 0 || root === '' || !(folder === root || folder.startsWith(`${root}/`))) {
+            $.ui.toast(`${file} is not a plain file inside this folder: the suggestion was not applied`, {
+              timeoutMs: 8000,
+            })
+
+            return
+          }
+
           const text = await $.fs.read(full).catch(() => undefined)
 
           if (text === undefined) {
