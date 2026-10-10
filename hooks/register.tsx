@@ -40,7 +40,7 @@ import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } f
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
 import type { PatchFile } from './patch'
-import { readPatch } from './patch'
+import { CONTEXT, CONTEXTS, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, Run as ForgeRun } from './review'
 import {
   readOverview,
@@ -1014,12 +1014,13 @@ const loadPatch = async (
   repo: string,
   base: string,
   target: string,
+  key: string,
+  context: number,
+  ignoresSpace: boolean,
 ): Promise<void> => {
-  const key = `${repo}\n${base}\n${target}`
-
   patchWanted = key
 
-  const read = await readPatch(runOf($), repo, base, target)
+  const read = await readPatch(runOf($), repo, base, target, { context, ignoresSpace })
 
   // A comparison asked for since is the one that counts.
   if (patchWanted === key) {
@@ -2160,11 +2161,11 @@ export const register: Register = (on, options) => {
       // stand.
       const isOfBranch = !isComparing && ofBranch !== undefined && ofBranch.base !== ''
       const pageBase = isOfBranch ? ofBranch.base : now.base
-      const pageKey = `${repo}\n${pageBase}\n${target}`
+      const pageKey = `${repo}\n${pageBase}\n${target}\n${now.pageContext}\n${now.pageSpace}`
       const page = patchCache?.key === pageKey ? patchCache : undefined
 
       if (page === undefined && patchWanted !== pageKey) {
-        void loadPatch($, repo, pageBase, target)
+        void loadPatch($, repo, pageBase, target, pageKey, now.pageContext, now.pageSpace)
       }
 
       const drawn = changesScreen(
@@ -2172,6 +2173,8 @@ export const register: Register = (on, options) => {
           {
             shell,
             top: now.pageTop,
+            context: now.pageContext,
+            ignoresSpace: now.pageSpace,
             colors: pageColors.key === pageKey ? pageColors.lines : new Map(),
             title: isOfBranch
               ? `${requestLabel}: your branch as it stands`
@@ -2206,6 +2209,15 @@ export const register: Register = (on, options) => {
             toggleReviewed: markReviewed,
             scrollTo: row => set((last): View => ({ ...last, pageTop: row })),
             say: text => $.ui.toast(text),
+            // More lines round each change, step by step and back round;
+            // and lines that differ only in their spaces, left out or not.
+            moreContext: () =>
+              set((last): View => {
+                const at = CONTEXTS.findIndex(step => step === (last.pageContext ?? CONTEXT))
+
+                return { ...last, pageContext: CONTEXTS[(at + 1) % CONTEXTS.length] ?? CONTEXT }
+              }),
+            toggleSpace: () => set((last): View => ({ ...last, pageSpace: !(last.pageSpace ?? false) })),
             help,
           },
         )

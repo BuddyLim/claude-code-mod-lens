@@ -45,7 +45,7 @@ const ADDED_WORD = '#2f7d43'
 const REMOVED_WORD = '#9b2f2f'
 // How wide the row of keys is when it is all on one line, and how many rows
 // are left above a row a jump key goes to.
-const KEYS_WIDTH = 150
+const KEYS_WIDTH = 190
 const LEAD = 2
 
 export type ChangesModel = {
@@ -71,6 +71,10 @@ export type ChangesModel = {
   colors: ReadonlyMap<string, readonly (readonly Span[])[]>
   // The first row of the page the window shows, 0-based.
   top: number
+  // How many unchanged lines show round each change, and whether lines that
+  // differ only in their spaces are left out.
+  context: number
+  ignoresSpace: boolean
 }
 
 export type ChangesActions = {
@@ -83,6 +87,10 @@ export type ChangesActions = {
   scrollTo: (row: number) => void
   // Tells the person something in passing (a toast).
   say: (text: string) => void
+  // Shows more unchanged lines round each change (it goes round), and
+  // leaves out, or shows again, lines that differ only in their spaces.
+  moreContext: () => void
+  toggleSpace: () => void
   help: () => void
 }
 
@@ -466,6 +474,14 @@ export const changesScreen = (
         <Button plain key="prev-change" hotkey="k" label="prev change" onPress={() => jump(changeRows, -1, 'change')} />
         <Button plain key="next-talk" hotkey="c" label="next comment" onPress={() => jump(talkRows, 1, 'comment')} />
         <Button plain key="prev-talk" hotkey="x" label="prev comment" onPress={() => jump(talkRows, -1, 'comment')} />
+        <Button plain key="context" hotkey="e" label={`context: ${model.context}`} onPress={actions.moreContext} />
+        <Button
+          plain
+          key="space"
+          hotkey="w"
+          label={`spaces: ${model.ignoresSpace ? 'ignored' : 'shown'}`}
+          onPress={actions.toggleSpace}
+        />
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         {helpButton(kit, actions.help)}
       </Box>

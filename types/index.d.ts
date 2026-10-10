@@ -107,8 +107,12 @@ export type View = {
   // same name as `reviewed`: they go to the forge with the verdict. `line`
   // is 0 for a file as a whole; `startLine` makes it a comment on several.
   drafts: Record<string, { id: string; path: string; line: number; startLine?: number; body: string }[]>
-  // The first row the page of every change shows in its window, 0-based.
+  // The first row the page of every change shows in its window, 0-based;
+  // how many unchanged lines it shows round each change; and whether lines
+  // that differ only in their spaces are left out of it.
   pageTop: number
+  pageContext: number
+  pageSpace: boolean
   // How many times the hooks module has asked for the pane to be drawn again
   // because something it holds outside the state changed.
   redraws: number

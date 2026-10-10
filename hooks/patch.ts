@@ -23,7 +23,9 @@ export type PatchFile = {
 }
 
 // How many lines of unchanged code git shows round each change.
-const CONTEXT = 3
+export const CONTEXT = 3
+// The steps the page's key for more context goes through, and back round.
+export const CONTEXTS = [3, 10, 30] as const
 
 // Reads `git diff --no-prefix` output. A path is taken from the `+++` line
 // (the `---` line for a deleted file), so a renamed file is under its new name.
@@ -104,6 +106,9 @@ export const readPatch = async (
   repo: string,
   base: string,
   target: string,
+  // How many unchanged lines show round each change, and whether a line
+  // that differs only in its spaces is left out.
+  { context = CONTEXT, ignoresSpace = false }: { context?: number; ignoresSpace?: boolean } = {},
 ): Promise<{ files: PatchFile[]; refusal: string }> => {
   const ran = await run(
     [
@@ -111,7 +116,8 @@ export const readPatch = async (
       'diff',
       '--no-color',
       '--no-ext-diff',
-      `-U${CONTEXT}`,
+      `-U${Math.max(0, Math.floor(context))}`,
+      ...(ignoresSpace ? ['-w'] : []),
       '--no-prefix',
       '--relative',
       ...(target === '' ? [base] : [base, target]),

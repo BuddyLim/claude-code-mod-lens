@@ -54,6 +54,8 @@ export const NO_VIEW: View = {
   reviewed: {},
   drafts: {},
   pageTop: 0,
+  pageContext: 3,
+  pageSpace: false,
   redraws: 0,
   bodyTop: 0,
   graphTop: 0,

@@ -244,3 +244,24 @@ test('the overview draws what a request says, where it stands and what it links 
   expect(await ui.find({ type: 'Text', text: /Pictures, videos and files \(1\)/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('the page of every change asks git again for more context, and without spaces', async ($, on) => {
+  const git = host(on, { ...IN_REPO, 'diff --no-color': bigDiff(2, 5) })
+
+  await $.command.run(lens(REPO))
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'changes' })
+  await ui.drawn()
+  await ui.press({ key: 'context' })
+  await ui.press({ key: 'space' })
+  await ui.drawn()
+
+  const diffs = git.asked.filter(line => line.startsWith('git diff --no-color'))
+
+  expect(diffs[0]?.includes('-U3 --no-prefix')).toBe(true)
+  expect(diffs.some(line => line.includes('-U10 --no-prefix'))).toBe(true)
+  expect(diffs[diffs.length - 1]?.includes('-U10 -w')).toBe(true)
+  await ui.unmount()
+})

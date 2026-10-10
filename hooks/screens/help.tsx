@@ -174,6 +174,8 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['n / p', 'the next file, or the one before'],
         ['j / k', 'the next change, or the one before'],
         ['c / x', 'the next comment, or the one before'],
+        ['e', 'more unchanged lines round each change: 3, 10, 30, and back'],
+        ['w', 'leave out lines that differ only in their spaces, or show them again'],
         ['g', 'back to the top'],
         ['r', 'read the changes again'],
         ['b', 'back to the file tree'],
