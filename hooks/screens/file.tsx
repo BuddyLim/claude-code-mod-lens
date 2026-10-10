@@ -174,7 +174,9 @@ export type FileActions = {
   // Puts a line's diagnostics, with its code, into the prompt.
   sendIssues: (line: number) => void
   // Puts the review thread on a line, with the code it is about, into the prompt.
-  sendTalk: (line: number) => void
+  // `isLedger` says which card on the line was pressed: the ledger's
+  // findings, or (the default) the request's thread. Only that one is sent.
+  sendTalk: (line: number, isLedger?: boolean) => void
   // Opens the comment box under a line as an answer to the thread there, and
   // marks that thread resolved or open again. Both write to the forge only
   // once the person posts or presses.
@@ -591,7 +593,7 @@ export const fileScreen = (
               // does: pressed, the thread and its code go to the prompt.
               return at === 0 ? (
                 <Box height={1} columnGap={1} overflow="hidden">
-                  <Button plain key={`talk:${n}${scope}`} label="↗" onPress={() => actions.sendTalk(n)} />
+                  <Button plain key={`talk:${n}${scope}`} label="↗" onPress={() => actions.sendTalk(n, isLedger)} />
                   {text}
                 </Box>
               ) : (
@@ -615,7 +617,7 @@ export const fileScreen = (
                   plain
                   key={`talk-send:${n}${scope}`}
                   label="↗ to prompt"
-                  onPress={() => actions.sendTalk(n)}
+                  onPress={() => actions.sendTalk(n, isLedger)}
                 />
               </Box>
             )}

@@ -2739,7 +2739,10 @@ export const register: Register = (on, options) => {
           ),
         // A review thread goes with the code it is about: the function or
         // class that starts on its line, or else a few lines either side.
-        sendTalk: n => {
+        // Only the card pressed goes to the prompt: a request's thread is
+        // other people's words, and is not sent along with the ledger's
+        // findings on the same line, nor they with it.
+        sendTalk: (n, isLedger = false) => {
           const fold = (info === undefined ? undefined : foldOf(info.items, n))?.to ?? foldEnd(texts, n)
           const [from, to] =
             fold > n ? [n, Math.min(fold, n + TALK_CODE)] : [Math.max(1, n - 3), Math.min(lineCount, n + 3)]
@@ -2751,7 +2754,7 @@ export const register: Register = (on, options) => {
               requestLabel,
               file,
               n,
-              talk.filter(one => one.line === n),
+              talk.filter(one => one.line === n && isFinding(one) === isLedger),
               from,
               to,
               texts,
