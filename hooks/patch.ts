@@ -5,14 +5,23 @@ import type { Run } from './run'
 
 // A line of a hunk: unchanged, added or removed, with its number in the new
 // side of the file (0 for a removed line, which that side does not have).
-export type PatchLine = { kind: ' ' | '+' | '-'; text: string; line: number }
+// `old` is its number in the old side (0 for an added line).
+export type PatchLine = { kind: ' ' | '+' | '-'; text: string; line: number; old: number }
 
-export type PatchHunk = { header: string; lines: PatchLine[] }
+// A hunk: the words git puts after its `@@` (the function it is in), its
+// lines, and the hunk as git wrote it (`raw`: its `@@` line and every line
+// under it, the "no newline" marks among them), which is what git takes
+// back to stage it or undo it.
+export type PatchHunk = { header: string; lines: PatchLine[]; raw: string[] }
 
 // A file of the diff by its path on the new side (the old one for a deleted
 // file). A binary file has no hunks.
 export type PatchFile = {
   path: string
+  // Its path on the old side: the same, another for a renamed file, and
+  // '/dev/null' for a new one. '/dev/null' as `newPath` is a deleted file.
+  oldPath: string
+  newPath: string
   hunks: PatchHunk[]
   added: number
   deleted: number
@@ -34,6 +43,7 @@ export const parsePatch = (diff: string): PatchFile[] => {
   let file: PatchFile | undefined
   let hunk: PatchHunk | undefined
   let line = 0
+  let old = 0
   let oldPath = ''
 
   for (const raw of diff.split('\n')) {
@@ -46,6 +56,8 @@ export const parsePatch = (diff: string): PatchFile[] => {
 
       file = {
         path: named.slice(half + 1) === named.slice(0, half) ? named.slice(half + 1) : named,
+        oldPath: '',
+        newPath: '',
         hunks: [],
         added: 0,
         deleted: 0,
@@ -68,20 +80,29 @@ export const parsePatch = (diff: string): PatchFile[] => {
       file.isBinary = true
     } else if (hunk === undefined && raw.startsWith('--- ')) {
       oldPath = raw.slice(4).split('\t')[0] ?? ''
+      file.oldPath = oldPath
     } else if (hunk === undefined && raw.startsWith('+++ ')) {
       const path = raw.slice(4).split('\t')[0] ?? ''
 
+      file.newPath = path
       file.path = path === '/dev/null' ? oldPath : path
     } else if (raw.startsWith('@@ ')) {
-      const at = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(raw)
+      const at = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(raw)
 
-      line = Number(at?.[1] ?? 1)
-      hunk = { header: at?.[2] ?? '', lines: [] }
+      old = Number(at?.[1] ?? 1)
+      line = Number(at?.[2] ?? 1)
+      hunk = { header: at?.[3] ?? '', lines: [], raw: [raw] }
       file.hunks.push(hunk)
     } else if (hunk !== undefined && (raw.startsWith('+') || raw.startsWith('-') || raw.startsWith(' '))) {
       const kind = raw[0] as PatchLine['kind']
 
-      hunk.lines.push({ kind, text: raw.slice(1), line: kind === '-' ? 0 : line })
+      hunk.raw.push(raw)
+      hunk.lines.push({
+        kind,
+        text: raw.slice(1),
+        line: kind === '-' ? 0 : line,
+        old: kind === '+' ? 0 : old,
+      })
 
       if (kind === '+') {
         file.added += 1
@@ -92,10 +113,62 @@ export const parsePatch = (diff: string): PatchFile[] => {
       if (kind !== '-') {
         line += 1
       }
+
+      if (kind !== '+') {
+        old += 1
+      }
+    } else if (hunk !== undefined && raw.startsWith('\\')) {
+      // "\ No newline at end of file": part of the hunk as git takes it back.
+      hunk.raw.push(raw)
     }
   }
 
   return files
+}
+
+// One hunk of a file as a patch git can apply by itself: the file's two
+// names, then the hunk as git wrote it. The names carry the `a/` and `b/`
+// git expects; a new or deleted file keeps its `/dev/null`.
+export const hunkPatch = (file: PatchFile, hunk: PatchHunk): string => {
+  const name = (side: 'a' | 'b', path: string): string => (path === '/dev/null' ? path : `${side}/${path}`)
+
+  return [
+    `--- ${name('a', file.oldPath || file.path)}`,
+    `+++ ${name('b', file.newPath || file.path)}`,
+    ...hunk.raw,
+    '',
+  ].join('\n')
+}
+
+// What tells one hunk from another whichever comparison it was read in: its
+// file and its lines, without the numbers of its `@@` line (which shift when
+// a hunk above it is staged or not). A hunk of the working tree whose mark
+// is among the index's own is staged.
+export const hunkMark = (file: PatchFile, hunk: PatchHunk): string => `${file.path}\n${hunk.raw.slice(1).join('\n')}`
+
+// Applies one hunk to the index (`stage`), takes it back out of the index
+// (`unstage`), or undoes it in the working tree (`discard`). Answers '' when
+// git did it, else its reason. Run in the folder the diff was read in, whose
+// paths the patch's are from.
+export const applyHunk = async (
+  run: Run,
+  repo: string,
+  file: PatchFile,
+  hunk: PatchHunk,
+  how: 'stage' | 'unstage' | 'discard',
+): Promise<string> => {
+  const ran = await run(
+    [
+      'git',
+      'apply',
+      ...(how === 'discard' ? ['--reverse'] : how === 'unstage' ? ['--cached', '--reverse'] : ['--cached']),
+      '--whitespace=nowarn',
+      '-',
+    ],
+    { cwd: repo, timeoutMs: 30_000, stdin: hunkPatch(file, hunk) },
+  )
+
+  return ran.exitCode === 0 ? '' : (ran.stderr.trim().split('\n').pop() ?? 'git could not apply it')
 }
 
 // The whole comparison as git diffs it: `base` with the working tree, or,
@@ -108,7 +181,14 @@ export const readPatch = async (
   target: string,
   // How many unchanged lines show round each change, and whether a line
   // that differs only in its spaces is left out.
-  { context = CONTEXT, ignoresSpace = false }: { context?: number; ignoresSpace?: boolean } = {},
+  // `isStaged` reads what the index holds against `base` in place of the
+  // working tree; `paths` reads those files alone.
+  {
+    context = CONTEXT,
+    ignoresSpace = false,
+    isStaged = false,
+    paths = [],
+  }: { context?: number; ignoresSpace?: boolean; isStaged?: boolean; paths?: readonly string[] } = {},
 ): Promise<{ files: PatchFile[]; refusal: string }> => {
   const ran = await run(
     [
@@ -118,9 +198,11 @@ export const readPatch = async (
       '--no-ext-diff',
       `-U${Math.max(0, Math.floor(context))}`,
       ...(ignoresSpace ? ['-w'] : []),
+      ...(isStaged ? ['--cached'] : []),
       '--no-prefix',
       '--relative',
       ...(target === '' ? [base] : [base, target]),
+      ...(paths.length === 0 ? [] : ['--', ...paths]),
     ],
     { cwd: repo, timeoutMs: 60_000 },
   )

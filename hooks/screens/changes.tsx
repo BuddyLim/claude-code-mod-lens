@@ -13,6 +13,7 @@ import type { RenderChildren } from 'claude-code'
 import type { Span } from '../../types'
 import { isFinding } from '../ledger'
 import type { PatchFile, PatchLine } from '../patch'
+import { hunkMark } from '../patch'
 import type { Comment } from '../review'
 import { clamp, wrapText } from '../text'
 import { iconOf } from '../tree'
@@ -45,8 +46,10 @@ const ADDED_WORD = '#2f7d43'
 const REMOVED_WORD = '#9b2f2f'
 // How wide the row of keys is when it is all on one line, and how many rows
 // are left above a row a jump key goes to.
-const KEYS_WIDTH = 190
+const KEYS_WIDTH = 260
 const LEAD = 2
+// The narrowest pane the two sides are drawn beside each other in.
+export const SPLIT_WIDTH = 90
 
 export type ChangesModel = {
   shell: Shell
@@ -75,6 +78,22 @@ export type ChangesModel = {
   // differ only in their spaces are left out.
   context: number
   ignoresSpace: boolean
+  // Whether the two sides are drawn beside each other, where the pane is
+  // wide enough; else one under the other.
+  isSplit: boolean
+  // The search: whether its field is open, and what is looked for ('' for
+  // nothing). A number that changes when the field is to start empty.
+  isFinding: boolean
+  find: string
+  // Whether a change can be staged, taken back or undone a hunk at a time:
+  // the comparison is of the working tree with what is checked out. The
+  // marks (see `hunkMark`) of the hunks the index holds; the hunk whose
+  // undoing is being asked about (`path` and its place among the file's
+  // hunks, '' for none); and whether the field for a commit's message shows.
+  canStage: boolean
+  staged: ReadonlySet<string>
+  asking: string
+  isCommitting: boolean
 }
 
 export type ChangesActions = {
@@ -91,6 +110,22 @@ export type ChangesActions = {
   // leaves out, or shows again, lines that differ only in their spaces.
   moreContext: () => void
   toggleSpace: () => void
+  // Draws the two sides beside each other, or one under the other again.
+  toggleSplit: () => void
+  // Shows more of one file round its changes, where the rest keep theirs.
+  expand: (path: string) => void
+  // The search: opens or closes its field, and looks for a text.
+  toggleFind: () => void
+  setFind: (text: string) => void
+  // One hunk of a file, by its place among the file's: staged, taken back
+  // out of the index, or undone in the working tree. Undoing is asked about
+  // first (`ask`, with the hunk's name; '' takes the question away).
+  hunk: (path: string, index: number, how: 'stage' | 'unstage' | 'discard') => void
+  ask: (name: string) => void
+  // Opens or closes the field for a commit's message, and commits what is
+  // staged with one.
+  toggleCommit: () => void
+  commitStaged: (message: string) => void
   help: () => void
 }
 
@@ -106,7 +141,7 @@ export const changesScreen = (
   model: ChangesModel,
   actions: ChangesActions,
 ): { tree: RenderChildren; window: ChangesWindow; shown: string[] } => {
-  const { Box, Button, Text } = kit
+  const { Box, Button, Text, Input } = kit
   const { shell, files, comments } = model
   const reviewed = new Set(model.reviewed)
   const width = Math.max(20, shell.columns)
@@ -118,6 +153,13 @@ export const changesScreen = (
   const fileRows: number[] = []
   const changeRows: number[] = []
   const talkRows: number[] = []
+  // And the rows that hold what is being looked for, whatever its case.
+  const findRows: number[] = []
+  const sought = model.find.trim().toLowerCase()
+  // The two sides are drawn beside each other only where each has room to
+  // be read: a narrow pane keeps one under the other.
+  const isSplit = model.isSplit && width >= SPLIT_WIDTH
+  const half = Math.floor((width - 1) / 2)
   const add = (path: string, draw: () => RenderChildren) => rows.push({ path, draw })
   const blank = (path = '') => add(path, () => <Text> </Text>)
 
@@ -170,7 +212,7 @@ export const changesScreen = (
     const here = comments.filter(one => one.path === path)
     const isDone = reviewed.has(path)
     const gutter = String(
-      Math.max(1, ...file.hunks.flatMap(hunk => hunk.lines.map(line => line.line))),
+      Math.max(1, ...file.hunks.flatMap(hunk => hunk.lines.map(line => Math.max(line.line, line.old)))),
     ).length
     const drawn = new Set(file.hunks.flatMap(hunk => hunk.lines.map(line => line.line)))
     // A line in the colours the code view gives it, once the file has been
@@ -225,14 +267,18 @@ export const changesScreen = (
         })
       })
     }
-    const lineRow = (line: PatchLine, lit: readonly Stretch[]) => (
+    // `isOld` numbers the line by the old side (the left of the two, where
+    // they are drawn beside each other); `isFound` marks a line the search
+    // found.
+    const lineRow = (line: PatchLine, lit: readonly Stretch[], isOld = false, isFound = false) => (
       <Text wrap="truncate-end">
         <Text
-          color={line.kind === '+' ? 'green' : line.kind === '-' ? 'red' : undefined}
-          dimColor={line.kind === ' '}
+          color={isFound ? 'yellow' : line.kind === '+' ? 'green' : line.kind === '-' ? 'red' : undefined}
+          dimColor={line.kind === ' ' && !isFound}
+          bold={isFound}
         >
-          {line.kind === ' ' ? ' ' : line.kind}
-          {(line.line === 0 ? '' : String(line.line)).padStart(gutter)}{' '}
+          {isFound ? '▶' : line.kind === ' ' ? ' ' : line.kind}
+          {((isOld ? line.old : line.line) === 0 ? '' : String(isOld ? line.old : line.line)).padStart(gutter)}{' '}
         </Text>
         <Text
           color={line.kind === '-' ? '#f48771' : undefined}
@@ -292,16 +338,48 @@ export const changesScreen = (
       add(path, () => <Text dimColor>  A binary file: nothing to show.</Text>)
     }
 
-    for (const hunk of file.hunks) {
+    for (const [index, hunk] of file.hunks.entries()) {
       const label = hunk.header === '' ? '' : ` ${hunk.header} `
+      const name = `${path}:${index}`
+      const isStaged = model.canStage && model.staged.has(hunkMark(file, hunk))
 
-      add(path, () => (
-        <Text color={COMMIT_BOX} dimColor wrap="truncate-end">
-          {'──'}
-          {label}
-          {'─'.repeat(Math.max(0, width - 2 - label.length))}
-        </Text>
-      ))
+      // The hunk's rule carries what can be done with it: more of the file
+      // round it, and, where the change is the working tree's, staging it
+      // or undoing it. Undoing cannot be taken back, so it is asked about.
+      add(path, () => [
+        <Box flexGrow={1} flexShrink={1} overflow="hidden">
+          <Text color={COMMIT_BOX} dimColor wrap="truncate-end">
+            {'──'}
+            {label}
+            {'─'.repeat(Math.max(0, width - 2 - label.length))}
+          </Text>
+        </Box>,
+        <Box flexShrink={0} columnGap={2} marginLeft={1}>
+          {model.asking === name ? (
+            [
+              <Text color="red" bold>
+                undo this change in your file?
+              </Text>,
+              <Button plain key={`hunk-yes:${name}`} label="yes" onPress={() => actions.hunk(path, index, 'discard')} />,
+              <Button plain key={`hunk-no:${name}`} label="no" onPress={() => actions.ask('')} />,
+            ]
+          ) : (
+            [
+              <Button plain key={`hunk-more:${name}`} label="⇕ more" onPress={() => actions.expand(path)} />,
+              model.canStage && isStaged && <Text color="green">staged ✓</Text>,
+              model.canStage && isStaged && (
+                <Button plain key={`hunk-unstage:${name}`} label="unstage" onPress={() => actions.hunk(path, index, 'unstage')} />
+              ),
+              model.canStage && !isStaged && (
+                <Button plain key={`hunk-stage:${name}`} label="stage" onPress={() => actions.hunk(path, index, 'stage')} />
+              ),
+              model.canStage && !isStaged && (
+                <Button plain key={`hunk-discard:${name}`} label="discard" onPress={() => actions.ask(name)} />
+              ),
+            ]
+          )}
+        </Box>,
+      ])
 
       // A run of removed lines followed by a run of added ones is taken as
       // those lines rewritten, one for one in order: the words that differ
@@ -345,13 +423,92 @@ export const changesScreen = (
         return line.kind === '-' ? found.before : found.after
       }
 
+      // Whether a line holds what is being looked for.
+      const isHit = (line: PatchLine | undefined): boolean =>
+        line !== undefined && sought !== '' && clean(line.text).toLowerCase().includes(sought)
+
+      if (isSplit) {
+        // The two sides beside each other: an unchanged line on both, a
+        // removed line on the left of the added line that replaced it, and
+        // what was only removed or only added with nothing across from it.
+        const pairs: [PatchLine | undefined, PatchLine | undefined][] = []
+
+        for (let at = 0; at < hunk.lines.length; ) {
+          const line = hunk.lines[at]
+
+          if (line === undefined) {
+            break
+          }
+
+          if (line.kind === ' ') {
+            pairs.push([line, line])
+            at += 1
+            continue
+          }
+
+          const gone: PatchLine[] = []
+          const come: PatchLine[] = []
+
+          while (hunk.lines[at]?.kind === '-') {
+            gone.push(hunk.lines[at] as PatchLine)
+            at += 1
+          }
+
+          while (hunk.lines[at]?.kind === '+') {
+            come.push(hunk.lines[at] as PatchLine)
+            at += 1
+          }
+
+          for (let k = 0; k < Math.max(gone.length, come.length); k += 1) {
+            pairs.push([gone[k], come[k]])
+          }
+        }
+
+        for (const [at, [left, right]] of pairs.entries()) {
+          const isChange = left?.kind === '-' || right?.kind === '+'
+          const before = pairs[at - 1]
+
+          if (isChange && (before === undefined || (before[0]?.kind !== '-' && before[1]?.kind !== '+'))) {
+            changeRows.push(rows.length)
+          }
+
+          if (isHit(left) || isHit(right)) {
+            findRows.push(rows.length)
+          }
+
+          add(path, () => [
+            <Box width={half} flexShrink={0} overflow="hidden">
+              {left === undefined ? <Text> </Text> : lineRow(left, litOf(left), true, isHit(left))}
+            </Box>,
+            <Text color={COMMIT_BOX} dimColor>
+              │
+            </Text>,
+            <Box width={half} flexShrink={0} overflow="hidden">
+              {right === undefined ? <Text> </Text> : lineRow(right, litOf(right), false, isHit(right))}
+            </Box>,
+          ])
+
+          if (right !== undefined && right.line !== 0) {
+            for (const one of threaded(here.filter(one => one.line === right.line))) {
+              addComment(path, one, ' '.repeat(half + gutter + 3))
+            }
+          }
+        }
+
+        continue
+      }
+
       for (const [at, line] of hunk.lines.entries()) {
         // A change starts where a changed line follows an unchanged one.
         if (line.kind !== ' ' && (hunk.lines[at - 1]?.kind ?? ' ') === ' ') {
           changeRows.push(rows.length)
         }
 
-        add(path, () => lineRow(line, litOf(line)))
+        if (isHit(line)) {
+          findRows.push(rows.length)
+        }
+
+        add(path, () => lineRow(line, litOf(line), false, isHit(line)))
 
         if (line.line !== 0) {
           for (const one of threaded(here.filter(one => one.line === line.line))) {
@@ -438,7 +595,14 @@ export const changesScreen = (
   // what is left of the pane.
   // The keys wrap onto as many rows as the pane's width makes of them.
   const keyRows = Math.ceil(KEYS_WIDTH / Math.max(20, shell.columns))
-  const room = clamp(shell.rows - (2 + keyRows + shell.notes.length), 5, 256)
+  // The search's row and the commit's, while each is open, and the row that
+  // says what is staged.
+  const stagedCount = model.canStage ? model.staged.size : 0
+  const extraRows =
+    (model.isFinding && Input !== undefined ? 1 : 0) +
+    (stagedCount > 0 ? 1 : 0) +
+    (model.isCommitting && Input !== undefined ? 1 : 0)
+  const room = clamp(shell.rows - (2 + keyRows + extraRows + shell.notes.length), 5, 256)
   const maxTop = Math.max(0, rows.length - room)
   const top = clamp(model.top, 0, maxTop)
   const windowed = rows.slice(top, top + room)
@@ -482,9 +646,79 @@ export const changesScreen = (
           label={`spaces: ${model.ignoresSpace ? 'ignored' : 'shown'}`}
           onPress={actions.toggleSpace}
         />
+        <Button
+          plain
+          key="split"
+          hotkey="v"
+          label={model.isSplit ? 'one column' : 'side by side'}
+          onPress={() =>
+            !model.isSplit && width < SPLIT_WIDTH
+              ? actions.say(`The pane is too narrow to draw the two sides beside each other (it needs ${SPLIT_WIDTH} columns)`)
+              : actions.toggleSplit()
+          }
+        />
+        <Button plain key="find" hotkey="f" label={model.isFinding ? 'close find' : 'find'} onPress={actions.toggleFind} />
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         {helpButton(kit, actions.help)}
       </Box>
+      {/* The search: Enter goes to the next line that holds the text. */}
+      {model.isFinding && Input !== undefined && (
+        <Box height={1} overflow="hidden" columnGap={2}>
+          <Box flexGrow={1} flexShrink={1} overflow="hidden">
+            <Input
+              key="page-find"
+              label="find"
+              placeholder="text to look for in the changes, then Enter for the next"
+              submitLabel="next"
+              autoFocus
+              {...(model.find === '' ? {} : { value: model.find })}
+              onSubmit={value => {
+                // The same text again goes on to its next line; a new one
+                // is looked for from where the window is.
+                if (value.trim().toLowerCase() === sought && sought !== '') {
+                  jump(findRows, 1, 'more lines with that')
+                } else {
+                  actions.setFind(value)
+                }
+              }}
+            />
+          </Box>
+          <Box flexShrink={0} columnGap={2}>
+            <Text dimColor>
+              {sought === '' ? '' : `${findRows.length} ${findRows.length === 1 ? 'line' : 'lines'}`}
+            </Text>
+            <Button plain key="find-prev" label="prev" onPress={() => jump(findRows, -1, 'line with that')} />
+            <Button plain key="find-next" label="next" onPress={() => jump(findRows, 1, 'line with that')} />
+          </Box>
+        </Box>
+      )}
+      {/* What is staged, and the way to commit it: the message's field
+          opens on its own row. */}
+      {stagedCount > 0 && (
+        <Box height={1} overflow="hidden" columnGap={2}>
+          <Text color="green">
+            {stagedCount} {stagedCount === 1 ? 'change' : 'changes'} staged
+          </Text>
+          <Button
+            plain
+            key="commit-staged"
+            label={model.isCommitting ? 'cancel' : 'commit what is staged'}
+            onPress={actions.toggleCommit}
+          />
+        </Box>
+      )}
+      {model.isCommitting && Input !== undefined && (
+        <Box height={1} overflow="hidden">
+          <Input
+            key="page-commit"
+            label="message"
+            placeholder="what changed, then Enter to commit what is staged"
+            submitLabel="commit"
+            autoFocus
+            onSubmit={actions.commitStaged}
+          />
+        </Box>
+      )}
       {notesOf(kit, shell.notes)}
       <Box height={1} overflow="hidden">
         <Text bold>{model.title} </Text>

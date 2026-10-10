@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { parsePatch } from './patch'
+import { hunkPatch, parsePatch } from './patch'
 
 const DIFF = [
   'diff --git src/a.ts src/a.ts',
@@ -52,12 +52,26 @@ test('a diff is read into files, hunks and lines numbered on the new side', asyn
   expect(changed).toMatchObject({ path: 'src/a.ts', added: 2, deleted: 1, isBinary: false })
   expect(changed?.hunks[0]?.header).toBe('export const a = () => {')
   expect(changed?.hunks[0]?.lines).toEqual([
-    { kind: ' ', text: 'const one = 1', line: 10 },
-    { kind: '-', text: 'const two = 3', line: 0 },
-    { kind: '+', text: 'const two = 2', line: 11 },
-    { kind: '+', text: 'const three = 3', line: 12 },
-    { kind: ' ', text: 'return one', line: 13 },
+    { kind: ' ', text: 'const one = 1', line: 10, old: 10 },
+    { kind: '-', text: 'const two = 3', line: 0, old: 11 },
+    { kind: '+', text: 'const two = 2', line: 11, old: 0 },
+    { kind: '+', text: 'const three = 3', line: 12, old: 0 },
+    { kind: ' ', text: 'return one', line: 13, old: 12 },
   ])
+  // A hunk is handed back to git as it wrote it, under the file's two names.
+  expect(changed === undefined ? '' : hunkPatch(changed, changed.hunks[0]!)).toBe(
+    [
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -10,4 +10,5 @@ export const a = () => {',
+      ' const one = 1',
+      '-const two = 3',
+      '+const two = 2',
+      '+const three = 3',
+      ' return one',
+      '',
+    ].join('\n'),
+  )
   // A renamed file is under its new name; a deleted one keeps its old.
   expect(renamed).toMatchObject({ path: 'new.md', added: 1, deleted: 1 })
   expect(gone).toMatchObject({ path: 'gone.txt', added: 0, deleted: 2 })

@@ -113,6 +113,13 @@ export type View = {
   pageTop: number
   pageContext: number
   pageSpace: boolean
+  // On that page: whether the two sides are drawn beside each other;
+  // whether the search's field is open and what is looked for; and whether
+  // the field for a commit of what is staged shows.
+  pageSplit: boolean
+  pageFinding: boolean
+  pageFind: string
+  pageCommitting: boolean
   // How many times the hooks module has asked for the pane to be drawn again
   // because something it holds outside the state changed.
   redraws: number
@@ -146,9 +153,6 @@ export type View = {
   // being asked about before it is deleted, by id; '' for none.
   editing: string
   deleting: string
-  // The comment whose suggested replacement is being asked about before it
-  // is written into the file, by id; '' for none.
-  applying: string
   // A working-tree file whose diff is read against a commit other than
   // `base`: a file of the checked-out branch's request, against where the
   // request forked from its target. `path` '' is none.

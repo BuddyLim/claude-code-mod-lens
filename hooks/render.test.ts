@@ -301,3 +301,53 @@ test('the file tree lists only the files a filter names, and says so', async ($,
   expect(await ui.find({ key: 'file:docs/guide.md' })).toBeDefined()
   await ui.unmount()
 })
+
+test('the page of every change stages and undoes a hunk, finds text, and draws the two sides beside each other', async ($, on) => {
+  const rewritten = [
+    'diff --git src/a.ts src/a.ts',
+    '--- src/a.ts',
+    '+++ src/a.ts',
+    '@@ -1,3 +1,3 @@',
+    ' const first = 1',
+    '-const limit = 300',
+    '+const limit = 3000',
+    ' const last = 2',
+  ].join('\n')
+  const git = host(on, { ...IN_REPO, '--cached': '', 'diff --no-color': rewritten })
+
+  await $.command.run(lens(REPO))
+
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'changes' })
+  await ui.drawn()
+
+  // Staging hands the hunk to git as git wrote it, into the index.
+  await ui.press({ key: 'hunk-stage:src/a.ts:0' })
+  expect(git.asked.includes('git apply --cached --whitespace=nowarn -')).toBe(true)
+
+  // Undoing is asked about first, and no is no.
+  await ui.press({ key: 'hunk-discard:src/a.ts:0' })
+  expect(await ui.find({ key: 'hunk-yes:src/a.ts:0' })).toBeDefined()
+  await ui.press({ key: 'hunk-no:src/a.ts:0' })
+  expect(git.asked.some(line => line.startsWith('git apply --reverse'))).toBe(false)
+  await ui.press({ key: 'hunk-discard:src/a.ts:0' })
+  await ui.press({ key: 'hunk-yes:src/a.ts:0' })
+  expect(git.asked.includes('git apply --reverse --whitespace=nowarn -')).toBe(true)
+
+  // More of one file is read for that file alone.
+  await ui.press({ key: 'hunk-more:src/a.ts:0' })
+  expect(git.asked.some(line => line.includes('-U20') && line.endsWith('-- src/a.ts'))).toBe(true)
+
+  // The search counts the lines that hold the text, whatever its case.
+  await ui.press({ key: 'find' })
+  await ui.input({ key: 'page-find', text: 'LIMIT' })
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /^2 lines$/ })).toBeDefined()
+
+  // Beside each other, the removed line and its replacement share a row.
+  await ui.press({ key: 'split' })
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /^1 line$/ })).toBeDefined()
+  await ui.unmount()
+})

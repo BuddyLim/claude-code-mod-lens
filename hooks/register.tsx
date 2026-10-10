@@ -41,12 +41,11 @@ import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
 import { plain, plainBlock } from './media'
 import type { PatchFile } from './patch'
-import { CONTEXT, CONTEXTS, readPatch } from './patch'
+import { CONTEXT, CONTEXTS, applyHunk, hunkMark, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
 import {
   changeComment,
   fold,
-  suggestedLines,
   suggestionOf,
   unfold,
   whoAmI,
@@ -287,7 +286,14 @@ let requestsCache: { repo: string; list: Listed[] } | undefined
 // The whole comparison as one page, for the changes screen: what git said of
 // the repo, base and target in `key`. Written by `loadPatch`, when that
 // screen opens or is refreshed; `patchWanted` is the key being read.
-let patchCache: { key: string; files: PatchFile[]; refusal: string } | undefined
+// `staged` is the marks of the hunks the index holds (see `hunkMark`).
+let patchCache: { key: string; files: PatchFile[]; refusal: string; staged: Set<string> } | undefined
+// How many unchanged lines each file expanded on that page shows round its
+// changes, by path, for the page in `key`; and how many each press adds.
+let pageMore: { key: string; by: Map<string, number> } = { key: '', by: new Map() }
+const MORE_STEP = 20
+// The hunk whose undoing the page is asking about, by its name; '' for none.
+let hunkAsked = ''
 let patchWanted: string | undefined
 // The files of that page as the highlighter coloured them, by path, and the
 // ones asked for: written by `colorPage` as each stretch of the page is drawn.
@@ -313,8 +319,6 @@ const nudged = (last: View): View => ({ ...last, redraws: (last.redraws ?? 0) + 
 const REVIEWED_KEPT = 40
 // And how many ticked files of each.
 const REVIEWED_PATHS = 2000
-// The most lines a suggested replacement may hold to be applied from here.
-const SUGGESTION_LINES = 500
 // The most comments one review holds unsent.
 const DRAFTS_KEPT = 200
 
@@ -1044,12 +1048,58 @@ const loadPatch = async (
 ): Promise<void> => {
   patchWanted = key
 
-  const read = await readPatch(runOf($), repo, base, target, { context, ignoresSpace })
+  // With the working tree's own changes, what the index holds is read
+  // beside them, the same way, to say which hunks are staged.
+  const [read, index] = await Promise.all([
+    readPatch(runOf($), repo, base, target, { context, ignoresSpace }),
+    target === '' && !ignoresSpace
+      ? readPatch(runOf($), repo, base, '', { context, isStaged: true })
+      : Promise.resolve({ files: [], refusal: '' }),
+  ])
 
   // A comparison asked for since is the one that counts.
   if (patchWanted === key) {
-    patchCache = { key, ...read }
+    patchCache = {
+      key,
+      ...read,
+      staged: new Set(index.files.flatMap(file => file.hunks.map(hunk => hunkMark(file, hunk)))),
+    }
     patchWanted = undefined
+    await update($, view, nudged)
+  }
+}
+
+// Shows more of one file round its changes on the page of every change: the
+// file is read again with more unchanged lines, and takes its place there.
+const expandFile = async (
+  $: EngineInterface,
+  repo: string,
+  base: string,
+  target: string,
+  key: string,
+  path: string,
+  ignoresSpace: boolean,
+): Promise<void> => {
+  const held = patchCache?.key === key ? patchCache : undefined
+  const at = held?.files.findIndex(file => file.path === path) ?? -1
+
+  if (held === undefined || at === -1) {
+    return
+  }
+
+  const context = (pageMore.key === key ? (pageMore.by.get(path) ?? 0) : 0) + MORE_STEP
+
+  if (pageMore.key !== key) {
+    pageMore = { key, by: new Map() }
+  }
+
+  pageMore.by.set(path, context)
+
+  const read = await readPatch(runOf($), repo, base, target, { context, ignoresSpace, paths: [path] })
+  const [again] = read.files
+
+  if (again !== undefined && patchCache === held) {
+    held.files[at] = again
     await update($, view, nudged)
   }
 }
@@ -2235,6 +2285,12 @@ export const register: Register = (on, options) => {
         void loadPatch($, repo, pageBase, target, pageKey, now.pageContext, now.pageSpace)
       }
 
+      // A change is staged or undone a hunk at a time only where the page is
+      // of the working tree against what is checked out, spaces and all: a
+      // hunk read any other way is not one git takes back.
+      const canStage =
+        target === '' && !isComparing && !isOfBranch && !found.isPlain && !now.pageSpace && now.base === 'HEAD'
+
       const drawn = changesScreen(
           kit,
           {
@@ -2259,6 +2315,13 @@ export const register: Register = (on, options) => {
             canMark: seenKey !== '',
             reviewed: seen,
             untracked: found.files.filter(one => one.status === '?').length,
+            isSplit: now.pageSplit,
+            isFinding: now.pageFinding,
+            find: now.pageFind,
+            canStage,
+            staged: page?.staged ?? new Set<string>(),
+            asking: hunkAsked,
+            isCommitting: now.pageCommitting && canStage,
           },
           {
             back: () => set((last): View => ({ ...last, screen: 'tree' })),
@@ -2285,6 +2348,77 @@ export const register: Register = (on, options) => {
                 return { ...last, pageContext: CONTEXTS[(at + 1) % CONTEXTS.length] ?? CONTEXT }
               }),
             toggleSpace: () => set((last): View => ({ ...last, pageSpace: !(last.pageSpace ?? false) })),
+            toggleSplit: () => set((last): View => ({ ...last, pageSplit: !(last.pageSplit ?? false) })),
+            expand: path => void expandFile($, repo, pageBase, target, pageKey, path, now.pageSpace),
+            toggleFind: () =>
+              set((last): View => ({ ...last, pageFinding: !(last.pageFinding ?? false), pageFind: '' })),
+            setFind: text => set((last): View => ({ ...last, pageFind: text.trim().slice(0, 200) })),
+            ask: name => {
+              hunkAsked = name
+              set(nudged)
+            },
+            // A hunk is handed back to git as git wrote it: into the index,
+            // out of it, or undone in the file. Undoing is done only from
+            // its own question's yes.
+            hunk: (path, index, how) => {
+              const file = page?.files.find(one => one.path === path)
+              const hunk = file?.hunks[index]
+
+              if (!canStage || file === undefined || hunk === undefined) {
+                return
+              }
+
+              if (how === 'discard' && hunkAsked !== `${path}:${index}`) {
+                return
+              }
+
+              hunkAsked = ''
+              void applyHunk(runOf($), repo, file, hunk, how).then(refusal => {
+                $.ui.toast(
+                  refusal !== ''
+                    ? `git did not ${how} it: ${refusal}`
+                    : how === 'discard'
+                      ? `That change is undone in ${path}`
+                      : how === 'stage'
+                        ? 'Staged'
+                        : 'Taken back out of what is staged',
+                  { timeoutMs: refusal === '' ? 3000 : 10_000 },
+                )
+                // The page is read again where it stands.
+                patchCache = undefined
+                pageMore = { key: '', by: new Map() }
+                rescan()
+                void update($, view, nudged)
+              })
+            },
+            toggleCommit: () =>
+              set((last): View => ({ ...last, pageCommitting: !(last.pageCommitting ?? false) })),
+            // What is staged is committed as it is: no file is named, so
+            // nothing but the index goes into the commit.
+            commitStaged: message => {
+              if (message.trim() === '') {
+                $.ui.toast('Type what changed first')
+
+                return
+              }
+
+              void runOf($)(['git', 'commit', '-m', unfold(message.trim())], { cwd: repo, timeoutMs: 60_000 }).then(
+                done => {
+                  $.ui.toast(
+                    done.exitCode === 0
+                      ? 'Committed what was staged'
+                      : `git did not commit: ${(done.stderr || done.stdout).trim().split('\n').pop() ?? ''}`,
+                    { timeoutMs: done.exitCode === 0 ? 4000 : 10_000 },
+                  )
+
+                  if (done.exitCode === 0) {
+                    patchCache = undefined
+                    rescan()
+                    void update($, view, (last): View => ({ ...nudged(last), pageCommitting: false }))
+                  }
+                },
+              )
+            },
             help,
           },
         )
@@ -2907,11 +3041,7 @@ export const register: Register = (on, options) => {
         me: meCache?.repo === repo ? meCache.me : '',
         editing: now.editing,
         deleting: now.deleting,
-        applying: now.applying,
         draft: now.editing === '' ? '' : commentDraft,
-        // A suggestion is applied to the person's own files: the working
-        // tree's, where the request is the branch checked out.
-        canApply: commit === '' && target === '',
         replyTo: now.replyTo,
         hidesResolved: now.hidesResolved,
         commentRound,
@@ -3194,96 +3324,6 @@ export const register: Register = (on, options) => {
                 timeoutMs: refusal === '' ? 4000 : 10_000,
               }),
             )
-          }
-        },
-        // Puts a suggested replacement into the file: only where the file
-        // open is the working tree's, which is then the request's own
-        // branch. The lines the comment is on give way to the suggestion's.
-        askApply: id => set(was => ({ ...was, applying: id })),
-        applySuggestion: async id => {
-          const one = comments.find(held => held.id === id)
-          const lines = one === undefined ? undefined : suggestedLines(one.body)
-
-          // Written only from its own question's yes: the comment must be
-          // the one asked about. What it holds is another person's text.
-          if (one === undefined || lines === undefined || now.applying !== id) {
-            return
-          }
-
-          set(was => ({ ...was, applying: '' }))
-
-          // The file is the one open, inside the folder under review, by a
-          // path with no way out of it; and the replacement is of a size a
-          // suggestion has.
-          if (file.startsWith('/') || file.split('/').includes('..') || lines.length > SUGGESTION_LINES) {
-            $.ui.toast('That suggestion is not one lens applies: make the change by hand')
-
-            return
-          }
-
-          if (commit !== '' || target !== '') {
-            $.ui.toast('Check the request out first (overview, e): a suggestion is applied to your own files', {
-              timeoutMs: 8000,
-            })
-
-            return
-          }
-
-          const full = `${repo}/${file}`
-          // The file written is a plain file inside the folder under
-          // review: not a link (which a branch can add, pointing anywhere),
-          // and not one reached through a linked folder. The shell says
-          // where its folder really is; the name rides as an argument.
-          const real = await runOf($)(
-            ['sh', '-c', '[ -f "$1" ] && [ ! -L "$1" ] && cd "$(dirname "$1")" && pwd -P', 'sh', full],
-            { timeoutMs: 10_000 },
-          )
-          const root = await git.findFolder(runOf($), repo)
-          const folder = real.stdout.trim()
-
-          if (real.exitCode !== 0 || root === '' || !(folder === root || folder.startsWith(`${root}/`))) {
-            $.ui.toast(`${file} is not a plain file inside this folder: the suggestion was not applied`, {
-              timeoutMs: 8000,
-            })
-
-            return
-          }
-
-          const text = await $.fs.read(full).catch(() => undefined)
-
-          if (text === undefined) {
-            $.ui.toast(`${file} could not be read`)
-
-            return
-          }
-
-          const all = text.split('\n')
-          const first = (one.startLine ?? one.line) - 1
-
-          if (first < 0 || one.line > all.length) {
-            $.ui.toast('The lines that comment is on are not in the file as it stands now')
-
-            return
-          }
-
-          // A suggestion of no lines at all takes its lines out.
-          all.splice(first, one.line - first, ...(lines.length === 1 && lines[0] === '' ? [] : lines))
-
-          const refusal = await $.fs.write(full, all.join('\n')).then(
-            () => '',
-            (error: unknown) => String(error),
-          )
-
-          $.ui.toast(
-            refusal === ''
-              ? `Suggestion applied to ${file}: it is in your working tree, not committed`
-              : `The suggestion was not applied: ${refusal}`,
-            { timeoutMs: 8000 },
-          )
-
-          if (refusal === '') {
-            rescan()
-            await loadSource($, repo, file)
           }
         },
         // Drops comments written for the review and not sent yet.

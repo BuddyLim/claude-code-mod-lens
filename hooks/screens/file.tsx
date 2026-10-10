@@ -20,7 +20,7 @@ import { minimapCells } from '../minimap'
 import { markSpans, withInlays } from '../parts'
 import { isFinding as isLedgerFinding } from '../ledger'
 import type { Comment } from '../review'
-import { draftId, isDraft, suggestedLines } from '../review'
+import { draftId, isDraft } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
 import { clamp, findMatches, shortRef, wrapText } from '../text'
 import { iconOf } from '../tree'
@@ -42,8 +42,6 @@ import {
 } from './frame'
 import { isMarkdownFile } from './markdown'
 
-// The most lines of a suggested replacement shown before it is applied.
-const SUGGESTION_SHOWN = 12
 // The most lines of an unsent comment its card shows.
 const DRAFT_LINES = 6
 // What `commentLine` holds while the comment being typed is on the file as a
@@ -132,14 +130,11 @@ export type FileModel = {
   // Who the person is on the forge ('' when not known), so their own
   // comments can be changed; the comment being changed and the one asked
   // about before deleting, by id; what the field starts with while one is
-  // being changed; and whether a suggestion can be applied to this file.
+  // being changed.
   me: string
   editing: string
   deleting: string
-  // The comment whose suggestion is being asked about before it is applied.
-  applying: string
   draft: string
-  canApply: boolean
   // The thread being answered, by its first comment's id; '' for none.
   replyTo: string
   // What the diff is against, by name, when that is not the comparison's
@@ -245,11 +240,6 @@ export type FileActions = {
   askDelete: (id: string) => void
   deleteComment: (id: string) => void
   likeComment: (id: string) => void
-  // Puts the replacement a comment suggests into the file.
-  // It is asked about first (`askApply`; '' takes the question away), and
-  // done only for the comment asked about.
-  applySuggestion: (id: string) => void
-  askApply: (id: string) => void
   // Drops comments written for the review and not sent, by their ids.
   discardDrafts: (ids: readonly string[]) => void
 }
@@ -617,11 +607,9 @@ export const fileScreen = (
 
       const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
       const scope = isLedger ? ':ledger' : ''
-      // The thread's first comment: whether it is the person's own, and the
-      // first of the thread's comments that suggests a replacement.
+      // The thread's first comment, and whether it is the person's own.
       const first = group[0]
       const isMine = !isLedger && model.me !== '' && first?.author === model.me
-      const suggesting = isLedger ? undefined : group.find(one => suggestedLines(one.body) !== undefined)
 
     for (const [at, one] of (model.isExpanded ? group : group.slice(0, 1)).entries()) {
       // A finding stands by itself; an answer in a thread is set in.
@@ -650,33 +638,6 @@ export const fileScreen = (
       }
     }
 
-      // While a suggestion is being asked about, the card shows the very
-      // lines that would be written, whether or not it is folded: the yes
-      // is to what is read here, not to a description of it.
-      if (suggesting !== undefined && model.canApply && model.applying === suggesting.id) {
-        const incoming = suggestedLines(suggesting.body) ?? []
-        const isRemoval = incoming.length === 1 && incoming[0] === ''
-        const place =
-          suggesting.startLine === undefined
-            ? `line ${suggesting.line}`
-            : `lines ${suggesting.startLine}–${suggesting.line}`
-
-        talkLines.push({
-          kind: 'head',
-          text: isRemoval ? `Applying this takes ${place} out of your file.` : `Applying this replaces ${place} of your file with:`,
-        })
-
-        for (const line of isRemoval ? [] : incoming.slice(0, SUGGESTION_SHOWN)) {
-          talkLines.push({ kind: 'body', text: `+ ${line}` })
-        }
-
-        if (!isRemoval && incoming.length > SUGGESTION_SHOWN) {
-          talkLines.push({
-            kind: 'more',
-            text: `… and ${incoming.length - SUGGESTION_SHOWN} more lines not shown here: read them in the comment (e expands) before saying yes`,
-          })
-        }
-      }
 
       // What can be done with the thread sits on the card's last row. The
       // ledger's findings are closed in the ledger, and have no thread to
@@ -751,31 +712,6 @@ export const fileScreen = (
                 )}
                 {isMine && first !== undefined && model.deleting === first.id && (
                   <Button plain key={`delete-no:${n}`} label="no" onPress={() => actions.askDelete('')} />
-                )}
-                {/* A suggested replacement is put into the person's own file. */}
-                {/* The replacement is someone else's words going into the
-                    person's file, so it is asked about first, in a question
-                    that says which lines give way and to how many. */}
-                {suggesting !== undefined && model.canApply && model.applying !== suggesting.id && (
-                  <Button
-                    plain
-                    key={`apply:${n}`}
-                    label="⇩ apply suggestion"
-                    onPress={() => actions.askApply(suggesting.id)}
-                  />
-                )}
-                {suggesting !== undefined && model.canApply && model.applying === suggesting.id && (
-                  <Button
-                    plain
-                    key={`apply-yes:${n}`}
-                    // The words on the button are the pane's own: nothing a
-                    // commenter wrote is part of what is pressed.
-                    label="yes, write it to my file"
-                    onPress={() => actions.applySuggestion(suggesting.id)}
-                  />
-                )}
-                {suggesting !== undefined && model.canApply && model.applying === suggesting.id && (
-                  <Button plain key={`apply-no:${n}`} label="no" onPress={() => actions.askApply('')} />
                 )}
                 {canSettle && (
                   <Button
