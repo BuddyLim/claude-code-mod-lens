@@ -5,6 +5,8 @@ import {
   forgeOf,
   parseRequest,
   postComment,
+  postGeneral,
+  quoteOf,
   remoteParts,
   repoPrefix,
   resolveRequest,
@@ -793,4 +795,25 @@ test('the prefix is the sub-folder the commands run in', async () => {
   expect(await repoPrefix(fake({ 'git rev-parse --show-prefix': ok('frontend/src/\n') }).run)).toBe('frontend/src/')
   expect(await repoPrefix(fake({ 'git rev-parse --show-prefix': ok('\n') }).run)).toBe('')
   expect(await repoPrefix(fake({}).run)).toBe('')
+})
+
+test('an answer in the conversation quotes what it answers, and is posted as a comment of its own', async () => {
+  expect(quoteOf({ body: 'first line\n\nsecond line\n' })).toBe('> first line\n>\n> second line\n\n')
+
+  const body = `${quoteOf({ body: 'why 12?' })}it is the least a subject needs`
+  const { run, asked } = fake({
+    [GITHUB]: ok('https://github.com/acme/app.git\n'),
+    [`${GH} -X POST repos/acme/app/issues/12/comments -f body=${body}`]: ok(
+      JSON.stringify({ id: 77, user: { login: 'me' }, body, created_at: '2026-10-10T00:00:00Z' }),
+    ),
+  })
+
+  expect(await postGeneral(run, '#12', body)).toEqual({
+    comment: { id: 'issue-77', path: '', line: 0, author: 'me', body, when: '2026-10-10T00:00:00Z' },
+  })
+  expect(asked.length).toBe(2)
+  // Nothing is asked of the forge for an empty comment.
+  expect(await postGeneral(fake({}).run, '#12', '  ')).toEqual({
+    error: 'Write something before posting the comment',
+  })
 })

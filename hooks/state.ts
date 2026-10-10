@@ -65,6 +65,8 @@ export const NO_VIEW: View = {
   diffBase: { path: '', base: '', name: '' },
   hidesResolved: false,
   isReviewing: false,
+  talkOpen: '',
+  talkReply: '',
   isPreview: true,
   isFinding: false,
   find: '',

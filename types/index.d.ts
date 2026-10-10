@@ -134,6 +134,11 @@ export type View = {
   // whether the file tree's box for submitting a review is open.
   hidesResolved: boolean
   isReviewing: boolean
+  // The conversation in the file tree: the comment opened in full ('' for
+  // none), and what is being typed ('' nothing, 'new' a comment of its own,
+  // else the id of the comment an answer quotes).
+  talkOpen: string
+  talkReply: string
   // The first comment of the thread being answered, by its id; '' while the
   // comment being typed starts a thread of its own.
   replyTo: string

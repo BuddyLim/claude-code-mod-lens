@@ -1168,6 +1168,66 @@ export const resolveThread = async (
   return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'comment on')
 }
 
+// A comment as a quotation, the way a forge's own "quote reply" starts an
+// answer: each of its lines after a ">", then a clear line for what follows.
+export const quoteOf = (one: Pick<Comment, 'body'>): string =>
+  `${one.body
+    .trim()
+    .split('\n')
+    .map(line => (line.trim() === '' ? '>' : `> ${line}`))
+    .join('\n')}\n\n`
+
+// Adds a comment to the request's conversation: one on the request as a
+// whole, on no line. Neither forge threads these on a pull request's own
+// page (GitHub not at all), so an answer to one is a new comment that quotes
+// it (see `quoteOf`).
+export const postGeneral = async (
+  run: Run,
+  typed: string,
+  body: string,
+): Promise<{ comment: Comment } | { error: string }> => {
+  if (body.trim() === '') {
+    return { error: 'Write something before posting the comment' }
+  }
+
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place
+  }
+
+  const posted = await call(
+    run,
+    place.forge === 'gitlab'
+      ? glab(place, '-X', 'POST', `${gitlabRequest(place)}/notes`, '-f', `body=${body}`)
+      : gh(place, '-X', 'POST', `repos/${place.repo}/issues/${place.number}/comments`, '-f', `body=${body}`),
+  )
+
+  if (posted.exitCode !== 0) {
+    return { error: whyFailed(place, posted, 'comment on') }
+  }
+
+  try {
+    const one = record(JSON.parse(posted.stdout))
+
+    return {
+      comment:
+        place.forge === 'gitlab'
+          ? {
+              id: named(one.id),
+              path: '',
+              line: 0,
+              author: text(record(one.author).username) || 'ghost',
+              body: typeof one.body === 'string' ? one.body : body,
+              when: text(one.created_at),
+            }
+          : fromGithubGeneral(one, 'issue'),
+    }
+  } catch {
+    return { error: `The comment may have been posted on ${place.label}, but its answer could not be read: reload to check` }
+  }
+}
+
 // Submits a review of the request: an approval, a request for changes, or a
 // comment, with a summary. Answers '' when the forge took it, else why not.
 export const submitReview = async (

@@ -41,6 +41,8 @@ const OTHER_FILES = 100
 const LIST_LIMIT = 300
 // How many of the conversation's latest comments are listed.
 const CONVERSATION_ROWS = 15
+// The most lines of one of them shown when it is opened.
+const TALK_LINES = 40
 // How far an arrow moves an opened stash's body.
 const BODY_STEP = 8
 
@@ -106,6 +108,13 @@ export type TreeModel = {
   // review sent or dropped, so its field starts empty.
   isReviewing: boolean
   reviewRound: number
+  // The conversation: the comment opened in full ('' for none); what is
+  // being typed ('' nothing, 'new' a comment of its own, else the id of the
+  // comment an answer quotes); and a number that changes with each comment
+  // sent or dropped, so the field starts empty.
+  talkOpen: string
+  talkReply: string
+  talkRound: number
   // The stash opened ('' for none), what it holds once that is read, and the
   // first line of its body in view.
   selected: string
@@ -122,6 +131,12 @@ export type TreeActions = {
   // Opens a file of the branch's request on what the request changes in it.
   openRequestFile: (path: string) => void
   toggleReviewing: () => void
+  // The conversation: opens a comment in full (or closes it, with ''),
+  // opens the box to write one (see `TreeModel.talkReply`), and posts it.
+  openTalk: (id: string) => void
+  writeTalk: (id: string) => void
+  typeTalk: (text: string) => void
+  postTalk: (entered?: string) => void
   typeReview: (text: string) => void
   submitReview: (verdict: 'approve' | 'request-changes' | 'comment', entered?: string) => void
   // Checks every file of every project, changed or not.
@@ -404,6 +419,10 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
   // their open-or-closed state apart from the same folders above.
   const asked = model.request
   const requested = asked?.files ?? []
+  // Whether there is a request to say something on, and the comment an
+  // answer being typed quotes.
+  const canTalk = shell.reviewing !== ''
+  const quoted = comments.find(one => one.id === model.talkReply && one.path === '')
   // Whether the conversation is drawn as part of the request's section.
   const isInSection = asked !== undefined && requested.length > 0
   const requestStatus = new Map(requested.map(one => [one.path, one.status]))
@@ -865,19 +884,101 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
       {/* Standing alone, it has a clear row above it and below it. */}
       {comments.some(one => one.line === 0) && !isInSection && <Text> </Text>}
       {comments.some(one => one.line === 0) && (
-        <Text bold={!isInSection} dimColor={isInSection}>
-          {isInSection ? '  ' : ''}Conversation ({comments.filter(one => one.line === 0).length})
-        </Text>
+        <Box columnGap={2}>
+          <Text bold={!isInSection} dimColor={isInSection}>
+            {isInSection ? '  ' : ''}Conversation ({comments.filter(one => one.line === 0).length})
+          </Text>
+          {canTalk && (
+            <Button
+              plain
+              key="talk-new"
+              hotkey="o"
+              label={model.talkReply === 'new' ? 'close' : 'comment'}
+              onPress={() => actions.writeTalk(model.talkReply === 'new' ? '' : 'new')}
+            />
+          )}
+          <Text dimColor>press a name to read it all</Text>
+        </Box>
+      )}
+      {/* The box a comment on the request as a whole is typed in: a new one,
+          or an answer that starts by quoting the comment it answers. Nothing
+          is sent until Enter or its button. */}
+      {canTalk && Input !== undefined && model.talkReply !== '' && (
+        <Box flexDirection="column" borderStyle="round" borderColor={COMMENT_COLOR} paddingX={1}>
+          {quoted !== undefined && (
+            <Text dimColor wrap="truncate-end">
+              &gt; {quoted.author}: {quoted.body.replace(/\s+/g, ' ')}
+            </Text>
+          )}
+          <Input
+            key={`talk-text:${model.talkRound}:${model.talkReply}`}
+            label={quoted === undefined ? 'comment' : 'reply'}
+            placeholder={
+              quoted === undefined
+                ? 'a comment on the request as a whole'
+                : `your answer to ${quoted.author}; their comment is quoted above it`
+            }
+            submitLabel="post"
+            autoFocus
+            onInput={actions.typeTalk}
+            onSubmit={value => actions.postTalk(value)}
+          />
+          <Box columnGap={2}>
+            <Button key="talk-post" variant="primary" label="post" onPress={() => actions.postTalk()} />
+            <Button key="talk-cancel" label="cancel" onPress={() => actions.writeTalk('')} />
+          </Box>
+        </Box>
       )}
       {comments
         .filter(one => one.line === 0)
         .slice(-CONVERSATION_ROWS)
         .map(one =>
           one.path === '' ? (
-            <Text wrap="truncate-end">
-              {isInSection ? '  ' : ''}
-              {talkIcon(one)} {said(one)}
-            </Text>
+            // A comment on the request as a whole: its mark in the comments'
+            // colour, and its author's name opens it in full, with a way to
+            // answer it.
+            <Box flexDirection="column">
+              <Box height={1} overflow="hidden">
+                <Box flexShrink={0}>
+                  <Text color={COMMENT_COLOR}>
+                    {isInSection ? '  ' : ''}
+                    {talkIcon(one)}{' '}
+                  </Text>
+                  <Button
+                    plain
+                    key={`talk-open:${one.id}`}
+                    label={one.author}
+                    onPress={() => actions.openTalk(model.talkOpen === one.id ? '' : one.id)}
+                  />
+                </Box>
+                <Text dimColor={model.talkOpen === one.id} wrap="truncate-end">
+                  {' '}
+                  {model.talkOpen === one.id
+                    ? `· ${one.when.slice(0, 10)}`
+                    : `: ${one.body.replace(/\s+/g, ' ')}`}
+                </Text>
+              </Box>
+              {model.talkOpen === one.id &&
+                wrapText(one.body.trim(), Math.max(20, shell.columns - 6))
+                  .slice(0, TALK_LINES)
+                  .map(line => (
+                    <Text wrap="truncate-end">
+                      {isInSection ? '  ' : ''}
+                      <Text color={COMMENT_COLOR}>┃</Text> {line === '' ? ' ' : line}
+                    </Text>
+                  ))}
+              {model.talkOpen === one.id && canTalk && (
+                <Box columnGap={2} marginLeft={isInSection ? 4 : 2}>
+                  <Button
+                    plain
+                    key={`talk-quote:${one.id}`}
+                    label="quote reply"
+                    onPress={() => actions.writeTalk(one.id)}
+                  />
+                  <Button plain key={`talk-close:${one.id}`} label="close" onPress={() => actions.openTalk('')} />
+                </Box>
+              )}
+            </Box>
           ) : (
             // A comment on a file names it, and the name opens the file.
             <Box height={1} overflow="hidden">

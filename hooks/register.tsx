@@ -46,6 +46,8 @@ import {
   fetchComments,
   parseRequest,
   postComment,
+  postGeneral,
+  quoteOf,
   listRequests,
   replyComment,
   requestOfBranch,
@@ -168,6 +170,9 @@ let commentRound = 0
 // The same for the review being written in the file tree's box.
 let reviewDraft = ''
 let reviewRound = 0
+// And for the comment on the request as a whole being written there.
+let talkDraft = ''
+let talkRound = 0
 
 // How the language-server bridge runs its commands, made by `serverRun` from
 // the first handle that needs it.
@@ -1377,6 +1382,44 @@ const settleThread = async (
 }
 
 // Submits a review of the request under review, and says how it went.
+// Posts a comment on the request as a whole. `quoted` is the comment it
+// answers, which it then starts by quoting: neither forge threads these, so
+// that is how an answer says what it is to.
+const sendTalk = async (
+  $: EngineInterface,
+  repo: string,
+  typed: string,
+  quoted: Comment | undefined,
+  body: string,
+): Promise<void> => {
+  if (body.trim() === '') {
+    $.ui.toast('Type the comment first')
+
+    return
+  }
+
+  const answer = await postGeneral(
+    forgeRun(runOf($), repo),
+    typed,
+    `${quoted === undefined ? '' : quoteOf(quoted)}${body.trim()}`,
+  )
+
+  if ('error' in answer) {
+    $.ui.toast(answer.error, { timeoutMs: 10_000 })
+
+    return
+  }
+
+  if (commentsCache !== undefined && commentsCache.key === `${repo}\n${typed}`) {
+    commentsCache.comments.push(answer.comment)
+  }
+
+  talkDraft = ''
+  talkRound += 1
+  $.ui.toast(quoted === undefined ? 'Comment posted' : `Replied to ${quoted.author}`)
+  await update($, view, (last): View => ({ ...last, talkReply: '' }))
+}
+
 const sendReview = async (
   $: EngineInterface,
   repo: string,
@@ -1556,6 +1599,36 @@ export const register: Register = (on, options) => {
     }
 
     return written
+  })
+
+  // PROBE, temporary: can this mod draw inside the parked mod's pane? It adds
+  // one row and one button above whatever parked drew, and notes that it ran.
+  on('ui.render', { component: 'Pane', requestId: 'parked' }, async ($, e, next) => {
+    const drawn = await next(e)
+
+    if (e.surface === 'mobile') {
+      return drawn
+    }
+
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const note = '/private/tmp/claude-501/-Users-limkuangtar/1bc240a9-553a-4558-b97a-56f23b639afe/scratchpad/lens-probe.log'
+    void $.fs.write(note, `render hook ran at ${Date.now()}\n`).catch(() => undefined)
+
+    return (
+      <Box flexDirection="column">
+        <Text color="warning">▶ LENS PROBE: this row is drawn by lens, inside parked's pane</Text>
+        <Button
+          key="lens-probe"
+          label="z: lens probe button"
+          hotkey="z"
+          onPress={() => {
+            void $.fs.write(note, `button pressed at ${Date.now()}\n`).catch(() => undefined)
+            $.ui.toast('Lens probe: lens got the press')
+          }}
+        />
+        {drawn}
+      </Box>
+    )
   })
 
   // The ledger mod asks the same way, for the place of a finding.
@@ -2183,6 +2256,9 @@ export const register: Register = (on, options) => {
             stashes: found.stashes,
             isReviewing: now.isReviewing,
             reviewRound,
+            talkOpen: now.talkOpen,
+            talkReply: now.talkReply,
+            talkRound,
             request:
               ofBranch === undefined || ofBranch.files.length === 0
                 ? undefined
@@ -2400,6 +2476,23 @@ export const register: Register = (on, options) => {
               set((last): View => ({ ...last, screen: 'changes', pageRows: PAGE_STEP }))
             },
             toggleReviewed: markReviewed,
+            openTalk: id => set((last): View => ({ ...last, talkOpen: id })),
+            writeTalk: id => {
+              talkDraft = ''
+              talkRound += 1
+              set((last): View => ({ ...last, talkReply: id }))
+            },
+            typeTalk: text => {
+              talkDraft = text
+            },
+            postTalk: entered =>
+              void sendTalk(
+                $,
+                repo,
+                requestTyped,
+                comments.find(one => one.id === now.talkReply && one.path === ''),
+                entered ?? talkDraft,
+              ),
           },
         ),
       )

@@ -18,6 +18,8 @@ const HELP: Record<View['screen'], [heading: string, rows: [key: string, what: s
         ['c', 'list the threads of the request under review'],
         ['v', 'submit a review of it: approve, request changes or comment'],
         ['x', 'stop comparing (while a comparison is on)'],
+        ['o', 'write a comment on the request as a whole'],
+        ['press a name', 'in Conversation: read that comment in full, and quote-reply to it'],
         ['p', 'list the open pull or merge requests, yours first, to review one'],
         ['d', 'every change on one page, to scroll through'],
         ['☐ on a request', 'tick a file as reviewed; it stays ticked between sessions'],
