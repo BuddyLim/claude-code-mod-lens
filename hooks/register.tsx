@@ -282,8 +282,11 @@ let pageColors: { key: string; lines: Map<string, Span[][]>; asked: Set<string> 
   lines: new Map(),
   asked: new Set(),
 }
-// How many files are highlighted at a time.
-const COLORED_AT_ONCE = 6
+// How many files are highlighted at a time, and how many times one is asked
+// for before it is left plain; `colorTries` counts them, by page and path.
+const COLORED_AT_ONCE = 3
+const COLOR_TRIES = 3
+const colorTries = new Map<string, number>()
 // The changes screen's window as last drawn, for the scroll hook.
 let pageWindow: ChangesWindow = { maxTop: 0 }
 
@@ -1030,9 +1033,19 @@ const colorPage = async (
           target,
         )
 
-        // Where the highlighter did not run there are no colours to add.
+        // Where the highlighter did not run there are no colours to add. It
+        // may only have been slow to start (its first run, or a scan under
+        // way beside it), so the file is asked for again a couple of times.
         if (note === '') {
           held.lines.set(path, lines)
+        } else {
+          const tries = (colorTries.get(`${key}\n${path}`) ?? 0) + 1
+
+          colorTries.set(`${key}\n${path}`, tries)
+
+          if (tries < COLOR_TRIES) {
+            held.asked.delete(path)
+          }
         }
       }),
     )
