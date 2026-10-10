@@ -2254,7 +2254,7 @@ export const register: Register = (on, options) => {
       }
 
       if (isOwn) {
-        return moreBelow(kit, tree, scroll.offset + scroll.bodyRows - 1, left > 0 ? `↓ ${left} more` : '')
+        return moreBelow(kit, tree, scroll.offset + scroll.bodyRows - 1, left > 0 ? `▼ ${left} more below` : '')
       }
 
       paneEstimate = rowsOf(tree as never, e.props.bodyColumns ?? 80)
@@ -2265,7 +2265,7 @@ export const register: Register = (on, options) => {
         kit,
         tree,
         scroll.offset + scroll.bodyRows - 1,
-        below <= 0 ? '' : isExact ? `↓ ${below} more` : '↓ more',
+        below <= 0 ? '' : isExact ? `▼ ${below} more below` : '▼ more below',
       )
     }
 
@@ -2276,6 +2276,29 @@ export const register: Register = (on, options) => {
     }
     const help = (): void => set(last => ({ ...last, isHelp: true }))
 
+      // A request has been pressed: its page is drawn at once, as it is
+      // while the forge is asked about it, so the bars that stand for it do
+      // not change shape when the request has been opened and is being read.
+      if (requestOpening !== '') {
+        const still = (): void => undefined
+
+        return framed(
+          overviewScreen(
+            kit,
+            {
+              shell,
+              label: `${requestOpening.startsWith('!') ? 'MR' : 'PR'} ${requestOpening}`,
+              overview: undefined,
+              refusal: '',
+              pictures: pictureCache,
+              now: await $.clock.now(),
+              asking: '',
+              isActing: false,
+            },
+            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, help: still },
+          ),
+        )
+      }
     if (now.isHelp) {
       return framed(
         helpScreen(kit, shell, now.screen, {
@@ -2540,29 +2563,6 @@ export const register: Register = (on, options) => {
     if (now.screen === 'requests') {
       const prefix = `${repo}\n`
 
-      // A request has been pressed: its page is drawn at once, as it is
-      // while the forge is asked about it, so the bars that stand for it do
-      // not change shape when the request has been opened and is being read.
-      if (requestOpening !== '') {
-        const still = (): void => undefined
-
-        return framed(
-          overviewScreen(
-            kit,
-            {
-              shell,
-              label: `${requestOpening.startsWith('!') ? 'MR' : 'PR'} ${requestOpening}`,
-              overview: undefined,
-              refusal: '',
-              pictures: pictureCache,
-              now: await $.clock.now(),
-              asking: '',
-              isActing: false,
-            },
-            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, help: still },
-          ),
-        )
-      }
 
       return framed(
         requestsScreen(
@@ -2611,11 +2611,14 @@ export const register: Register = (on, options) => {
               }
 
               requestOpening = typed
+              // What was read of it before is let go now, so it is asked
+              // for once, while it opens, and its page is not emptied again
+              // after it has been filled.
+              overviewCache = undefined
               set(nudged)
               void startCompare($, repo, '', typed)
                 .then(async () => {
                   if ((await read($, view)).requestTyped === typed) {
-                    overviewCache = undefined
                     await update($, view, (last): View => ({ ...last, screen: 'overview', overviewFrom: 'requests' }))
                   }
                 })

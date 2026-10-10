@@ -104,7 +104,7 @@ test('the file tree opens on a repo, and its keys answer', async ($, on) => {
   expect(await ui.find({ key: 'refresh' })).toBeDefined()
   expect(await ui.find({ key: 'requests' })).toBeDefined()
   // A tree that fits the pane has no mark of more below.
-  expect(await ui.find({ type: 'Text', text: /↓/ })).toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: /▼/ })).toBe(undefined)
   // The less-used keys are in the drawing while their box is folded.
   expect(await ui.find({ key: 'project' })).toBeDefined()
   await ui.unmount()
@@ -132,7 +132,7 @@ test('the file tree stays within a tree’s bounds on a very large change', asyn
   await ui.press({ key: 'layout' })
   await ui.drawn()
   // A list far longer than the pane says there is more below it.
-  expect(await ui.find({ type: 'Text', text: /↓ more/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /▼ more below/ })).toBeDefined()
   // And with every list long at once: what is new, and every tracked file.
   await ui.press({ key: 'browse' })
   await clock.advance(2000)
