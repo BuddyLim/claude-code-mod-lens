@@ -23,6 +23,7 @@ export type Kit = {
   Markdown: Elements['terminal']['Markdown'] | undefined
   Raster: Elements['terminal']['Raster'] | undefined
   Link: Elements['terminal']['Link'] | undefined
+  Image: Elements['terminal']['Image'] | undefined
 }
 
 export const kitOf = (table: ElementTable): Kit => ({
@@ -33,6 +34,7 @@ export const kitOf = (table: ElementTable): Kit => ({
   Markdown: 'Markdown' in table ? table.Markdown : undefined,
   Raster: 'Raster' in table ? table.Raster : undefined,
   Link: 'Link' in table ? table.Link : undefined,
+  Image: 'Image' in table ? table.Image : undefined,
 })
 
 // The changed files in one row of numbers: lines added and deleted across

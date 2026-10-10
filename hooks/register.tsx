@@ -39,7 +39,9 @@ import type { InlayHint, SemanticToken } from './lsp-types'
 import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
-import { plain, plainBlock, sampleOf } from './media'
+import { hostOf, mediaOf, plain, plainBlock, sampleOf } from './media'
+import type { Picture } from './pictures'
+import { PICTURES_SHOWN, fetchPicture, isFetched } from './pictures'
 import type { PatchFile } from './patch'
 import { CONTEXT, CONTEXTS, applyHunk, hunkMark, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
@@ -1019,6 +1021,30 @@ const loadMe = async ($: EngineInterface, repo: string): Promise<void> => {
 // (of which request, and which), and whether one is under way.
 let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
 let requestActing = false
+
+// The pictures of descriptions, by their address: fetched (the file that
+// holds each), being fetched, or not drawable. Held for the session, and
+// held to a size: the oldest go when it is passed.
+const pictureCache = new Map<string, Picture | 'loading' | 'none'>()
+const PICTURES_KEPT = 200
+
+// A plain name for the file a picture is kept in, from its address: the same
+// address is the same file, so it is fetched once.
+const pictureName = (url: string): string => {
+  let hash = 2166136261
+
+  for (const char of url) {
+    hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 16777619) >>> 0
+  }
+
+  if (pictureCache.size > PICTURES_KEPT) {
+    for (const old of [...pictureCache.keys()].slice(0, pictureCache.size - PICTURES_KEPT)) {
+      pictureCache.delete(old)
+    }
+  }
+
+  return `p-${hash.toString(16)}-${url.length}`
+}
 
 const loadOverview = async ($: EngineInterface, repo: string, typed: string): Promise<void> => {
   const key = `${repo}\n${typed}`
@@ -2243,6 +2269,23 @@ export const register: Register = (on, options) => {
         void loadOverview($, repo, requestTyped)
       }
 
+      // The description's first pictures are fetched once each, from the
+      // forge's own hosts alone, and drawn when they have come.
+      const forge = hostOf(held?.overview?.url ?? '')
+      const wantedPictures = mediaOf(held?.overview?.body ?? '')
+        .filter(one => one.kind === 'image' && isFetched(one.url, forge))
+        .slice(0, PICTURES_SHOWN)
+        .filter(one => !pictureCache.has(one.url))
+
+      for (const one of wantedPictures) {
+        pictureCache.set(one.url, 'loading')
+        void fetchPicture(runOf($), one.url, forge, pictureName(one.url)).then(picture => {
+          pictureCache.set(one.url, picture ?? 'none')
+
+          return update($, view, nudged)
+        })
+      }
+
       return framed(
         overviewScreen(
           kit,
@@ -2251,6 +2294,7 @@ export const register: Register = (on, options) => {
             label: requestLabel,
             overview: held?.overview,
             refusal: requestTyped === '' ? 'No request is under review' : (held?.refusal ?? ''),
+            pictures: pictureCache,
             now: await $.clock.now(),
             asking: requestAsked.key === key ? requestAsked.act : '',
             isActing: requestActing,
@@ -2262,14 +2306,22 @@ export const register: Register = (on, options) => {
                 void loadRequests($, repo)
               }
 
-              set((last): View => ({ ...last, screen: last.overviewFrom === 'requests' ? 'requests' : 'tree' }))
+              // Leaving the request's page this way, the tree is nobody's
+              // next step: it has nothing behind it to go back to.
+              set(
+                (last): View => ({
+                  ...last,
+                  screen: last.overviewFrom === 'requests' ? 'requests' : 'tree',
+                  codeFrom: 'tree',
+                }),
+              )
             },
             // On to the code: the files it changes, or every change on one page.
-            openFiles: () => set((last): View => ({ ...last, screen: 'tree' })),
+            openFiles: () => set((last): View => ({ ...last, screen: 'tree', codeFrom: 'overview' })),
             openChanges: () => {
               patchCache = undefined
               pageColors = { key: '', lines: new Map(), asked: new Set() }
-              set((last): View => ({ ...last, screen: 'changes', pageTop: 0 }))
+              set((last): View => ({ ...last, screen: 'changes', pageTop: 0, codeFrom: 'overview' }))
             },
             refresh: () => {
               overviewCache = undefined
@@ -2343,7 +2395,7 @@ export const register: Register = (on, options) => {
             now: await $.clock.now(),
           },
           {
-            back: () => set((last): View => ({ ...last, screen: 'tree' })),
+            back: () => set((last): View => ({ ...last, screen: 'tree', codeFrom: 'tree' })),
             refresh: () => {
               requestsCache = undefined
               void loadRequests($, repo)
@@ -2421,7 +2473,7 @@ export const register: Register = (on, options) => {
             isCommitting: now.pageCommitting && canStage,
           },
           {
-            back: () => set((last): View => ({ ...last, screen: 'tree' })),
+            back: () => set((last): View => ({ ...last, screen: last.codeFrom === 'overview' ? 'overview' : 'tree' })),
             refresh: () => {
               rescan()
               patchCache = undefined
@@ -2710,6 +2762,9 @@ export const register: Register = (on, options) => {
             shell,
             files: found.files.filter(one => isListed(one.path)),
             filter: now.filter,
+            // Where b goes back to, when the files were opened from the
+            // request's own page; '' for a tree that is nobody's next step.
+            backTo: now.codeFrom === 'overview' && requestTyped !== '' ? plain(requestLabel).slice(0, 40) : '',
             about:
               requestTyped === ''
                 ? undefined
@@ -2830,7 +2885,7 @@ export const register: Register = (on, options) => {
             openGraph: () => set((last): View => ({ ...last, screen: 'graph', backFile: '' })),
             stopComparing: () => {
               rescan()
-              set((last): View => ({ ...last, base: 'HEAD', target: '', baseWorktree: '' }))
+              set((last): View => ({ ...last, base: 'HEAD', target: '', baseWorktree: '', codeFrom: 'tree' }))
             },
             toggleMore: () => set(last => ({ ...last, isMore: !(last.isMore ?? false) })),
             help,
@@ -2958,6 +3013,9 @@ export const register: Register = (on, options) => {
               overviewCache = undefined
               set((last): View => ({ ...last, screen: 'overview', overviewFrom: 'tree' }))
             },
+            // Back to what the request is, where its files were opened from
+            // there: the overview as it was, which keeps where it came from.
+            backToOverview: () => set((last): View => ({ ...last, screen: 'overview' })),
             openRequests: () => {
               void loadRequests($, repo)
               set((last): View => ({ ...last, screen: 'requests' }))
@@ -2966,7 +3024,7 @@ export const register: Register = (on, options) => {
               // Read again each time it is opened: the files may have changed.
               patchCache = undefined
               pageColors = { key: '', lines: new Map(), asked: new Set() }
-              set((last): View => ({ ...last, screen: 'changes', pageTop: 0 }))
+              set((last): View => ({ ...last, screen: 'changes', pageTop: 0, codeFrom: 'tree' }))
             },
             toggleReviewed: markReviewed,
             openTalk: id => set((last): View => ({ ...last, talkOpen: id })),

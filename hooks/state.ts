@@ -71,6 +71,7 @@ export const NO_VIEW: View = {
   commentLine: 0,
   commentFrom: 0, commentOld: 0,
   overviewFrom: 'tree',
+  codeFrom: 'tree',
   filter: '',
   editing: '',
   deleting: '',

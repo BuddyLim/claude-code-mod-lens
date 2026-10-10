@@ -88,6 +88,9 @@ export type TreeModel = {
   about:
     | { label: string; title: string; lines: readonly string[]; isLoading: boolean; refusal: string }
     | undefined
+  // What b goes back to, as it is spoken of ("PR #12"), when the files were
+  // opened from the request's own page; '' when there is nothing behind.
+  backTo: string
   // What the lists are narrowed by ('' for nothing): only files whose path
   // holds it are in them.
   filter: string
@@ -202,6 +205,8 @@ export type TreeActions = {
   openChanges: () => void
   // Opens what the request under review is: its description, checks, reviews.
   openOverview: () => void
+  // Back to the request's own page, where the files were opened from it.
+  backToOverview: () => void
   // Ticks or unticks a file of the request under review as reviewed.
   toggleReviewed: (path: string) => void
 }
@@ -728,6 +733,10 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
       {statusLine(kit, shell)}
       {/* The row wraps in a narrow pane, so no key is pushed off its edge. */}
       <Box columnGap={2} flexWrap="wrap">
+        {/* Opened from a request's own page, the files go back to it. */}
+        {model.backTo !== '' && (
+          <Button plain key="back" hotkey="b" label={`back to ${model.backTo}`} onPress={actions.backToOverview} />
+        )}
         <Button plain key="refresh" hotkey="r" label="refresh" onPress={actions.refresh} />
         <Button
           plain

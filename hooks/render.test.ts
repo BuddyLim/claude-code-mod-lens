@@ -65,7 +65,7 @@ const host = (
     asked.push(line)
 
     const ran: Ran = hit !== undefined
-      ? { exitCode: 0, stdout: answers[hit] ?? '', stderr: '' }
+      ? { exitCode: 0, stdout: (answers[hit] ?? '').replace('{argv5}', e.argv[5] ?? ''), stderr: '' }
       : e.argv[0] === 'git'
         ? { exitCode: 0, stdout: '', stderr: '' }
         : { exitCode: 1, stdout: '', stderr: 'not answered' }
@@ -197,7 +197,7 @@ test('the page of every change lights rewritten words, and its jump keys move th
 test('the overview draws what a request says, where it stands and what it links to', async ($, on) => {
   const seen = {
     title: 'Add the thing',
-    body: '## What\n\nIt adds **the thing**.\n\n![a shot](https://example.com/shot.png)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+    body: '## What\n\nIt adds **the thing**.\n\n![a shot](https://github.com/user-attachments/assets/1111-aaaa)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
     author: { login: 'ann' },
     state: 'OPEN',
     isDraft: false,
@@ -226,6 +226,8 @@ test('the overview draws what a request says, where it stands and what it links 
     'pulls?state=open&head=': JSON.stringify([{ number: 12, title: 'Add the thing', base: { ref: 'main' }, html_url: 'https://github.com/acme/app/pull/12' }]),
     'gh pr view 12': JSON.stringify(seen),
     'gh api': '[]',
+    // A picture of the description, fetched: where it was put, and its size.
+    'lens-pictures': '/tmp/t/lens-pictures/{argv5}.png\n640 320\n',
   })
 
   await $.session.start({ cwd: REPO } as never)
@@ -248,6 +250,10 @@ test('the overview draws what a request says, where it stands and what it links 
   // The description is handed to the surface as markdown, and its picture is listed as a link.
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Pictures, videos and files \(1\)/ })).toBeDefined()
+  // The picture is the forge's own, so it was fetched, and it is drawn in
+  // place: a file the terminal reads, in cells that keep its shape.
+  await ui.drawn()
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
 
   // Merging is asked about first, and saying no does nothing.
   await ui.press({ key: 'act-merge' })
@@ -267,11 +273,19 @@ test('the overview draws what a request says, where it stands and what it links 
   await ui.press({ key: 'changes' })
   await ui.drawn()
   expect(await ui.find({ key: 'next-file' })).toBeDefined()
+  // Back from the code is back to what the request is, from either.
   await ui.press({ key: 'back' })
-  await ui.press({ key: 'overview' })
+  expect(await ui.find({ type: 'Text', text: /Where it stands/ })).toBeDefined()
   await ui.press({ key: 'files' })
   await ui.drawn()
   expect(await ui.find({ key: 'requests' })).toBeDefined()
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ type: 'Text', text: /Where it stands/ })).toBeDefined()
+  // And back from there is the file tree it was opened from, with nothing
+  // behind it to go back to.
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ key: 'requests' })).toBeDefined()
+  expect(await ui.find({ key: 'back' })).toBe(undefined)
   await ui.unmount()
 })
 

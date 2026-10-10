@@ -155,6 +155,9 @@ export type View = {
   commentOld: number
   // The screen the overview was opened from, where its back returns.
   overviewFrom: 'tree' | 'requests'
+  // Where a request's code (its files, or the page of every change) was
+  // opened from, and so where back returns: the overview, or the file tree.
+  codeFrom: 'tree' | 'overview'
   // What the file tree's lists are narrowed by: only files whose path holds
   // it are listed; '' lists them all.
   filter: string

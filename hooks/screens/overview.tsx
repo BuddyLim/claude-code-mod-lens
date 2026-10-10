@@ -7,6 +7,8 @@
 import { ageOf } from '../git'
 import type { Media } from '../media'
 import { hostOf, mediaOf } from '../media'
+import type { Picture } from '../pictures'
+import { cellsOf } from '../pictures'
 import type { Overview, RequestAct } from '../review'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
@@ -17,6 +19,8 @@ import { COMMIT_BOX, LINK_ICON, helpButton, statusLine } from './frame'
 const BODY_SHOWN = 40_000
 const BODY_PIECE = 8000
 const LISTED = 40
+// The most rows one picture takes.
+const PICTURE_ROWS = 24
 
 export type OverviewModel = {
   shell: Shell
@@ -28,6 +32,10 @@ export type OverviewModel = {
   refusal: string
   // The time now, in milliseconds, for how long ago each review was.
   now: number
+  // The description's pictures, by their address: fetched and ready to draw,
+  // still being fetched, or not one that is drawn (another site's, too big,
+  // no picture at all). One not here has not been asked for.
+  pictures: ReadonlyMap<string, Picture | 'loading' | 'none'>
   // The action being asked about before it is done ('' for none), and
   // whether one is under way.
   asking: RequestAct | ''
@@ -82,7 +90,7 @@ const YES: Record<RequestAct, string> = {
 }
 
 export const overviewScreen = (kit: Kit, model: OverviewModel, actions: OverviewActions) => {
-  const { Box, Button, Text, Markdown, Link } = kit
+  const { Box, Button, Text, Markdown, Link, Image } = kit
   const { shell, overview } = model
   const body = (overview?.body ?? '').trim()
   const media = mediaOf(body)
@@ -232,12 +240,38 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
           {/* A terminal draws no picture, video or document in place: each
               is a link that opens where it can be seen. */}
           {media.length > 0 && heading(`Pictures, videos and files (${media.length})`)}
-          {media.slice(0, LISTED).map(one => (
-            <Box height={1} overflow="hidden">
-              <Text dimColor>{MEDIA_WORD[one.kind].padEnd(8)}</Text>
-              {link(one.url, one.label)}
-            </Box>
-          ))}
+          {media.slice(0, LISTED).flatMap(one => {
+            const picture = model.pictures.get(one.url)
+            // A picture is drawn under its link where it has been fetched
+            // and the terminal draws pictures; its words stand in elsewhere.
+            const cells =
+              picture === undefined || picture === 'loading' || picture === 'none'
+                ? undefined
+                : cellsOf(picture, Math.max(8, shell.columns - 4), PICTURE_ROWS)
+
+            return [
+              <Box height={1} overflow="hidden">
+                <Text dimColor>{MEDIA_WORD[one.kind].padEnd(8)}</Text>
+                {link(one.url, one.label)}
+                {picture === 'loading' && <Text dimColor>  fetching…</Text>}
+              </Box>,
+              Image !== undefined && cells !== undefined && picture !== undefined && typeof picture === 'object' && (
+                <Box marginLeft={2} marginBottom={1}>
+                  <Image
+                    source={{ file: picture.file, format: 'png' }}
+                    columns={cells.columns}
+                    rows={cells.rows}
+                    alt={one.label === '' ? ' ' : one.label}
+                  />
+                </Box>
+              ),
+            ]
+          })}
+          {media.some(one => one.kind === 'video') && (
+            <Text dimColor wrap="truncate-end">
+              A video cannot be played here: its link opens it in the browser.
+            </Text>
+          )}
 
           {overview.commits.length > 0 && heading(`Commits (${overview.commits.length})`)}
           {overview.commits.slice(-LISTED).map(commit => (
