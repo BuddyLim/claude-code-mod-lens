@@ -20,7 +20,7 @@ import { minimapCells } from '../minimap'
 import { markSpans, withInlays } from '../parts'
 import { isFinding as isLedgerFinding } from '../ledger'
 import type { Comment } from '../review'
-import { draftId, isDraft } from '../review'
+import { draftId, isDraft, suggestedLines } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
 import { clamp, findMatches, shortRef, wrapText } from '../text'
 import { iconOf } from '../tree'
@@ -127,6 +127,15 @@ export type FileModel = {
   // The first line of the comment being typed when it is on several (then
   // `commentLine` is the last); 0 when it is on one.
   commentFrom: number
+  // Who the person is on the forge ('' when not known), so their own
+  // comments can be changed; the comment being changed and the one asked
+  // about before deleting, by id; what the field starts with while one is
+  // being changed; and whether a suggestion can be applied to this file.
+  me: string
+  editing: string
+  deleting: string
+  draft: string
+  canApply: boolean
   // The thread being answered, by its first comment's id; '' for none.
   replyTo: string
   // What the diff is against, by name, when that is not the comparison's
@@ -221,7 +230,19 @@ export type FileActions = {
   typeComment: (text: string) => void
   // `isNow` sends a comment of its own at once, in place of leaving it to
   // wait for the review.
-  postComment: (entered?: string, isNow?: boolean) => void
+  // `how` says what becomes of a comment of its own: it waits for the review
+  // (the default), goes at once, or waits as a suggested replacement for its
+  // lines. While a comment is being changed, it saves that.
+  postComment: (entered?: string, how?: 'review' | 'now' | 'suggest') => void
+  // A comment of the person's own, by its id: opened in the field to be
+  // changed (under line `n`), asked about before it is deleted ('' takes the
+  // question away), and deleted. And any comment given a thumbs-up.
+  editComment: (id: string, n: number) => void
+  askDelete: (id: string) => void
+  deleteComment: (id: string) => void
+  likeComment: (id: string) => void
+  // Puts the replacement a comment suggests into the file.
+  applySuggestion: (id: string) => void
   // Drops comments written for the review and not sent, by their ids.
   discardDrafts: (ids: readonly string[]) => void
 }
@@ -589,6 +610,11 @@ export const fileScreen = (
 
       const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
       const scope = isLedger ? ':ledger' : ''
+      // The thread's first comment: whether it is the person's own, and the
+      // first of the thread's comments that suggests a replacement.
+      const first = group[0]
+      const isMine = !isLedger && model.me !== '' && first?.author === model.me
+      const suggesting = isLedger ? undefined : group.find(one => suggestedLines(one.body) !== undefined)
 
     for (const [at, one] of (model.isExpanded ? group : group.slice(0, 1)).entries()) {
       // A finding stands by itself; an answer in a thread is set in.
@@ -669,6 +695,37 @@ export const fileScreen = (
                 {!isLedger && (
                   <Button plain key={`reply:${n}`} label="↩ reply" onPress={() => actions.replyOn(n)} />
                 )}
+                {!isLedger && first !== undefined && (
+                  <Button plain key={`like:${n}`} label="+1" onPress={() => actions.likeComment(first.id)} />
+                )}
+                {/* A comment of the person's own can be changed or removed;
+                    removing is asked about first. */}
+                {isMine && first !== undefined && model.deleting !== first.id && (
+                  <Button plain key={`edit:${n}`} label="✎ edit" onPress={() => actions.editComment(first.id, n)} />
+                )}
+                {isMine && first !== undefined && model.deleting !== first.id && (
+                  <Button plain key={`delete:${n}`} label="✕ delete" onPress={() => actions.askDelete(first.id)} />
+                )}
+                {isMine && first !== undefined && model.deleting === first.id && (
+                  <Button
+                    plain
+                    key={`delete-yes:${n}`}
+                    label="delete it for good?  yes"
+                    onPress={() => actions.deleteComment(first.id)}
+                  />
+                )}
+                {isMine && first !== undefined && model.deleting === first.id && (
+                  <Button plain key={`delete-no:${n}`} label="no" onPress={() => actions.askDelete('')} />
+                )}
+                {/* A suggested replacement is put into the person's own file. */}
+                {suggesting !== undefined && model.canApply && (
+                  <Button
+                    plain
+                    key={`apply:${n}`}
+                    label="⇩ apply suggestion"
+                    onPress={() => actions.applySuggestion(suggesting.id)}
+                  />
+                )}
                 {canSettle && (
                   <Button
                     plain
@@ -700,6 +757,8 @@ export const fileScreen = (
     const writeHeight = isWriting ? 4 : 0
     // The lines a comment being typed is on, when it is on more than one.
     const isRange = model.commentFrom > 0 && model.commentFrom < n
+    // Whether the field holds a comment of the person's own, being changed.
+    const isEditing = model.editing !== '' && isWriting
     const answered = model.replyTo === '' ? undefined : forgeTalk[0]
     const writeRows =
       isWriting && Input !== undefined
@@ -718,13 +777,17 @@ export const fileScreen = (
                 <Input
                   key={`comment-text:${model.commentRound}`}
                   label={
-                    answered !== undefined
-                      ? `reply to ${answered.author}`
-                      : isRange
-                        ? `comment on lines ${model.commentFrom}–${n}`
-                        : `comment on line ${n}`
+                    isEditing
+                      ? 'edit your comment'
+                      : answered !== undefined
+                        ? `reply to ${answered.author}`
+                        : isRange
+                          ? `comment on lines ${model.commentFrom}–${n}`
+                          : `comment on line ${n}`
                   }
-                  placeholder="what to say, then Enter"
+                  // A comment being changed starts as what it said.
+                  {...(isEditing ? { value: model.draft } : {})}
+                  placeholder="what to say, then Enter; \n starts a new line"
                   submitLabel="post"
                   autoFocus
                   onInput={actions.typeComment}
@@ -734,7 +797,9 @@ export const fileScreen = (
               <Box height={1} overflow="hidden" columnGap={2}>
                 {/* An answer is posted at once. A comment of its own waits for
                     the review (Enter does that too), or goes now. */}
-                {answered !== undefined ? (
+                {isEditing ? (
+                  <Button key="comment-post" variant="primary" label="save" onPress={() => actions.postComment()} />
+                ) : answered !== undefined ? (
                   <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
                 ) : (
                   [
@@ -744,7 +809,14 @@ export const fileScreen = (
                       label="add to review"
                       onPress={() => actions.postComment()}
                     />,
-                    <Button key="comment-now" label="post now" onPress={() => actions.postComment(undefined, true)} />,
+                    // What is typed, offered as a replacement for the lines
+                    // the comment is on: the forge shows a way to apply it.
+                    <Button
+                      key="comment-suggest"
+                      label="suggest as change"
+                      onPress={() => actions.postComment(undefined, 'suggest')}
+                    />,
+                    <Button key="comment-now" label="post now" onPress={() => actions.postComment(undefined, 'now')} />,
                   ]
                 )}
                 <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
@@ -1405,7 +1477,7 @@ export const fileScreen = (
                 label="add to review"
                 onPress={() => actions.postComment()}
               />
-              <Button key="comment-file-now" label="post now" onPress={() => actions.postComment(undefined, true)} />
+              <Button key="comment-file-now" label="post now" onPress={() => actions.postComment(undefined, 'now')} />
               <Button key="comment-file-cancel" label="cancel" onPress={actions.cancelComment} />
             </Box>
           </Box>

@@ -12,6 +12,11 @@ import {
   repoPrefix,
   resolveRequest,
   submitDrafted,
+  changeComment,
+  fold,
+  suggestedLines,
+  suggestionOf,
+  unfold,
 } from './review'
 import type { Run } from './review'
 
@@ -639,6 +644,46 @@ test('a review goes to GitHub with the comments written for it, as one call', as
   const refusing: Run = async argv => (argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : failed('HTTP 422'))
 
   expect((await submitDrafted(refusing, '12', 'comment', 'x', { drafts, commit: 'f'.repeat(40), prefix: '' })).sent).toEqual([])
+})
+
+test('a comment typed on one line is sent on several, and a suggestion is read back', async () => {
+  expect(unfold('first\\nsecond')).toBe('first\nsecond')
+  expect(fold('first\r\nsecond\nthird')).toBe('first\\nsecond\\nthird')
+  expect(unfold(fold('a\nb'))).toBe('a\nb')
+  expect(suggestionOf('const limit = 12\\nconst more = 1')).toBe('```suggestion\nconst limit = 12\nconst more = 1\n```')
+  expect(suggestedLines('Try this:\n```suggestion\nconst limit = 12\n  const more = 1\n```\nthanks')).toEqual([
+    'const limit = 12',
+    '  const more = 1',
+  ])
+  // A block that suggests removing its lines is no lines at all.
+  expect(suggestedLines('```suggestion\n```')).toEqual([''])
+  expect(suggestedLines('no block here')).toBe(undefined)
+})
+
+test('a comment of your own is changed, removed and liked where the forge keeps it', async () => {
+  const asked: string[] = []
+  const run: Run = async argv => {
+    asked.push(argv.join(' '))
+
+    return argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : ok('{}')
+  }
+  const sent = () => asked.filter(line => line.startsWith('gh ')).pop()
+
+  expect(await changeComment(run, '12', { id: '77' }, { edit: 'better' })).toBe('')
+  expect(sent()).toBe(`${GH} -X PATCH repos/acme/app/pulls/comments/77 -f body=better`)
+  expect(await changeComment(run, '12', { id: 'issue-88' }, 'delete')).toBe('')
+  expect(sent()).toBe(`${GH} -X DELETE repos/acme/app/issues/comments/88`)
+  expect(await changeComment(run, '12', { id: '77' }, 'like')).toBe('')
+  expect(sent()).toBe(`${GH} -X POST repos/acme/app/pulls/comments/77/reactions -f content=+1`)
+  // A review's summary, a ledger finding and an empty edit are not sent at all.
+  asked.length = 0
+  expect(await changeComment(run, '12', { id: 'review-5' }, 'delete')).toBe(
+    'That is not a comment the forge lets be changed from here',
+  )
+  expect(await changeComment(run, '12', { id: '77' }, { edit: '  ' })).toBe(
+    'A comment cannot be left empty: delete it instead',
+  )
+  expect(asked.filter(line => line.startsWith('gh '))).toEqual([])
 })
 
 test('a GitHub comment on several lines names the first of them too', async () => {

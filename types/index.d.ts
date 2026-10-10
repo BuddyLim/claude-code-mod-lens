@@ -139,6 +139,10 @@ export type View = {
   // The first line of the comment being typed when it is on several lines
   // (`commentLine` is then the last); 0 when it is on one.
   commentFrom: number
+  // The comment of the person's own being changed in the field, and the one
+  // being asked about before it is deleted, by id; '' for none.
+  editing: string
+  deleting: string
   // A working-tree file whose diff is read against a commit other than
   // `base`: a file of the checked-out branch's request, against where the
   // request forked from its target. `path` '' is none.

@@ -66,6 +66,8 @@ export const NO_VIEW: View = {
   isCommenting: false,
   commentLine: 0,
   commentFrom: 0,
+  editing: '',
+  deleting: '',
   replyTo: '',
   diffBase: { path: '', base: '', name: '' },
   hidesResolved: false,

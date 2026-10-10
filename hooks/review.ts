@@ -1292,6 +1292,104 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
   }
 }
 
+// A comment's text as it is sent, from a field that holds one line: the two
+// characters `\n` typed there start a new line. And the other way, to put a
+// comment back in the field to be edited.
+export const unfold = (typed: string): string => typed.replace(/\\n/g, '\n')
+export const fold = (body: string): string => body.replace(/\r?\n/g, '\\n')
+
+// What was typed as a suggested replacement for the lines a comment is on,
+// in the form the forges read as one: a block they offer to apply.
+export const suggestionOf = (typed: string): string => `\`\`\`suggestion\n${unfold(typed)}\n\`\`\``
+
+// The replacement a comment suggests for its lines, when it suggests one:
+// the lines of its first `suggestion` block.
+export const suggestedLines = (body: string): string[] | undefined => {
+  const block = /```suggestion[^\n]*\n([\s\S]*?)\n?```/.exec(body.replace(/\r\n/g, '\n'))
+
+  return block === null ? undefined : (block[1] ?? '').split('\n')
+}
+
+// Who is signed in to the forge's CLI, by the name comments carry; '' where
+// the forge cannot be asked.
+export const whoAmI = async (run: Run): Promise<string> => {
+  const place = await locate(run, '1')
+
+  if ('error' in place) {
+    return ''
+  }
+
+  const seen = await call(run, place.forge === 'gitlab' ? glab(place, 'user') : gh(place, 'user'), 20_000)
+
+  try {
+    const user = record(JSON.parse(seen.stdout))
+
+    return seen.exitCode === 0 ? text(place.forge === 'gitlab' ? user.username : user.login) : ''
+  } catch {
+    return ''
+  }
+}
+
+// Where the forge keeps a comment, to change it, remove it or react to it:
+// a comment on a line, one on the request as a whole (GitHub numbers the
+// two apart, and prefixes the second kind here), or a GitLab note.
+const commentAt = (place: Place, one: Pick<Comment, 'id' | 'thread'>): string | undefined => {
+  if (place.forge === 'gitlab') {
+    return /^\d+$/.test(one.id)
+      ? (one.thread ?? '') !== ''
+        ? `${gitlabRequest(place)}/discussions/${one.thread}/notes/${one.id}`
+        : `${gitlabRequest(place)}/notes/${one.id}`
+      : undefined
+  }
+
+  const general = /^issue-(\d+)$/.exec(one.id)?.[1]
+
+  return general !== undefined
+    ? `repos/${place.repo}/issues/comments/${general}`
+    : /^\d+$/.test(one.id)
+      ? `repos/${place.repo}/pulls/comments/${one.id}`
+      : undefined
+}
+
+// Changes what a comment of the person's own says, removes it, or adds a
+// thumbs-up to it. Answers '' when the forge took it, else why not.
+export const changeComment = async (
+  run: Run,
+  typed: string,
+  one: Pick<Comment, 'id' | 'thread'>,
+  change: { edit: string } | 'delete' | 'like',
+): Promise<string> => {
+  if (typeof change === 'object' && change.edit.trim() === '') {
+    return 'A comment cannot be left empty: delete it instead'
+  }
+
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  const at = commentAt(place, one)
+
+  if (at === undefined) {
+    return 'That is not a comment the forge lets be changed from here'
+  }
+
+  const api = (...rest: string[]) => (place.forge === 'gitlab' ? glab(place, ...rest) : gh(place, ...rest))
+  const done = await call(
+    run,
+    change === 'delete'
+      ? api('-X', 'DELETE', at)
+      : change === 'like'
+        ? place.forge === 'gitlab'
+          ? api('-X', 'POST', `${at}/award_emoji`, '-f', 'name=thumbsup')
+          : api('-X', 'POST', `${at}/reactions`, '-f', 'content=+1')
+        : api('-X', place.forge === 'gitlab' ? 'PUT' : 'PATCH', at, '-f', `body=${change.edit}`),
+  )
+
+  return done.exitCode === 0 ? '' : whyFailed(place, done, 'comment on')
+}
+
 // What can be done to a request as a whole, from the pane.
 export type RequestAct = 'merge' | 'squash' | 'rebase' | 'close' | 'ready' | 'checkout'
 

@@ -44,6 +44,12 @@ import type { PatchFile } from './patch'
 import { CONTEXT, CONTEXTS, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
 import {
+  changeComment,
+  fold,
+  suggestedLines,
+  suggestionOf,
+  unfold,
+  whoAmI,
   actOnRequest,
   readOverview,
   draftComment,
@@ -987,6 +993,16 @@ const findBranchRequest = async ($: EngineInterface, repo: string): Promise<stri
 // did not. Written by `loadOverview`, when the overview screen opens.
 let overviewCache: { key: string; overview: Overview | undefined; refusal: string } | undefined
 let overviewWanted: string | undefined
+// Who is signed in to the forge for a repo, by the name comments carry: read
+// once for each, by `loadMe`, so the person's own comments can be told.
+let meCache: { repo: string; me: string } | undefined
+let meWanted = ''
+
+const loadMe = async ($: EngineInterface, repo: string): Promise<void> => {
+  meWanted = repo
+  meCache = { repo, me: await whoAmI(forgeRun(runOf($), repo)) }
+  await update($, view, nudged)
+}
 // The action on a request the overview is asking about before it is done
 // (of which request, and which), and whether one is under way.
 let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
@@ -1401,7 +1417,7 @@ const postReview = async (
     run,
     typed,
     { path: `${prefix}${path}`, line, commit: head, ...(from > 0 && from < line ? { startLine: from } : {}) },
-    body.trim(),
+    unfold(body.trim()),
   )
 
   if ('error' in answer) {
@@ -1440,7 +1456,7 @@ const postReply = async (
     return
   }
 
-  const answer = await replyComment(forgeRun(runOf($), repo), typed, root, body.trim())
+  const answer = await replyComment(forgeRun(runOf($), repo), typed, root, unfold(body.trim()))
 
   if ('error' in answer) {
     $.ui.toast(answer.error, { timeoutMs: 10_000 })
@@ -1457,7 +1473,7 @@ const postReply = async (
   commentDraft = ''
   commentRound += 1
   $.ui.toast(`Replied to ${root.author}`)
-  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, replyTo: '' }))
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
 }
 
 // Marks the thread `root` starts as resolved, or open again, on the forge.
@@ -1515,7 +1531,7 @@ const sendTalk = async (
   const answer = await postGeneral(
     forgeRun(runOf($), repo),
     typed,
-    `${quoted === undefined ? '' : quoteOf(quoted)}${body.trim()}`,
+    `${quoted === undefined ? '' : quoteOf(quoted)}${unfold(body.trim())}`,
   )
 
   if ('error' in answer) {
@@ -1551,7 +1567,7 @@ const sendReview = async (
     drafts.length === 0
       ? ['', '']
       : await Promise.all([git.fullHash(runOf($), repo, target === '' ? 'HEAD' : target), repoPrefix(run)])
-  const { refusal, sent } = await submitDrafted(run, typed, verdict, summary, { drafts, commit, prefix })
+  const { refusal, sent } = await submitDrafted(run, typed, verdict, unfold(summary), { drafts, commit, prefix })
 
   // What reached the forge is no longer waiting, whether or not the rest did.
   if (sent.length > 0) {
@@ -1913,6 +1929,12 @@ export const register: Register = (on, options) => {
       () => undefined,
     )
     const sessionRoot = await $.session.cwd().catch(() => '')
+    // With a request under review, who the person is on the forge is asked
+    // once, to tell their own comments by.
+    if (requestTyped !== '' && meCache?.repo !== repo && meWanted !== repo) {
+      void loadMe($, repo)
+    }
+
     // The comments written for the review and not sent yet are drawn where
     // they will sit, as comments of their own kind.
     const drafts = requestTyped === '' ? [] : (now.drafts[`${repo}\n${requestTyped}`] ?? [])
@@ -2873,6 +2895,13 @@ export const register: Register = (on, options) => {
         isCommenting,
         commentLine: now.commentLine,
         commentFrom: now.commentFrom,
+        me: meCache?.repo === repo ? meCache.me : '',
+        editing: now.editing,
+        deleting: now.deleting,
+        draft: now.editing === '' ? '' : commentDraft,
+        // A suggestion is applied to the person's own files: the working
+        // tree's, where the request is the branch checked out.
+        canApply: commit === '' && target === '',
         replyTo: now.replyTo,
         hidesResolved: now.hidesResolved,
         commentRound,
@@ -3092,7 +3121,7 @@ export const register: Register = (on, options) => {
         cancelComment: () => {
           commentDraft = ''
           commentRound += 1
-          set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '' }))
+          set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
         },
         commentOnFile: () => {
           commentDraft = ''
@@ -3103,6 +3132,116 @@ export const register: Register = (on, options) => {
             commentFrom: 0,
             replyTo: '',
           }))
+        },
+        // A comment of the person's own: put back in the field to be
+        // changed; asked about, then removed; and any comment given a
+        // thumbs-up.
+        editComment: (id, n) => {
+          commentDraft = fold(comments.find(one => one.id === id)?.body ?? '')
+          commentRound += 1
+          set(was => ({
+            ...was,
+            isCommenting: true,
+            editing: id,
+            deleting: '',
+            commentLine: n,
+            commentFrom: 0,
+            replyTo: '',
+          }))
+        },
+        askDelete: id => set(was => ({ ...was, deleting: id })),
+        deleteComment: id => {
+          const one = comments.find(held => held.id === id)
+
+          if (one === undefined || now.deleting !== id) {
+            return
+          }
+
+          void changeComment(forgeRun(runOf($), repo), requestTyped, one, 'delete').then(refusal => {
+            if (refusal !== '') {
+              $.ui.toast(refusal, { timeoutMs: 10_000 })
+            } else {
+              // What answered it goes from the pane with it; the forge keeps
+              // or drops those as it does.
+              if (commentsCache !== undefined) {
+                commentsCache.comments = commentsCache.comments.filter(
+                  held => held.id !== id && held.replyTo !== id,
+                )
+              }
+
+              $.ui.toast('Comment deleted')
+            }
+
+            set(was => ({ ...was, deleting: '' }))
+          })
+        },
+        likeComment: id => {
+          const one = comments.find(held => held.id === id)
+
+          if (one !== undefined) {
+            void changeComment(forgeRun(runOf($), repo), requestTyped, one, 'like').then(refusal =>
+              $.ui.toast(refusal === '' ? `👍 added to ${one.author}'s comment` : refusal, {
+                timeoutMs: refusal === '' ? 4000 : 10_000,
+              }),
+            )
+          }
+        },
+        // Puts a suggested replacement into the file: only where the file
+        // open is the working tree's, which is then the request's own
+        // branch. The lines the comment is on give way to the suggestion's.
+        applySuggestion: async id => {
+          const one = comments.find(held => held.id === id)
+          const lines = one === undefined ? undefined : suggestedLines(one.body)
+
+          if (one === undefined || lines === undefined) {
+            return
+          }
+
+          if (commit !== '' || target !== '') {
+            $.ui.toast('Check the request out first (overview, e): a suggestion is applied to your own files', {
+              timeoutMs: 8000,
+            })
+
+            return
+          }
+
+          const full = `${repo}/${file}`
+          const text = await $.fs.read(full).catch(() => undefined)
+
+          if (text === undefined) {
+            $.ui.toast(`${file} could not be read`)
+
+            return
+          }
+
+          const all = text.split('\n')
+          const first = (one.startLine ?? one.line) - 1
+
+          if (first < 0 || one.line > all.length) {
+            $.ui.toast('The lines that comment is on are not in the file as it stands now')
+
+            return
+          }
+
+          // A suggestion of no lines at all takes its lines out.
+          all.splice(first, one.line - first, ...(lines.length === 1 && lines[0] === '' ? [] : lines))
+
+          const refusal = await $.fs.write(full, all.join('\n')).then(
+            () => '',
+            (error: unknown) => String(error),
+          )
+
+          $.ui.toast(
+            refusal === ''
+              ? `Suggestion applied to ${file}: it is in your working tree, not committed`
+              : `The suggestion was not applied: ${refusal}`,
+            { timeoutMs: 8000 },
+          )
+
+          if (refusal === '') {
+            rescan()
+            await loadSource($, repo, file)
+          }
         },
         // Drops comments written for the review and not sent yet.
         discardDrafts: ids =>
@@ -3116,9 +3255,41 @@ export const register: Register = (on, options) => {
         },
         // An answer to a thread is posted at once. A comment of its own waits
         // with the review's others unless it is asked to go now (`isNow`).
-        postComment: (entered, isNow = false) => {
+        postComment: (entered, how = 'review') => {
+          const isNow = how === 'now'
           const root = now.replyTo === '' ? undefined : rootOn(now.commentLine)
-          const body = (entered ?? commentDraft).trim()
+          const typedText = (entered ?? commentDraft).trim()
+          // A suggestion is the typed text as a replacement for the lines
+          // the comment is on, in the form the forge offers to apply.
+          const body = how === 'suggest' && typedText !== '' ? suggestionOf(typedText) : unfold(typedText)
+          // A comment of the person's own being changed takes what the
+          // field holds in place of what it said.
+          const edited = now.editing === '' ? undefined : comments.find(one => one.id === now.editing)
+
+          if (edited !== undefined) {
+            void changeComment(forgeRun(runOf($), repo), requestTyped, edited, { edit: unfold(typedText) }).then(
+              refusal => {
+                if (refusal !== '') {
+                  $.ui.toast(refusal, { timeoutMs: 10_000 })
+
+                  return
+                }
+
+                const held = commentsCache?.comments.find(one => one.id === edited.id)
+
+                if (held !== undefined) {
+                  held.body = unfold(typedText)
+                }
+
+                commentDraft = ''
+                commentRound += 1
+                $.ui.toast('Comment changed')
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
+              },
+            )
+
+            return
+          }
 
           if (root !== undefined) {
             void postReply($, repo, requestTyped, root, entered ?? commentDraft)
@@ -3156,7 +3327,7 @@ export const register: Register = (on, options) => {
                   `Added to your review (${drafts.length + 1} waiting): send it from the file tree with v`,
                   { timeoutMs: 6000 },
                 )
-                set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '' }))
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, replyTo: '', editing: '' }))
               })
 
             return
