@@ -39,10 +39,12 @@ import type { InlayHint, SemanticToken } from './lsp-types'
 import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
+import { plain, plainBlock } from './media'
 import type { PatchFile } from './patch'
 import { CONTEXT, CONTEXTS, readPatch } from './patch'
-import type { Comment, Draft, Listed, Overview, Run as ForgeRun } from './review'
+import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
 import {
+  actOnRequest,
   readOverview,
   draftComment,
   draftId,
@@ -985,6 +987,10 @@ const findBranchRequest = async ($: EngineInterface, repo: string): Promise<stri
 // did not. Written by `loadOverview`, when the overview screen opens.
 let overviewCache: { key: string; overview: Overview | undefined; refusal: string } | undefined
 let overviewWanted: string | undefined
+// The action on a request the overview is asking about before it is done
+// (of which request, and which), and whether one is under way.
+let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
+let requestActing = false
 
 const loadOverview = async ($: EngineInterface, repo: string, typed: string): Promise<void> => {
   const key = `${repo}\n${typed}`
@@ -1888,13 +1894,17 @@ export const register: Register = (on, options) => {
       requestTyped !== '' && commentsCache?.key === `${repo}\n${requestTyped}`
         ? commentsCache
         : undefined
-    const requestComments = (reviewed?.comments ?? []).flatMap(one =>
-      one.path === ''
-        ? [one]
-        : one.path.startsWith(reviewed?.prefix ?? '')
-          ? [{ ...one, path: one.path.slice((reviewed?.prefix ?? '').length) }]
-          : [],
-    )
+    const requestComments = (reviewed?.comments ?? [])
+      .flatMap(one =>
+        one.path === ''
+          ? [one]
+          : one.path.startsWith(reviewed?.prefix ?? '')
+            ? [{ ...one, path: one.path.slice((reviewed?.prefix ?? '').length) }]
+            : [],
+      )
+      // What other people wrote is drawn as plain text: nothing in it that
+      // a terminal would act on reaches the pane.
+      .map(one => ({ ...one, author: plain(one.author), body: plainBlock(one.body) }))
     // The ledger mod's review findings, where it is loaded and has a run, join
     // them: each shows on its line as a thread does. Reading the run here
     // draws the pane again when it changes.
@@ -2086,12 +2096,45 @@ export const register: Register = (on, options) => {
             overview: held?.overview,
             refusal: requestTyped === '' ? 'No request is under review' : (held?.refusal ?? ''),
             now: await $.clock.now(),
+            asking: requestAsked.key === key ? requestAsked.act : '',
+            isActing: requestActing,
           },
           {
             back: () => set((last): View => ({ ...last, screen: 'tree' })),
             refresh: () => {
               overviewCache = undefined
               set(nudged)
+            },
+            ask: act => {
+              requestAsked = { key, act }
+              set(nudged)
+            },
+            // Done only from the question's own yes: the action must be the
+            // one asked about, of this request.
+            act: act => {
+              if (requestAsked.key !== key || requestAsked.act !== act || requestActing) {
+                return
+              }
+
+              requestAsked = { key: '', act: '' }
+              requestActing = true
+              set(nudged)
+              void actOnRequest(forgeRun(runOf($), repo), requestTyped, act)
+                .then(refusal => {
+                  $.ui.toast(
+                    refusal !== ''
+                      ? refusal
+                      : `${requestLabel}: ${act === 'checkout' ? 'checked out' : act === 'ready' ? 'marked ready' : act === 'close' ? 'closed' : 'merged'}`,
+                    { timeoutMs: refusal === '' ? 5000 : 12_000 },
+                  )
+                })
+                .finally(() => {
+                  requestActing = false
+                  // What the forge and the working tree say now is read again.
+                  overviewCache = undefined
+                  job = { isProject: false }
+                  void update($, view, nudged)
+                })
             },
             // What has come in since the person last reviewed it: the
             // request's head against the commit that review was of.

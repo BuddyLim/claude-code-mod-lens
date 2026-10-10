@@ -36,33 +36,86 @@ const kindOf = (url: string, written: Media['kind'] | undefined): Media['kind'] 
 // `<img>`); a video an `<video>` or a link to a video file; a document a
 // link to an upload or to a file of a kind people attach. A bare link to a
 // forge's upload counts too: that is how GitHub writes a dropped video.
+//
+// The text is whoever wrote the request's, so it is read as untrusted: only
+// its first `SCANNED` characters are looked at, every pattern's repeats are
+// bounded (none can be made to try the same stretch over and over), no more
+// than `MEDIA_KEPT` are kept, and a label is plain printable text of a
+// length a row can hold.
+export const SCANNED = 60_000
+export const MEDIA_KEPT = 100
+const LABEL = 120
+
+// Text with nothing a terminal would act on: control characters go, and
+// runs of space become one.
+export const plain = (text: string): string =>
+  text
+    .replace(new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069]', 'g'), ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+// Whether a character is one a terminal acts on or that reorders the text
+// round it, by its code point: the control characters, the zero-width and
+// the direction marks.
+const isActedOn = (code: number): boolean =>
+  code < 32 ||
+  (code >= 127 && code <= 159) ||
+  (code >= 0x200b && code <= 0x200f) ||
+  (code >= 0x2028 && code <= 0x202e) ||
+  (code >= 0x2066 && code <= 0x2069)
+
+// A block of text (a description, a comment) with those characters taken
+// out, its lines and its tabs kept: what is handed on to be drawn.
+export const plainBlock = (text: string): string =>
+  Array.from(text)
+    .filter(char => {
+      const code = char.codePointAt(0) ?? 0
+
+      return code === 9 || code === 10 || !isActedOn(code)
+    })
+    .join('')
+
 export const mediaOf = (markdown: string): Media[] => {
+  const text = markdown.slice(0, SCANNED)
   const found = new Map<string, Media>()
   const take = (url: string, written: Media['kind'] | undefined, label: string) => {
-    const kind = /^https?:\/\//.test(url) ? kindOf(url, written) : undefined
+    // A link is http or https, of printable characters with no space in it.
+    const kind = /^https?:\/\/[\x21-\x7e]{1,2000}$/.test(url) ? kindOf(url, written) : undefined
 
-    if (kind !== undefined && !found.has(url)) {
-      found.set(url, { kind, url, label: label.trim() || nameOf(url) })
+    if (kind !== undefined && !found.has(url) && found.size < MEDIA_KEPT) {
+      found.set(url, { kind, url, label: (plain(label) || plain(nameOf(url))).slice(0, LABEL) })
     }
   }
   // Each kind of mention is looked for with where it starts, so the list
   // comes out in the order of the text.
   const mentions: { at: number; url: string; written: Media['kind'] | undefined; label: string }[] = []
   const scan = (pattern: RegExp, read: (hit: RegExpExecArray) => Omit<(typeof mentions)[number], 'at'>) => {
-    for (const hit of markdown.matchAll(pattern)) {
+    for (const hit of text.matchAll(pattern)) {
       mentions.push({ at: hit.index, ...read(hit as RegExpExecArray) })
     }
   }
 
-  scan(/!\[([^\]]*)\]\((\S+?)(?:\s+"[^"]*")?\)/g, hit => ({ url: hit[2] ?? '', written: 'image', label: hit[1] ?? '' }))
-  scan(/<img\b[^>]*?\bsrc=["']([^"']+)["'][^>]*>/gi, hit => ({
-    url: hit[1] ?? '',
+  scan(/!\[([^\]\n]{0,300})\]\(([^\s)]{1,2000})(?: "[^"\n]{0,300}")?\)/g, hit => ({
+    url: hit[2] ?? '',
     written: 'image',
-    label: /\balt=["']([^"']*)["']/i.exec(hit[0])?.[1] ?? '',
+    label: hit[1] ?? '',
   }))
-  scan(/<(?:video|source)\b[^>]*?\bsrc=["']([^"']+)["'][^>]*>/gi, hit => ({ url: hit[1] ?? '', written: 'video', label: '' }))
-  scan(/(?<!!)\[([^\]]+)\]\((\S+?)(?:\s+"[^"]*")?\)/g, hit => ({ url: hit[2] ?? '', written: undefined, label: hit[1] ?? '' }))
-  scan(/(?<![("'=\]])\bhttps?:\/\/[^\s<>)"']+/g, hit => ({ url: hit[0], written: undefined, label: '' }))
+  scan(/<img\b([^>]{0,1000})>/gi, hit => ({
+    url: /\bsrc=["']([^"'\s]{1,2000})["']/i.exec(hit[1] ?? '')?.[1] ?? '',
+    written: 'image',
+    label: /\balt=["']([^"'\n]{0,300})["']/i.exec(hit[1] ?? '')?.[1] ?? '',
+  }))
+  scan(/<(?:video|source)\b([^>]{0,1000})>/gi, hit => ({
+    url: /\bsrc=["']([^"'\s]{1,2000})["']/i.exec(hit[1] ?? '')?.[1] ?? '',
+    written: 'video',
+    label: '',
+  }))
+  scan(/(?<!!)\[([^\]\n]{1,300})\]\(([^\s)]{1,2000})(?: "[^"\n]{0,300}")?\)/g, hit => ({
+    url: hit[2] ?? '',
+    written: undefined,
+    label: hit[1] ?? '',
+  }))
+  scan(/(?<![("'=\]])\bhttps?:\/\/[^\s<>)"']{1,2000}/g, hit => ({ url: hit[0], written: undefined, label: '' }))
 
   for (const one of mentions.sort((a, b) => a.at - b.at)) {
     take(one.url, one.written, one.label)
@@ -70,3 +123,7 @@ export const mediaOf = (markdown: string): Media[] => {
 
   return [...found.values()]
 }
+
+// The site a link goes to, to say beside whatever it is called: a name is
+// the writer's to choose, where it leads is not.
+export const hostOf = (url: string): string => /^https?:\/\/([^/?#\s]{1,200})/i.exec(url)?.[1]?.toLowerCase() ?? ''

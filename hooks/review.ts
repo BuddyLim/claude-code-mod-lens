@@ -1,6 +1,8 @@
 // Pull request / merge request lookup: turns what the user typed into two refs that exist locally.
 // Handle-free on purpose: every command goes through the `run` the caller passes in.
 
+import { plain, plainBlock } from './media'
+
 // `stdin` is what the command reads, where it is given one (a JSON body).
 export type Run = (
   argv: string[],
@@ -1109,6 +1111,39 @@ export type Overview = {
 
 const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
 
+// An overview as it is handed on to be drawn. All of it is what people on
+// the forge wrote (a title, a branch's name, a check's, a label), so every
+// word is made plain text first and held to a length, the description keeps
+// its lines but nothing a terminal would act on, and the lists are bounded.
+const LISTED = 200
+const WORD = 300
+const tidyOverview = (seen: Overview): Overview => {
+  const word = (value: string): string => plain(value).slice(0, WORD)
+  const link = (value: string): string => (/^https?:\/\/[\x21-\x7e]{1,2000}$/.test(value) ? value : '')
+
+  return {
+    title: word(seen.title),
+    body: plainBlock(seen.body).slice(0, 200_000),
+    author: word(seen.author),
+    state: word(seen.state),
+    isDraft: seen.isDraft,
+    url: link(seen.url),
+    base: word(seen.base),
+    head: word(seen.head),
+    mergeable: word(seen.mergeable),
+    decision: word(seen.decision),
+    checks: seen.checks.slice(0, LISTED).map(one => ({ name: word(one.name), state: word(one.state), url: link(one.url) })),
+    reviews: seen.reviews.slice(0, LISTED).map(one => ({ author: word(one.author), state: word(one.state), when: word(one.when) })),
+    commits: seen.commits.slice(-LISTED).map(one => ({ hash: word(one.hash), subject: word(one.subject), author: word(one.author) })),
+    labels: seen.labels.slice(0, LISTED).map(word),
+    additions: seen.additions,
+    deletions: seen.deletions,
+    files: seen.files,
+    // A commit's hash, or nothing: it is handed to git.
+    lastReviewed: /^[0-9a-f]{7,64}$/.test(seen.lastReviewed) ? seen.lastReviewed : '',
+  }
+}
+
 // Reads a request's overview from the forge. `typed` is what the person
 // typed to open it.
 export const readOverview = async (run: Run, typed: string): Promise<{ overview: Overview } | { error: string }> => {
@@ -1140,7 +1175,7 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
       }
 
       return {
-        overview: {
+        overview: tidyOverview({
           title: text(one.title),
           body: typeof one.description === 'string' ? one.description : '',
           author: text(record(one.author).username),
@@ -1166,7 +1201,7 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
           deletions: 0,
           files: Number.parseInt(text(one.changes_count), 10) || 0,
           lastReviewed: '',
-        },
+        }),
       }
     } catch {
       return { error: `glab's answer about ${place.label} could not be read` }
@@ -1213,7 +1248,7 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
     })
 
     return {
-      overview: {
+      overview: tidyOverview({
         title: text(one.title),
         body: typeof one.body === 'string' ? one.body : '',
         author: text(record(one.author).login),
@@ -1250,11 +1285,57 @@ export const readOverview = async (run: Run, typed: string): Promise<{ overview:
         deletions: count(one.deletions),
         files: count(one.changedFiles),
         lastReviewed: me === '' ? '' : (reviews.find(review => review.author === me)?.commit ?? ''),
-      },
+      }),
     }
   } catch {
     return { error: `gh's answer about ${place.label} could not be read` }
   }
+}
+
+// What can be done to a request as a whole, from the pane.
+export type RequestAct = 'merge' | 'squash' | 'rebase' | 'close' | 'ready' | 'checkout'
+
+// Does it, through the forge's CLI: merges the request (as a merge commit,
+// squashed, or rebased), closes it, marks a draft ready for review, or
+// checks its branch out here. Answers '' when it was done, else why not.
+export const actOnRequest = async (run: Run, typed: string, act: RequestAct): Promise<string> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  const number = String(place.number)
+  const where = place.forge === 'gitlab' ? ['-R', `${place.host}/${place.repo}`] : ['--repo', `${place.host}/${place.repo}`]
+  const argv =
+    place.forge === 'gitlab'
+      ? act === 'close'
+        ? ['glab', 'mr', 'close', number, ...where]
+        : act === 'ready'
+          ? ['glab', 'mr', 'update', number, '--ready', ...where]
+          : act === 'checkout'
+            ? ['glab', 'mr', 'checkout', number, ...where]
+            : ['glab', 'mr', 'merge', number, '--yes', ...(act === 'squash' ? ['--squash'] : act === 'rebase' ? ['--rebase'] : []), ...where]
+      : act === 'close'
+        ? ['gh', 'pr', 'close', number, ...where]
+        : act === 'ready'
+          ? ['gh', 'pr', 'ready', number, ...where]
+          : act === 'checkout'
+            ? ['gh', 'pr', 'checkout', number, ...where]
+            : ['gh', 'pr', 'merge', number, `--${act}`, ...where]
+  const done = await call(run, argv, 120_000)
+
+  if (done.exitCode === 0) {
+    return ''
+  }
+
+  // The CLI's own last words say why best (a failing check, a conflict, a
+  // dirty working tree); the general reasons cover its not running at all.
+  const said = lastLine(done.stderr) || lastLine(done.stdout)
+
+  return said !== '' && done.exitCode !== -1 && done.exitCode !== 127
+    ? `${place.label} was not ${act === 'checkout' ? 'checked out' : act === 'ready' ? 'marked ready' : act === 'close' ? 'closed' : 'merged'}: ${said.slice(0, 200)}`
+    : whyFailed(place, done, 'read')
 }
 
 export const fetchComments = async (run: Run, typed: string): Promise<{ comments: Comment[] } | { error: string }> => {

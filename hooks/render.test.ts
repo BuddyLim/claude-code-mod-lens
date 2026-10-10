@@ -242,6 +242,20 @@ test('the overview draws what a request says, where it stands and what it links 
   // The description is handed to the surface as markdown, and its picture is listed as a link.
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Pictures, videos and files \(1\)/ })).toBeDefined()
+
+  // Merging is asked about first, and saying no does nothing.
+  await ui.press({ key: 'act-merge' })
+  expect(await ui.find({ type: 'Text', text: /Merge PR #12 into main\?/ })).toBeDefined()
+  await ui.press({ key: 'act-no' })
+  expect(await ui.find({ key: 'act-yes' })).toBe(undefined)
+  expect(clock.asked.some(line => line.startsWith('gh pr merge'))).toBe(false)
+
+  // Yes does the one thing asked about, through the forge's own command.
+  await ui.press({ key: 'act-close' })
+  await ui.press({ key: 'act-yes' })
+  expect(clock.asked.filter(line => line.startsWith('gh pr ')).pop()).toBe('gh pr view 12 --repo github.com/acme/app --json title,body,author,state,isDraft,url,baseRefName,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,latestReviews,commits,labels,additions,deletions,changedFiles')
+  expect(clock.asked.includes('gh pr close 12 --repo github.com/acme/app')).toBe(true)
+  expect(clock.asked.some(line => line.startsWith('gh pr merge'))).toBe(false)
   await ui.unmount()
 })
 

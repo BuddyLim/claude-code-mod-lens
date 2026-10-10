@@ -6,8 +6,8 @@
 
 import { ageOf } from '../git'
 import type { Media } from '../media'
-import { mediaOf } from '../media'
-import type { Overview } from '../review'
+import { hostOf, mediaOf } from '../media'
+import type { Overview, RequestAct } from '../review'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
 import { COMMIT_BOX, LINK_ICON, helpButton, statusLine } from './frame'
@@ -28,6 +28,10 @@ export type OverviewModel = {
   refusal: string
   // The time now, in milliseconds, for how long ago each review was.
   now: number
+  // The action being asked about before it is done ('' for none), and
+  // whether one is under way.
+  asking: RequestAct | ''
+  isActing: boolean
 }
 
 export type OverviewActions = {
@@ -35,6 +39,10 @@ export type OverviewActions = {
   refresh: () => void
   // Compares the request's head with the commit the person last reviewed.
   sinceReview: () => void
+  // Asks about an action before doing it ('' takes the question away), and
+  // does the one asked about.
+  ask: (act: RequestAct | '') => void
+  act: (act: RequestAct) => void
   help: () => void
 }
 
@@ -52,6 +60,24 @@ const stateOf = (state: string): [mark: string, color: string] => {
 
 const MEDIA_WORD: Record<Media['kind'], string> = { image: 'picture', video: 'video', file: 'file' }
 
+// What each action is asked as before it is done, and what its yes says.
+const ASKED: Record<RequestAct, (label: string, overview: Overview) => string> = {
+  merge: (label, overview) => `Merge ${label} into ${overview.base}? It cannot be undone from here.`,
+  squash: (label, overview) => `Squash ${label} into one commit on ${overview.base}? It cannot be undone from here.`,
+  rebase: (label, overview) => `Rebase ${label} onto ${overview.base} and merge it? It cannot be undone from here.`,
+  close: label => `Close ${label} without merging it?`,
+  ready: label => `Mark ${label} ready for review? Its reviewers are told.`,
+  checkout: (label, overview) => `Check out ${overview.head} here? Your working tree changes to ${label}'s branch.`,
+}
+const YES: Record<RequestAct, string> = {
+  merge: 'merge',
+  squash: 'squash and merge',
+  rebase: 'rebase and merge',
+  close: 'close it',
+  ready: 'mark it ready',
+  checkout: 'check it out',
+}
+
 export const overviewScreen = (kit: Kit, model: OverviewModel, actions: OverviewActions) => {
   const { Box, Button, Text, Markdown, Link } = kit
   const { shell, overview } = model
@@ -62,11 +88,16 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
   const heading = (text: string) => [<Text> </Text>, <Text bold>{text}</Text>]
   // A link where the surface draws them, in a link's colour; else its text.
   const link = (href: string, label: string) =>
+    // What a link is called is its writer's to choose; where it goes is said
+    // beside it, read off the link itself, so a name cannot pass for a site.
     Link !== undefined && /^https?:\/\//.test(href) ? (
-      <Text color={COMMIT_BOX} underline>
-        <Link href={href}>
-          {label} {LINK_ICON}
-        </Link>
+      <Text wrap="truncate-end">
+        <Text color={COMMIT_BOX} underline>
+          <Link href={href}>
+            {label} {LINK_ICON}
+          </Link>
+        </Text>
+        {label === href ? '' : <Text dimColor> → {hostOf(href)}</Text>}
       </Text>
     ) : (
       <Text>{label}</Text>
@@ -83,6 +114,29 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
         )}
         {helpButton(kit, actions.help)}
       </Box>
+      {/* What can be done to the request as a whole. Each changes something
+          that is not undone from here, so it takes a second press that says
+          what will happen. */}
+      {overview !== undefined && overview.state.toUpperCase().startsWith('OPEN') && model.asking === '' && (
+        <Box columnGap={2} flexWrap="wrap">
+          <Button key="act-merge" label="merge" onPress={() => actions.ask('merge')} />
+          <Button key="act-squash" label="squash and merge" onPress={() => actions.ask('squash')} />
+          <Button key="act-rebase" label="rebase and merge" onPress={() => actions.ask('rebase')} />
+          {overview.isDraft && <Button key="act-ready" label="mark ready" onPress={() => actions.ask('ready')} />}
+          <Button key="act-checkout" label="check out here" onPress={() => actions.ask('checkout')} />
+          <Button key="act-close" label="close" onPress={() => actions.ask('close')} />
+        </Box>
+      )}
+      {overview !== undefined && model.asking !== '' && (
+        <Box columnGap={2} flexWrap="wrap">
+          <Text color="red" bold>
+            {ASKED[model.asking](model.label, overview)}
+          </Text>
+          <Button key="act-yes" label={`yes, ${YES[model.asking]}`} onPress={() => actions.act(model.asking as RequestAct)} />
+          <Button key="act-no" variant="primary" label="no" onPress={() => actions.ask('')} />
+        </Box>
+      )}
+      {model.isActing && <Text dimColor>Asking the forge to do it…</Text>}
       {overview === undefined && model.refusal === '' && <Text dimColor>Asking the forge about {model.label}…</Text>}
       {model.refusal !== '' && (
         <Text color="yellow" wrap="truncate-end">
