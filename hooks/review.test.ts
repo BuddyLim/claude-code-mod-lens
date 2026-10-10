@@ -13,6 +13,8 @@ import {
   resolveRequest,
   submitDrafted,
   changeComment,
+  markViewed,
+  readViewed,
   fold,
   suggestedLines,
   suggestionOf,
@@ -684,6 +686,35 @@ test('a comment of your own is changed, removed and liked where the forge keeps 
     'A comment cannot be left empty: delete it instead',
   )
   expect(asked.filter(line => line.startsWith('gh '))).toEqual([])
+})
+
+test('the files marked as viewed on GitHub are read, and a tick is made there too', async () => {
+  const asked: string[] = []
+  const page = (files: [string, string][], id = 'PR_1') =>
+    JSON.stringify({
+      data: { repository: { pullRequest: { id, files: { nodes: files.map(([path, state]) => ({ path, viewerViewedState: state })) } } } },
+    })
+  const run: Run = async argv => {
+    asked.push(argv.join(' '))
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : // Two pages, as a paginated call prints them: back to back.
+        ok(`${page([['src/a.ts', 'VIEWED'], ['src/b.ts', 'UNVIEWED']])}${page([['docs/c.md', 'VIEWED'], ['d.ts', 'DISMISSED']])}`)
+  }
+
+  expect(await readViewed(run, '12')).toEqual({ id: 'PR_1', viewed: ['src/a.ts', 'docs/c.md'] })
+  expect(await markViewed(run, '12', 'PR_1', 'src/b.ts', true)).toBe('')
+  expect(asked[asked.length - 1]?.includes('markFileAsViewed(input:{pullRequestId:$id,path:$path})')).toBe(true)
+  expect(asked[asked.length - 1]?.endsWith('-f id=PR_1 -f path=src/b.ts')).toBe(true)
+  await markViewed(run, '12', 'PR_1', 'src/a.ts', false)
+  expect(asked[asked.length - 1]?.includes('unmarkFileAsViewed')).toBe(true)
+
+  // GitLab keeps no such mark: nothing is read, and nothing is asked of it.
+  const gitlab: Run = async argv => (argv[0] === 'git' ? ok('https://gitlab.com/acme/app.git\n') : failed('no'))
+
+  expect(await readViewed(gitlab, '!34')).toBe(undefined)
+  expect(await markViewed(gitlab, '!34', '', 'a.ts', true)).toBe('')
 })
 
 test('a GitHub comment on several lines names the first of them too', async () => {

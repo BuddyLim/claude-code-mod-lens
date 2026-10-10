@@ -8,6 +8,7 @@ import { isAwaited, isCheckable } from '../check'
 import { countLabel, diagsOf } from '../diags'
 import type { Stash } from '../git'
 import { isFinding } from '../ledger'
+import { hostOf, mediaOf } from '../media'
 import type { Comment } from '../review'
 import { isDraft, isOnWholeFile } from '../review'
 import { clamp, fitStash, wrapText } from '../text'
@@ -44,8 +45,12 @@ const OTHER_FILES = 100
 const LIST_LIMIT = 300
 // How many of the conversation's latest comments are listed.
 const CONVERSATION_ROWS = 15
-// The most lines of one of them shown when it is opened.
+// The most lines of one of them shown when it is opened; as markdown, the
+// most characters (an element's text is bounded); and the most pictures,
+// videos and files listed under it.
 const TALK_LINES = 40
+const TALK_SHOWN = 8000
+const TALK_MEDIA = 12
 // How far an arrow moves an opened stash's body.
 const BODY_STEP = 8
 
@@ -194,7 +199,7 @@ export type TreeActions = {
 }
 
 export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => {
-  const { Box, Button, Text, Input, Link } = kit
+  const { Box, Button, Text, Input, Link, Markdown } = kit
   const { shell, files, stats, diags, layout, toggled, comments, stashes, isBrowsing } = model
   const { picked: chosen } = model
   const { totals } = shell
@@ -1023,14 +1028,42 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
                     : `: ${one.body.replace(/\s+/g, ' ')}`}
                 </Text>
               </Box>
+              {/* Opened, the comment reads as it was written: the surface
+                  renders its markdown where it can, and what it links to
+                  that a terminal cannot show (a picture, a video, a file)
+                  is listed under it, each with the site it goes to. */}
               {model.talkOpen === one.id &&
-                wrapText(one.body.trim(), Math.max(20, shell.columns - 6))
-                  .slice(0, TALK_LINES)
-                  .map(line => (
-                    <Text wrap="truncate-end">
-                      {isInSection ? '  ' : ''}
-                      <Text color={COMMENT_COLOR}>┃</Text> {line === '' ? ' ' : line}
-                    </Text>
+                (Markdown !== undefined ? (
+                  <Box marginLeft={isInSection ? 4 : 2} flexDirection="column">
+                    <Markdown text={one.body.trim().slice(0, TALK_SHOWN)} />
+                  </Box>
+                ) : (
+                  wrapText(one.body.trim(), Math.max(20, shell.columns - 6))
+                    .slice(0, TALK_LINES)
+                    .map(line => (
+                      <Text wrap="truncate-end">
+                        {isInSection ? '  ' : ''}
+                        <Text color={COMMENT_COLOR}>┃</Text> {line === '' ? ' ' : line}
+                      </Text>
+                    ))
+                ))}
+              {model.talkOpen === one.id &&
+                mediaOf(one.body)
+                  .slice(0, TALK_MEDIA)
+                  .map(media => (
+                    <Box height={1} overflow="hidden" marginLeft={isInSection ? 4 : 2}>
+                      <Text dimColor>{media.kind === 'image' ? 'picture ' : `${media.kind} `}</Text>
+                      {Link !== undefined ? (
+                        <Text color={COMMIT_BOX} underline>
+                          <Link href={media.url}>
+                            {media.label} {LINK_ICON}
+                          </Link>
+                        </Text>
+                      ) : (
+                        <Text>{media.label}</Text>
+                      )}
+                      <Text dimColor> → {hostOf(media.url)}</Text>
+                    </Box>
                   ))}
               {model.talkOpen === one.id && canTalk && (
                 <Box columnGap={2} marginLeft={isInSection ? 4 : 2}>

@@ -1612,6 +1612,93 @@ export const resolveThread = async (
   return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'comment on')
 }
 
+// The files of a request the person has marked as viewed on the forge
+// itself, and the request's own id there, by which one is marked. GitHub
+// keeps these; GitLab has no such mark to read, and answers undefined, as
+// does a forge that cannot be asked. Paths are from the repo's root.
+const VIEWED_QUERY =
+  'query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){id files(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}}}}'
+
+export const readViewed = async (run: Run, typed: string): Promise<{ id: string; viewed: string[] } | undefined> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place || place.forge !== 'github') {
+    return undefined
+  }
+
+  const [owner = '', name = ''] = place.repo.split('/')
+  const seen = await call(
+    run,
+    gh(place, 'graphql', '--paginate', '-f', `query=${VIEWED_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${place.number}`),
+  )
+
+  if (seen.exitCode !== 0) {
+    return undefined
+  }
+
+  try {
+    let id = ''
+    const viewed: string[] = []
+
+    // A paginated call prints one answer for each page, back to back.
+    for (const page of values(seen.stdout)) {
+      const request = record(record(record(record(page).data).repository).pullRequest)
+
+      id ||= text(request.id)
+
+      for (const raw of Array.isArray(record(request.files).nodes) ? (record(request.files).nodes as unknown[]) : []) {
+        const file = record(raw)
+
+        if (file.viewerViewedState === 'VIEWED' && text(file.path) !== '') {
+          viewed.push(text(file.path))
+        }
+      }
+    }
+
+    return id === '' ? undefined : { id, viewed: viewed.slice(0, 5000) }
+  } catch {
+    return undefined
+  }
+}
+
+// Marks a file of a request as viewed on the forge, or takes the mark off.
+// `id` is the request's own, as `readViewed` gave it; `path` is from the
+// repo's root. Answers '' when the forge took it, else why not.
+export const markViewed = async (
+  run: Run,
+  typed: string,
+  id: string,
+  path: string,
+  isViewed: boolean,
+): Promise<string> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  if (place.forge !== 'github' || id === '') {
+    return ''
+  }
+
+  const verb = isViewed ? 'markFileAsViewed' : 'unmarkFileAsViewed'
+  const ran = await call(
+    run,
+    gh(
+      place,
+      'graphql',
+      '-f',
+      `query=mutation($id:ID!,$path:String!){${verb}(input:{pullRequestId:$id,path:$path}){clientMutationId}}`,
+      '-f',
+      `id=${id}`,
+      '-f',
+      `path=${path}`,
+    ),
+  )
+
+  return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'read')
+}
+
 // A comment as a quotation, the way a forge's own "quote reply" starts an
 // answer: each of its lines after a ">", then a clear line for what follows.
 export const quoteOf = (one: Pick<Comment, 'body'>): string =>

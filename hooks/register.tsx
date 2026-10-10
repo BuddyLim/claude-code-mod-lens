@@ -44,6 +44,8 @@ import type { PatchFile } from './patch'
 import { CONTEXT, CONTEXTS, applyHunk, hunkMark, readPatch } from './patch'
 import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
 import {
+  markViewed,
+  readViewed,
   changeComment,
   fold,
   suggestionOf,
@@ -1239,6 +1241,41 @@ const changeDrafts = async (
 
 // Ticks or unticks a file of a request as reviewed, here and in the store.
 // The request last ticked is kept last, and the oldest give way.
+// The request whose "viewed" marks the forge keeps, once they have been
+// read: its id there, and the folder under review's place in the repo. An
+// empty id is a forge that keeps none (the ticks are then the pane's own).
+let viewedCache: { key: string; id: string; prefix: string } | undefined
+let viewedWanted = ''
+
+// Reads the files the person has marked as viewed on the forge, and makes
+// them the request's ticks: the forge's word is the one that counts, since
+// it is what the request's own page shows.
+const loadViewed = async ($: EngineInterface, repo: string, typed: string, key: string): Promise<void> => {
+  viewedWanted = key
+
+  const run = forgeRun(runOf($), repo)
+  const [seen, prefix] = await Promise.all([readViewed(run, typed), repoPrefix(run)])
+
+  viewedCache = { key, id: seen?.id ?? '', prefix }
+
+  if (seen !== undefined) {
+    const paths = seen.viewed
+      .filter(path => path.startsWith(prefix))
+      .map(path => path.slice(prefix.length))
+      .slice(-REVIEWED_PATHS)
+
+    await update($, view, (last): View => {
+      const { [key]: _held, ...rest } = last.reviewed ?? {}
+
+      return {
+        ...last,
+        reviewed: Object.fromEntries([...Object.entries(rest), [key, paths]].slice(-REVIEWED_KEPT)),
+      }
+    })
+    await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
+  }
+}
+
 const toggleReviewed = async ($: EngineInterface, key: string, path: string): Promise<void> => {
   await update($, view, (last): View => {
     const { [key]: held = [], ...rest } = last.reviewed ?? {}
@@ -2147,9 +2184,31 @@ export const register: Register = (on, options) => {
     // name they are kept under; '' with no request, when nothing is ticked.
     const seenKey = requestTyped === '' ? '' : `${repo}\n${requestTyped}`
     const seen = seenKey === '' ? [] : (now.reviewed[seenKey] ?? [])
+    // Where the forge keeps "viewed" marks of its own (GitHub), they are
+    // read once for the request and are what the ticks start as; a tick
+    // made here is then made there too.
+    if (seenKey !== '' && viewedCache?.key !== seenKey && viewedWanted !== seenKey) {
+      void loadViewed($, repo, requestTyped, seenKey)
+    }
+
     const markReviewed = (path: string): void => {
-      if (seenKey !== '') {
-        void toggleReviewed($, seenKey, path)
+      if (seenKey === '') {
+        return
+      }
+
+      const held = viewedCache?.key === seenKey ? viewedCache : undefined
+      const isNowViewed = !seen.includes(path)
+
+      void toggleReviewed($, seenKey, path)
+
+      if (held !== undefined && held.id !== '') {
+        void markViewed(forgeRun(runOf($), repo), requestTyped, held.id, `${held.prefix}${path}`, isNowViewed).then(
+          refusal => {
+            if (refusal !== '') {
+              $.ui.toast(`Ticked here, but not on the forge: ${refusal}`, { timeoutMs: 8000 })
+            }
+          },
+        )
       }
     }
 
