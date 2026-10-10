@@ -182,6 +182,8 @@ export const checksMark = (state: string): [mark: string, color: string] =>
 
 // The mark of a link that opens a page elsewhere.
 export const LINK_ICON = '\u{f08e}'
+// The mark that stands for "files", before how many a request changes.
+export const FILES_ICON = '\u{f0c5}'
 // A ledger finding is drawn as a thread too, with a mark and a colour of its
 // own: it comes from a review run in this session, not from the forge.
 export const LEDGER_ICON = '\u{f0ae}'

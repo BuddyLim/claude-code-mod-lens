@@ -58,6 +58,34 @@ export const cellsOf = (
     : { columns: Math.max(1, Math.round((rows * 2 * picture.width) / picture.height)), rows: Math.max(1, rows) }
 }
 
+// The most pixels a picture may say it has before any tool is let open it.
+const PIXELS_OPENED = 40_000_000
+
+// A small file can say it is a picture of enormous size, and opening it
+// would take all the memory there is. So before one is made a PNG, its size
+// is read from its header alone (no pixel is opened for that), and one over
+// the bound, or whose size cannot be read, is refused. A tool that runs away
+// all the same is stopped by the bound on processor time.
+const FITS = [
+  'ulimit -t 30 2>/dev/null',
+  'fits() {',
+  '  if command -v sips >/dev/null 2>&1; then',
+  '    wide=$(sips -g pixelWidth "$1" 2>/dev/null | awk "/pixelWidth/ {print \\$2}")',
+  '    tall=$(sips -g pixelHeight "$1" 2>/dev/null | awk "/pixelHeight/ {print \\$2}")',
+  '  elif command -v magick >/dev/null 2>&1; then',
+  '    wide=$(magick identify -ping -format "%w" "$1[0]" 2>/dev/null)',
+  '    tall=$(magick identify -ping -format "%h" "$1[0]" 2>/dev/null)',
+  '  elif command -v identify >/dev/null 2>&1; then',
+  '    wide=$(identify -ping -format "%w" "$1[0]" 2>/dev/null)',
+  '    tall=$(identify -ping -format "%h" "$1[0]" 2>/dev/null)',
+  // With no tool here nothing is opened either: a PNG is only copied.
+  '  else return 0; fi',
+  '  case "$wide$tall" in ""|*[!0-9]*) return 1 ;; esac',
+  '  [ -n "$wide" ] && [ -n "$tall" ] && [ "${#wide}" -le 5 ] && [ "${#tall}" -le 5 ] || return 1',
+  `  [ "$((wide * tall))" -ge 1 ] && [ "$((wide * tall))" -le ${PIXELS_OPENED} ]`,
+  '}',
+]
+
 // Fetches one address into a folder that is the person's alone, makes what
 // came a PNG, and prints the file and its size. $1 the address, $2 the most
 // bytes, $3 the address the picture was first asked for by (its name). The folder is in the person's own cache, never the shared /tmp, and
@@ -68,6 +96,7 @@ export const cellsOf = (
 // what is no picture, or one no tool here can make a PNG, fails.
 const FETCH = [
   'umask 077',
+  ...FITS,
   'base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"',
   '[ -n "$base" ] || exit 1',
   'dir="$base/lens-pictures"',
@@ -97,6 +126,7 @@ const FETCH = [
   '  case "$magic" in',
   '    89504e470d0a1a0a*) mv -f "$raw" "$png" ;;',
   '    ffd8ff*|474946383?61*|52494646????????57454250)',
+  '      fits "$raw" || { rm -f "$raw"; exit 1; }',
   '      if command -v sips >/dev/null 2>&1; then sips -s format png "$raw" --out "$made" >/dev/null 2>&1',
   '      elif command -v magick >/dev/null 2>&1; then magick "$raw[0]" "png:$made" >/dev/null 2>&1',
   '      elif command -v convert >/dev/null 2>&1; then convert "$raw[0]" "png:$made" >/dev/null 2>&1',
@@ -169,6 +199,7 @@ export const isPictureFile = (path: string): boolean => /\.(png|jpe?g|gif|webp)$
 // followed: only a file of the folder itself is read.
 const LOCAL = [
   'umask 077',
+  ...FITS,
   'base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"',
   '[ -n "$base" ] || exit 1',
   'dir="$base/lens-pictures"',
@@ -199,6 +230,7 @@ const LOCAL = [
   '  magic=$(od -An -tx1 -N12 "$raw" | tr -d " \\n")',
   '  case "$magic" in',
   '    89504e470d0a1a0a*|ffd8ff*|474946383?61*|52494646????????57454250)',
+  '      fits "$raw" || { rm -f "$raw"; exit 1; }',
   // Brought down to a side the terminal draws, and made a PNG, in one go
   // where a tool for it is here; a PNG is kept as it is where none is.
   // (sips makes a small picture larger when asked for a side, so it is

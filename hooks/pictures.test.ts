@@ -18,6 +18,11 @@ test('a picture of the folder is asked for by a fixed script, and only a plain p
   expect(asked[0]?.slice(3, 7)).toEqual(['sh', '/repo', 'docs/a.png', '-'])
   await localPicture(run, '/repo', 'docs/a.png', 'main')
   expect(asked[1]?.[6]).toBe('main')
+  // Its size is read from its header, and held to a bound, before a tool opens it.
+  const script = asked[0]?.[2] ?? ''
+
+  expect(script.indexOf('fits "$raw"') > 0 && script.indexOf('fits "$raw"') < script.indexOf('sips -s format png')).toBe(true)
+  expect(script.includes('ulimit -t 30')).toBe(true)
   // A link is not followed, and the working tree's file is told from a link.
   expect(asked[0]?.[2]?.includes('[ ! -L "$src" ]')).toBe(true)
 

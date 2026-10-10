@@ -12,7 +12,7 @@ import { cellsOf } from '../pictures'
 import type { Overview, RequestAct } from '../review'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMIT_BOX, LINK_ICON, helpButton, stateOf, statusLine } from './frame'
+import { COMMIT_BOX, FILES_ICON, LINK_ICON, helpButton, stateOf, statusLine } from './frame'
 
 // The most of a description that is drawn, and the size of each piece of it:
 // an element's text is bounded, and so is the tree as a whole.
@@ -156,8 +156,20 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
             {overview.author === '' ? '' : `@${overview.author} · `}
             {overview.head} → {overview.base} · {overview.state.toLowerCase()}
             {overview.isDraft ? ' · draft' : ''}
-            {overview.files === 0 ? '' : ` · ${overview.files} files`}
-            {overview.additions + overview.deletions === 0 ? '' : ` · +${overview.additions} −${overview.deletions}`}
+            {overview.files === 0 ? '' : ` · ${FILES_ICON} ${overview.files}`}
+            {/* The lines it adds and takes away, each in its own colour, dimmed. */}
+            {overview.additions + overview.deletions > 0 && ' · '}
+            {overview.additions + overview.deletions > 0 && (
+              <Text color="green" dimColor>
+                +{overview.additions}
+              </Text>
+            )}
+            {overview.additions + overview.deletions > 0 && (
+              <Text color="red" dimColor>
+                {' '}
+                −{overview.deletions}
+              </Text>
+            )}
           </Text>
           {overview.url !== '' && <Box>{link(overview.url, overview.url)}</Box>}
           {overview.labels.length > 0 && <Text dimColor>labels: {overview.labels.join(', ')}</Text>}
