@@ -8,7 +8,7 @@ import type { Comment } from '../review'
 import type { TableCell } from '../text'
 import { chunkMarkdown, splitMarkdown, tableWidths, wrapText } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMENT_COLOR, COMMENT_ICON, RESOLVED_COLOR, helpButton, statusLine } from './frame'
+import { RESOLVED_COLOR, helpButton, statusLine, talkColor, talkIcon } from './frame'
 
 const MARKDOWN = /\.(md|mdx|markdown)$/i
 // A Markdown element takes so much text at once, and a pane's tree so much in
@@ -178,7 +178,7 @@ export const markdownScreen = (
   const width = Math.max(24, Math.min(TALK_WIDTH, shell.columns - 2))
   const card = (line: number, thread: readonly Comment[]) => {
     const isSettled = thread.some(one => one.isResolved === true)
-    const color = isSettled ? RESOLVED_COLOR : COMMENT_COLOR
+    const color = isSettled ? RESOLVED_COLOR : talkColor(thread[0])
 
     return (
       <Box
@@ -195,7 +195,7 @@ export const markdownScreen = (
           return [
             <Text bold color={color} wrap="truncate-end">
               {indent}
-              {at === 0 ? COMMENT_ICON : '↳'} {one.author} · {one.when.slice(0, 10)}
+              {at === 0 ? talkIcon(one) : '↳'} {one.author} · {one.when.slice(0, 10)}
               {at === 0 ? ` · line ${line}` : ''}
               {at === 0 && isSettled ? ' · ✓ resolved' : ''}
             </Text>,

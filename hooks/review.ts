@@ -1,9 +1,13 @@
 // Pull request / merge request lookup: turns what the user typed into two refs that exist locally.
 // Handle-free on purpose: every command goes through the `run` the caller passes in.
 
+import { plain, plainBlock, sampleOf } from './media'
+
+// `stdin` is what the command reads, where it is given one (a JSON body).
 export type Run = (
   argv: string[],
   timeoutMs?: number,
+  stdin?: string,
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>
 
 export type Forge = 'github' | 'gitlab' | 'unknown'
@@ -306,11 +310,47 @@ export type Comment = {
   isResolved?: boolean // where the forge says
   isOutdated?: boolean // attached to a version of the file that has since changed
   oldLine?: number // for a comment on a removed line: its line in the target's version of the file
+  startLine?: number // for a comment on several lines: the first of them (`line` is the last)
   // What the forge calls the thread it is in, by which the thread is resolved (and, on GitLab,
   // replied to): GitHub's node id of the review thread, GitLab's discussion id. Absent where the
   // forge did not say, and on general comments.
   thread?: string
 }
+
+// A comment written and not yet sent: it waits to go with the review. `path`
+// is from the folder under review; `line` is 0 for the file as a whole, and
+// `startLine`, where it is before `line`, makes it a comment on those lines.
+// `oldLine` puts it on a removed line, by its number in the target's version
+// of the file (`line` is then 0, as on a comment the forge sends back).
+export type Draft = { id: string; path: string; line: number; startLine?: number; oldLine?: number; body: string }
+
+const DRAFT = 'draft-'
+
+// A draft as the comment it will be, so the screens draw it where it will
+// sit: its id says it is one (see `isDraft`).
+export const draftComment = (draft: Draft): Comment => ({
+  id: `${DRAFT}${draft.id}`,
+  path: draft.path,
+  line: draft.line,
+  author: 'you · pending, not sent yet',
+  body: draft.body,
+  when: '',
+  isOutdated: false,
+  ...(draft.startLine !== undefined && draft.startLine > 0 && draft.startLine < draft.line
+    ? { startLine: draft.startLine }
+    : {}),
+  ...(draft.oldLine !== undefined && draft.oldLine > 0 ? { oldLine: draft.oldLine } : {}),
+})
+
+export const isDraft = (one: Pick<Comment, 'id'>): boolean => one.id.startsWith(DRAFT)
+
+// The id of the draft a comment made by `draftComment` stands for.
+export const draftId = (one: Pick<Comment, 'id'>): string => one.id.slice(DRAFT.length)
+
+// Whether a comment is on its file as a whole: it names a file and no line,
+// and is neither one that lost its line to an edit nor one on a removed line.
+export const isOnWholeFile = (one: Comment): boolean =>
+  one.path !== '' && one.line === 0 && one.isOutdated !== true && one.oldLine === undefined
 
 type Json = Record<string, unknown>
 
@@ -553,6 +593,9 @@ const fromGithubLine = (raw: unknown, threads: Map<string, ThreadState>): Commen
     ...(thread && thread.id !== '' ? { thread: thread.id } : {}),
     isOutdated,
     ...(isOnOld && line > 0 ? { oldLine: line } : {}),
+    ...(!isOnOld && whole(one.start_line) > 0 && whole(one.start_line) < line
+      ? { startLine: whole(one.start_line) }
+      : {}),
   }
 }
 
@@ -741,10 +784,79 @@ const oldLineOf = (diff: string, line: number): { isAdded: true } | { isAdded: f
   return { isAdded: false, oldLine: line - shift }
 }
 
+// Where the base's counter of lines stands at a line of the head version,
+// read from the same diff: for an unchanged line that is the line it was;
+// for an added one, the line of the base it was put in before. It is the
+// middle part of the name GitLab knows a line of a diff by.
+const oldPosOf = (diff: string, line: number): number => {
+  let shift = 0
+
+  for (const hunk of diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const from = Number(hunk[1])
+    const removed = hunk[2] === undefined ? 1 : Number(hunk[2])
+    const start = Number(hunk[3])
+    const added = hunk[4] === undefined ? 1 : Number(hunk[4])
+
+    if (added > 0 && line >= start && line < start + added) {
+      // After what the hunk removed; with nothing removed, `from` is the
+      // line the addition follows.
+      return removed === 0 ? from + 1 : from + removed
+    }
+
+    if (added > 0 ? start + added - 1 < line : start < line) {
+      shift += added - removed
+    }
+  }
+
+  return line - shift
+}
+
+// The name GitLab knows a line of a diff by: the SHA-1 of the file's path,
+// then where the base's and the head's counters of lines stand at it.
+export const gitlabLineCode = async (path: string, oldPos: number, newPos: number): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(path))
+
+  return `${[...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')}_${oldPos}_${newPos}`
+}
+
+// The file's path in the base (another, for a renamed file) and how it
+// changed there (`M`, `A`, `R100`, ...; '' for a file the request does not
+// touch), by its path in the head.
+const gitlabOldPath = async (
+  run: Run,
+  baseSha: string,
+  headSha: string,
+  path: string,
+): Promise<{ status: string; oldPath: string } | undefined> => {
+  const changed = await call(run, ['git', 'diff', '--name-status', '-M', '-z', baseSha, headSha, '--'], LOCAL_MS)
+
+  if (changed.exitCode !== 0) {
+    return undefined
+  }
+
+  const fields = changed.stdout.split('\0')
+  let found = { status: '', oldPath: path }
+
+  for (let index = 0; index < fields.length - 1; ) {
+    const kind = fields[index] ?? ''
+    const isMoved = /^[RC]/.test(kind)
+    const from = fields[index + 1] ?? ''
+    const to = isMoved ? (fields[index + 2] ?? '') : from
+
+    if (to === path) {
+      found = { status: kind, oldPath: from }
+    }
+
+    index += isMoved ? 3 : 2
+  }
+
+  return found
+}
+
 const gitlabPost = async (
   run: Run,
   place: Place,
-  at: { path: string; line: number; commit: string },
+  at: { path: string; line: number; commit: string; startLine?: number; oldLine?: number },
   body: string,
 ): Promise<{ comment: Comment } | { error: string }> => {
   const request = await call(run, glab(place, gitlabRequest(place)))
@@ -773,37 +885,108 @@ const gitlabPost = async (
     return { error: 'This merge request has changed since it was opened here: reopen it, then comment again' }
   }
 
+  // A comment on a removed line is placed by that line of the base alone,
+  // under the name the file had there.
+  if ((at.oldLine ?? 0) > 0) {
+    const was = await gitlabOldPath(run, baseSha, headSha, at.path)
+    const gone = await call(
+      run,
+      glab(
+        place,
+        '-X',
+        'POST',
+        `${gitlabRequest(place)}/discussions`,
+        '-f',
+        `body=${body}`,
+        '-F',
+        `position=${JSON.stringify({
+          position_type: 'text',
+          base_sha: baseSha,
+          start_sha: startSha,
+          head_sha: headSha,
+          old_path: was?.oldPath ?? at.path,
+          new_path: at.path,
+          old_line: at.oldLine,
+        })}`,
+      ),
+    )
+
+    if (gone.exitCode !== 0) {
+      return { error: whyFailed(place, gone, 'comment on') }
+    }
+
+    try {
+      const comment = fromGitlabDiscussion(JSON.parse(gone.stdout), headSha)[0]
+
+      if (!comment) {
+        throw new Error('no note')
+      }
+
+      return { comment: { ...comment, path: comment.path || at.path, line: 0, oldLine: at.oldLine as number } }
+    } catch {
+      return { error: `The comment may have been posted on ${place.label}, but glab's answer could not be read: reload to check` }
+    }
+  }
+
+  // A comment on the file as a whole is placed by its path alone.
+  if (at.line === 0) {
+    const whole = await call(
+      run,
+      glab(
+        place,
+        '-X',
+        'POST',
+        `${gitlabRequest(place)}/discussions`,
+        '-f',
+        `body=${body}`,
+        '-F',
+        `position=${JSON.stringify({
+          position_type: 'file',
+          base_sha: baseSha,
+          start_sha: startSha,
+          head_sha: headSha,
+          old_path: at.path,
+          new_path: at.path,
+        })}`,
+      ),
+    )
+
+    if (whole.exitCode !== 0) {
+      return { error: whyFailed(place, whole, 'comment on') }
+    }
+
+    try {
+      const comment = fromGitlabDiscussion(JSON.parse(whole.stdout), headSha)[0]
+
+      if (!comment) {
+        throw new Error('no note')
+      }
+
+      return { comment: { ...comment, path: comment.path || at.path, line: 0 } }
+    } catch {
+      return { error: `The comment may have been posted on ${place.label}, but glab's answer could not be read: reload to check` }
+    }
+  }
+
   // GitLab places a note by old and new line together. Git knows both when the commits are here;
   // when they are not, the new line alone is sent, which GitLab accepts for added lines.
   const outside = { error: `Line ${at.line} of ${at.path} is not part of this merge request's diff` }
   let oldPath = at.path
   let oldLine = 0
+  // The file's own diff, kept for the names of the lines a comment on
+  // several of them runs from and to.
+  let fileDiff: string | undefined
 
-  const changed = await call(run, ['git', 'diff', '--name-status', '-M', '-z', baseSha, headSha, '--'], LOCAL_MS)
+  const was = await gitlabOldPath(run, baseSha, headSha, at.path)
 
-  if (changed.exitCode === 0) {
-    const fields = changed.stdout.split('\0')
-    let status = ''
+  if (was !== undefined) {
+    oldPath = was.oldPath
 
-    for (let index = 0; index < fields.length - 1; ) {
-      const kind = fields[index] ?? ''
-      const isMoved = /^[RC]/.test(kind)
-      const from = fields[index + 1] ?? ''
-      const to = isMoved ? (fields[index + 2] ?? '') : from
-
-      if (to === at.path) {
-        status = kind
-        oldPath = from
-      }
-
-      index += isMoved ? 3 : 2
-    }
-
-    if (status === '' || status.startsWith('D')) {
+    if (was.status === '' || was.status.startsWith('D')) {
       return outside
     }
 
-    if (!status.startsWith('A')) {
+    if (!was.status.startsWith('A')) {
       const diff = await call(
         run,
         ['git', 'diff', '--no-color', '--no-ext-diff', '-U0', '-M', baseSha, headSha, '--', ...new Set([oldPath, at.path])],
@@ -812,6 +995,10 @@ const gitlabPost = async (
       const where = diff.exitCode === 0 ? oldLineOf(diff.stdout, at.line) : { isAdded: true as const }
 
       oldLine = where.isAdded ? 0 : where.oldLine
+      fileDiff = diff.exitCode === 0 ? diff.stdout : undefined
+    } else {
+      // A new file is all one addition: every line was put in before line 1.
+      fileDiff = ''
     }
   }
 
@@ -827,20 +1014,36 @@ const gitlabPost = async (
     new_line: at.line,
     ...(oldLine > 0 ? { old_line: oldLine } : {}),
   }
+  const startLine = at.startLine !== undefined && at.startLine > 0 && at.startLine < at.line ? at.startLine : 0
+  const send = (where: object, said: string) =>
+    call(
+      run,
+      glab(place, '-X', 'POST', `${gitlabRequest(place)}/discussions`, '-f', `body=${said}`, '-F', `position=${JSON.stringify(where)}`),
+    )
+  // A comment on several lines names the first and the last of them the way
+  // GitLab knows a line of a diff. Those names are worked out here from
+  // git's own diff, so where GitLab does not take them (or they could not
+  // be worked out) the comment still goes: on the last line, saying which
+  // lines it is about.
+  const named = async (line: number): Promise<{ line_code: string; type: 'new' } | undefined> => {
+    if (fileDiff === undefined) {
+      return undefined
+    }
 
-  const posted = await call(
-    run,
-    glab(
-      place,
-      '-X',
-      'POST',
-      `${gitlabRequest(place)}/discussions`,
-      '-f',
-      `body=${body}`,
-      '-F',
-      `position=${JSON.stringify(position)}`,
-    ),
-  )
+    // In a new file every line is an addition before the base's line 1.
+    const isNew = was?.status.startsWith('A') === true
+
+    return { line_code: await gitlabLineCode(at.path, isNew ? 1 : oldPosOf(fileDiff, line), line), type: 'new' }
+  }
+  const range = startLine === 0 ? undefined : { start: await named(startLine), end: await named(at.line) }
+  const ranged =
+    range?.start !== undefined && range.end !== undefined
+      ? await send({ ...position, line_range: range }, body)
+      : undefined
+  const posted =
+    ranged !== undefined && ranged.exitCode === 0
+      ? ranged
+      : await send(position, startLine === 0 ? body : `Lines ${startLine}–${at.line}: ${body}`)
 
   if (posted.exitCode !== 0) {
     return { error: whyFailed(place, posted, 'comment on', at) }
@@ -909,7 +1112,7 @@ export const requestOfBranch = async (
     const number = whole(isGitlab ? first.iid : first.number)
 
     // What it is called, and the branch it asks to be merged into.
-    const title = text(first.title)
+    const title = plain(text(first.title)).slice(0, 300)
     const baseRef = isGitlab ? text(first.target_branch) : text(record(first.base).ref)
     // Its page on the forge.
     const url = isGitlab ? text(first.web_url) : text(first.html_url)
@@ -927,37 +1130,623 @@ export const requestOfBranch = async (
 // The repo's open pull or merge requests, newest first, each by what a person
 // would type to open it ("#12", "!34") and its title. None where there is no
 // forge to ask, or it does not answer: a list to offer, never an error.
-export const listRequests = async (run: Run): Promise<{ typed: string; title: string }[]> => {
+//
+// Each also says who opened it, whether that is the person signed in to the
+// forge's CLI (`isMine`), whether it is a draft, the branch it is from, and
+// when it last changed (an ISO time, '' where the forge did not say).
+export type Listed = {
+  typed: string
+  title: string
+  author: string
+  isMine: boolean
+  isDraft: boolean
+  branch: string
+  when: string
+  // Whether it is still open, was merged, or was closed without merging.
+  state: 'open' | 'merged' | 'closed'
+  // The first line or two of what its description says, as plain text; ''
+  // for a request that says nothing.
+  summary: string
+  // Whether its checks pass ("SUCCESS", "FAILURE", "PENDING", GitLab's
+  // "RUNNING", ...) and what its reviews come to ("APPROVED", ...), in the
+  // forge's own words; '' where it has none or the forge did not say.
+  checks: string
+  decision: string
+}
+
+// The standing of each open request, asked of each forge its own way: the
+// state its last commit's checks add up to (GitHub), or its head pipeline's
+// (GitLab), and whether it is approved.
+const GITHUB_STANDING =
+  'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:50,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}'
+const GITLAB_STANDING =
+  'query($path:ID!){project(fullPath:$path){mergeRequests(state:opened,first:50,sort:UPDATED_DESC){nodes{iid approved approvedBy(first:1){nodes{username}} headPipeline{status}}}}}'
+
+// `isPast` lists the requests that are over in place of the open ones: those
+// merged and those closed without it, the latest to change first.
+export const listRequests = async (run: Run, isPast = false): Promise<Listed[]> => {
   const place = await locate(run, '1')
 
   if ('error' in place) {
     return []
   }
 
-  const listed = await call(
-    run,
-    place.forge === 'gitlab'
-      ? glab(place, `projects/${encodeURIComponent(place.repo)}/merge_requests?state=opened&per_page=30`)
-      : gh(place, `repos/${place.repo}/pulls?state=open&per_page=30`),
-    20_000,
-  )
+  const isGitlab = place.forge === 'gitlab'
+  const gitlabList = (state: string, count: number) =>
+    call(
+      run,
+      glab(
+        place,
+        `projects/${encodeURIComponent(place.repo)}/merge_requests?state=${state}&order_by=updated_at&per_page=${count}`,
+      ),
+      20_000,
+    )
+  // GitLab lists one state at a time, so the two that are over are asked
+  // side by side and read as one list (two answers back to back).
+  const past = async (): Promise<Awaited<ReturnType<typeof call>>> => {
+    if (!isGitlab) {
+      return call(run, gh(place, `repos/${place.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50`), 20_000)
+    }
+
+    const [merged, closed] = await Promise.all([gitlabList('merged', 30), gitlabList('closed', 20)])
+
+    return merged.exitCode !== 0 && closed.exitCode !== 0
+      ? merged
+      : { exitCode: 0, stdout: `${merged.exitCode === 0 ? merged.stdout : ''}${closed.exitCode === 0 ? closed.stdout : ''}`, stderr: '' }
+  }
+  const [listed, signedIn, stood] = await Promise.all([
+    isPast
+      ? past()
+      : isGitlab
+        ? gitlabList('opened', 50)
+        : call(run, gh(place, `repos/${place.repo}/pulls?state=open&per_page=50`), 20_000),
+    // Who is asking, to tell their own requests from the rest.
+    call(run, isGitlab ? glab(place, 'user') : gh(place, 'user'), 20_000),
+    // Whether each one's checks pass, and what its reviews come to: the
+    // list itself does not say, on either forge, so they are asked beside it.
+    // (Requests that are over are listed without it: it is of no use there.)
+    isPast ? Promise.resolve({ exitCode: 1, stdout: '', stderr: '' }) : call(
+      run,
+      isGitlab
+        ? glab(place, 'graphql', '-f', `query=${GITLAB_STANDING}`, '-f', `path=${place.repo}`)
+        : gh(
+            place,
+            'graphql',
+            '-f',
+            `query=${GITHUB_STANDING}`,
+            '-f',
+            `owner=${place.repo.split('/')[0] ?? ''}`,
+            '-f',
+            `name=${place.repo.split('/')[1] ?? ''}`,
+          ),
+      20_000,
+    ),
+  ])
 
   if (listed.exitCode !== 0) {
     return []
   }
 
+  // Each request's standing by its number; none where the forge did not say.
+  const standing = new Map<number, { checks: string; decision: string }>()
+
   try {
-    return values(listed.stdout).flatMap(raw => {
+    const data = record(record(JSON.parse(stood.stdout)).data)
+    const nodes = isGitlab
+      ? record(record(data.project).mergeRequests).nodes
+      : record(record(data.repository).pullRequests).nodes
+
+    for (const raw of stood.exitCode === 0 && Array.isArray(nodes) ? (nodes as unknown[]) : []) {
+      const node = record(raw)
+      const commit = record(record((Array.isArray(record(node.commits).nodes) ? (record(node.commits).nodes as unknown[]) : [])[0]).commit)
+
+      standing.set(Number(isGitlab ? node.iid : node.number), {
+        // A request the forge answered for that has no checks says so (NONE):
+        // the row then tells "none" from "the forge was not asked".
+        checks: plain(text(isGitlab ? record(node.headPipeline).status : record(commit.statusCheckRollup).state)).slice(0, 40) || 'NONE',
+        // GitLab calls a request approved when it needs no approval at all,
+        // so it is said to be only where someone did approve it.
+        decision: plain(
+          isGitlab
+            ? node.approved === true &&
+              Array.isArray(record(node.approvedBy).nodes) &&
+              (record(node.approvedBy).nodes as unknown[]).length > 0
+              ? 'APPROVED'
+              : ''
+            : text(node.reviewDecision),
+        ).slice(0, 40),
+      })
+    }
+  } catch {
+    standing.clear()
+  }
+
+  let me = ''
+
+  try {
+    const user = record(JSON.parse(signedIn.stdout))
+
+    me = signedIn.exitCode === 0 ? text(isGitlab ? user.username : user.login) : ''
+  } catch {
+    me = ''
+  }
+
+  try {
+    const rows: Listed[] = values(listed.stdout).flatMap(raw => {
       const one = record(raw)
-      const number = whole(place.forge === 'gitlab' ? one.iid : one.number)
+      const number = whole(isGitlab ? one.iid : one.number)
+      const by = record(isGitlab ? one.author : one.user)
+      const author = text(isGitlab ? by.username : by.login)
 
       return number === 0
         ? []
-        : [{ typed: `${place.forge === 'gitlab' ? '!' : '#'}${number}`, title: text(one.title) }]
+        : [
+            {
+              typed: `${isGitlab ? '!' : '#'}${number}`,
+              // What people wrote is made plain before it is handed on.
+              title: plain(text(one.title)).slice(0, 300),
+              author: plain(author).slice(0, 100),
+              isMine: me !== '' && author === me,
+              isDraft: (isGitlab ? (one.draft ?? one.work_in_progress) : one.draft) === true,
+              branch: plain(text(isGitlab ? one.source_branch : record(one.head).ref)).slice(0, 200),
+              when: text(one.updated_at),
+              // GitHub calls a merged request closed, and says when it was merged.
+              state: (isGitlab
+                ? text(one.state) === 'merged'
+                  ? 'merged'
+                  : text(one.state) === 'closed'
+                    ? 'closed'
+                    : 'open'
+                : typeof one.merged_at === 'string' && one.merged_at !== ''
+                  ? 'merged'
+                  : text(one.state) === 'closed'
+                    ? 'closed'
+                    : 'open') as Listed['state'],
+              checks: standing.get(number)?.checks ?? '',
+              decision: standing.get(number)?.decision ?? '',
+              summary:
+                sampleOf(
+                  typeof (isGitlab ? one.description : one.body) === 'string'
+                    ? ((isGitlab ? one.description : one.body) as string)
+                    : '',
+                  2,
+                  240,
+                ).join(' · '),
+            },
+          ]
     })
+
+    // Those that are over come latest first, whichever kind each is.
+    return isPast ? rows.filter(one => one.state !== 'open').sort((a, b) => b.when.localeCompare(a.when)) : rows
   } catch {
     return []
   }
+}
+
+// What a request is, beyond its code: what it says it does, whether its
+// checks pass, who has reviewed it, whether it can be merged, and its
+// commits. `lastReviewed` is the commit the person signed in to the forge's
+// CLI last reviewed it at ('' when they have not, or the forge did not say).
+export type Overview = {
+  title: string
+  body: string
+  author: string
+  state: string
+  isDraft: boolean
+  url: string
+  base: string
+  head: string
+  // What the forge says of merging it ("MERGEABLE", "CONFLICTING", ...) and
+  // of its reviews as a whole ("APPROVED", "CHANGES_REQUESTED", ...), in its
+  // own words; '' where it did not say.
+  mergeable: string
+  decision: string
+  checks: { name: string; state: string; url: string }[]
+  reviews: { author: string; state: string; when: string }[]
+  commits: { hash: string; subject: string; author: string }[]
+  labels: string[]
+  additions: number
+  deletions: number
+  files: number
+  lastReviewed: string
+}
+
+const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+
+// An overview as it is handed on to be drawn. All of it is what people on
+// the forge wrote (a title, a branch's name, a check's, a label), so every
+// word is made plain text first and held to a length, the description keeps
+// its lines but nothing a terminal would act on, and the lists are bounded.
+const LISTED = 200
+const WORD = 300
+const tidyOverview = (seen: Overview): Overview => {
+  const word = (value: string): string => plain(value).slice(0, WORD)
+  const link = (value: string): string => (/^https?:\/\/[\x21-\x7e]{1,2000}$/.test(value) ? value : '')
+
+  return {
+    title: word(seen.title),
+    body: plainBlock(seen.body).slice(0, 200_000),
+    author: word(seen.author),
+    state: word(seen.state),
+    isDraft: seen.isDraft,
+    url: link(seen.url),
+    base: word(seen.base),
+    head: word(seen.head),
+    mergeable: word(seen.mergeable),
+    decision: word(seen.decision),
+    checks: seen.checks.slice(0, LISTED).map(one => ({ name: word(one.name), state: word(one.state), url: link(one.url) })),
+    reviews: seen.reviews.slice(0, LISTED).map(one => ({ author: word(one.author), state: word(one.state), when: word(one.when) })),
+    commits: seen.commits.slice(-LISTED).map(one => ({ hash: word(one.hash), subject: word(one.subject), author: word(one.author) })),
+    labels: seen.labels.slice(0, LISTED).map(word),
+    additions: seen.additions,
+    deletions: seen.deletions,
+    files: seen.files,
+    // A commit's hash, or nothing: it is handed to git.
+    lastReviewed: /^[0-9a-f]{7,64}$/.test(seen.lastReviewed) ? seen.lastReviewed : '',
+  }
+}
+
+// Reads a request's overview from the forge. `typed` is what the person
+// typed to open it.
+export const readOverview = async (run: Run, typed: string): Promise<{ overview: Overview } | { error: string }> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place
+  }
+
+  if (place.forge === 'gitlab') {
+    const [seen, approvals, listed, signedIn] = await Promise.all([
+      call(run, glab(place, gitlabRequest(place))),
+      call(run, glab(place, `${gitlabRequest(place)}/approvals`)),
+      call(run, glab(place, `${gitlabRequest(place)}/commits?per_page=100`)),
+      call(run, glab(place, 'user'), 20_000),
+    ])
+
+    if (seen.exitCode !== 0) {
+      return { error: whyFailed(place, seen, 'read') }
+    }
+
+    try {
+      const one = record(JSON.parse(seen.stdout))
+      const pipeline = record(one.head_pipeline)
+      let approved: unknown[] = []
+      let isApproved = false
+      let isShort = false
+
+      try {
+        const answer = record(JSON.parse(approvals.stdout))
+
+        approved = values(JSON.stringify(answer.approved_by ?? []))
+        isApproved = answer.approved === true
+        isShort = count(answer.approvals_left) > 0
+      } catch {
+        approved = []
+      }
+
+      // Each of an answer's parts is read alone: one the forge did not give
+      // leaves its own list empty and the rest as they are.
+      const list = (ran: { exitCode: number; stdout: string }): Json[] => {
+        try {
+          return ran.exitCode === 0 ? values(ran.stdout).map(record) : []
+        } catch {
+          return []
+        }
+      }
+      let me = ''
+
+      try {
+        me = signedIn.exitCode === 0 ? text(record(JSON.parse(signedIn.stdout)).username) : ''
+      } catch {
+        me = ''
+      }
+
+      const approvers = new Set(approved.map(raw => text(record(record(raw).user).username)))
+      // The pipeline's jobs are its checks, each with its own page; and the
+      // commit the person last looked at is the head the request had when
+      // they last wrote on it: GitLab keeps each head it has had (its
+      // versions) and when, and each note's time.
+      const [jobs, notes, versions] = await Promise.all([
+        count(pipeline.id) > 0
+          ? call(run, glab(place, `projects/${encodeURIComponent(place.repo)}/pipelines/${count(pipeline.id)}/jobs?per_page=100`))
+          : Promise.resolve({ exitCode: 1, stdout: '', stderr: '' }),
+        me === ''
+          ? Promise.resolve({ exitCode: 1, stdout: '', stderr: '' })
+          : call(run, glab(place, `${gitlabRequest(place)}/notes?sort=desc&order_by=created_at&per_page=100`)),
+        me === ''
+          ? Promise.resolve({ exitCode: 1, stdout: '', stderr: '' })
+          : call(run, glab(place, `${gitlabRequest(place)}/versions`)),
+      ])
+      const lastSaid = text(
+        list(notes).find(note => text(record(note.author).username) === me && note.system !== true)?.created_at,
+      )
+      const seenAt =
+        lastSaid === ''
+          ? ''
+          : text(
+              list(versions)
+                .filter(version => text(version.created_at) !== '' && text(version.created_at) <= lastSaid)
+                .sort((one, other) => (text(one.created_at) < text(other.created_at) ? 1 : -1))[0]?.head_commit_sha,
+            )
+      const checks = list(jobs).map(job => ({
+        name: [text(job.stage), text(job.name)].filter(part => part !== '').join(': '),
+        state: text(job.status),
+        url: text(job.web_url),
+      }))
+
+      return {
+        overview: tidyOverview({
+          title: text(one.title),
+          body: typeof one.description === 'string' ? one.description : '',
+          author: text(record(one.author).username),
+          state: text(one.state),
+          isDraft: (one.draft ?? one.work_in_progress) === true,
+          url: text(one.web_url),
+          base: text(one.target_branch),
+          head: text(one.source_branch),
+          mergeable: text(one.detailed_merge_status) || text(one.merge_status),
+          decision: isApproved && !isShort ? 'APPROVED' : isShort ? 'REVIEW_REQUIRED' : approved.length > 0 ? 'APPROVED' : '',
+          // Its jobs, where they could be listed; else the pipeline as one.
+          checks:
+            checks.length > 0
+              ? checks
+              : text(pipeline.status) === ''
+                ? []
+                : [{ name: 'pipeline', state: text(pipeline.status), url: text(pipeline.web_url) }],
+          // Who has approved, then who was asked to review and has not.
+          reviews: [
+            ...[...approvers].map(author => ({ author, state: 'APPROVED', when: '' })),
+            ...(Array.isArray(one.reviewers) ? one.reviewers : [])
+              .map(raw => text(record(raw).username))
+              .filter(author => author !== '' && !approvers.has(author))
+              .map(author => ({ author, state: 'REVIEW_REQUESTED', when: '' })),
+          ],
+          // GitLab lists the newest first: oldest first here, as GitHub's are.
+          commits: list(listed)
+            .map(commit => ({
+              hash: text(commit.short_id) || text(commit.id).slice(0, 7),
+              subject: text(commit.title),
+              author: text(commit.author_name),
+            }))
+            .reverse(),
+          labels: (Array.isArray(one.labels) ? one.labels : []).map(named).filter(label => label !== ''),
+          additions: 0,
+          deletions: 0,
+          files: Number.parseInt(text(one.changes_count), 10) || 0,
+          lastReviewed: seenAt,
+        }),
+      }
+    } catch {
+      return { error: `glab's answer about ${place.label} could not be read` }
+    }
+  }
+
+  const [seen, signedIn] = await Promise.all([
+    call(run, [
+      'gh',
+      'pr',
+      'view',
+      String(place.number),
+      '--repo',
+      `${place.host}/${place.repo}`,
+      '--json',
+      'title,body,author,state,isDraft,url,baseRefName,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,latestReviews,commits,labels,additions,deletions,changedFiles',
+    ]),
+    call(run, gh(place, 'user'), 20_000),
+  ])
+
+  if (seen.exitCode !== 0) {
+    return { error: whyFailed(place, seen, 'read') }
+  }
+
+  try {
+    const one = record(JSON.parse(seen.stdout))
+    let me = ''
+
+    try {
+      me = signedIn.exitCode === 0 ? text(record(JSON.parse(signedIn.stdout)).login) : ''
+    } catch {
+      me = ''
+    }
+
+    const reviews = (Array.isArray(one.latestReviews) ? one.latestReviews : []).map(raw => {
+      const review = record(raw)
+
+      return {
+        author: text(record(review.author).login),
+        state: text(review.state),
+        when: text(review.submittedAt),
+        commit: text(record(review.commit).oid),
+      }
+    })
+
+    return {
+      overview: tidyOverview({
+        title: text(one.title),
+        body: typeof one.body === 'string' ? one.body : '',
+        author: text(record(one.author).login),
+        state: text(one.state),
+        isDraft: one.isDraft === true,
+        url: text(one.url),
+        base: text(one.baseRefName),
+        head: text(one.headRefName),
+        mergeable: [text(one.mergeable), text(one.mergeStateStatus)].filter(part => part !== '').join(' · '),
+        decision: text(one.reviewDecision),
+        checks: (Array.isArray(one.statusCheckRollup) ? one.statusCheckRollup : []).map(raw => {
+          const check = record(raw)
+
+          return {
+            name: text(check.name) || text(check.context),
+            // A run still going has no conclusion yet: its status says so.
+            state: text(check.conclusion) || text(check.state) || text(check.status),
+            url: text(check.detailsUrl) || text(check.targetUrl),
+          }
+        }),
+        reviews: reviews.map(({ author, state, when }) => ({ author, state, when })),
+        commits: (Array.isArray(one.commits) ? one.commits : []).map(raw => {
+          const commit = record(raw)
+          const by = record((Array.isArray(commit.authors) ? commit.authors : [])[0])
+
+          return {
+            hash: text(commit.oid).slice(0, 7),
+            subject: text(commit.messageHeadline),
+            author: text(by.login) || text(by.name),
+          }
+        }),
+        labels: (Array.isArray(one.labels) ? one.labels : []).map(raw => text(record(raw).name)).filter(label => label !== ''),
+        additions: count(one.additions),
+        deletions: count(one.deletions),
+        files: count(one.changedFiles),
+        lastReviewed: me === '' ? '' : (reviews.find(review => review.author === me)?.commit ?? ''),
+      }),
+    }
+  } catch {
+    return { error: `gh's answer about ${place.label} could not be read` }
+  }
+}
+
+// A comment's text as it is sent, from a field that holds one line: the two
+// characters `\n` typed there start a new line. And the other way, to put a
+// comment back in the field to be edited.
+export const unfold = (typed: string): string => typed.replace(/\\n/g, '\n')
+export const fold = (body: string): string => body.replace(/\r?\n/g, '\\n')
+
+// What was typed as a suggested replacement for the lines a comment is on,
+// in the form the forges read as one: a block they offer to apply.
+export const suggestionOf = (typed: string): string => `\`\`\`suggestion\n${unfold(typed)}\n\`\`\``
+
+// The replacement a comment suggests for its lines, when it suggests one:
+// the lines of its first `suggestion` block.
+export const suggestedLines = (body: string): string[] | undefined => {
+  const block = /```suggestion[^\n]*\n([\s\S]*?)\n?```/.exec(body.replace(/\r\n/g, '\n'))
+
+  return block === null ? undefined : (block[1] ?? '').split('\n')
+}
+
+// Who is signed in to the forge's CLI, by the name comments carry; '' where
+// the forge cannot be asked.
+export const whoAmI = async (run: Run): Promise<string> => {
+  const place = await locate(run, '1')
+
+  if ('error' in place) {
+    return ''
+  }
+
+  const seen = await call(run, place.forge === 'gitlab' ? glab(place, 'user') : gh(place, 'user'), 20_000)
+
+  try {
+    const user = record(JSON.parse(seen.stdout))
+
+    return seen.exitCode === 0 ? text(place.forge === 'gitlab' ? user.username : user.login) : ''
+  } catch {
+    return ''
+  }
+}
+
+// Where the forge keeps a comment, to change it, remove it or react to it:
+// a comment on a line, one on the request as a whole (GitHub numbers the
+// two apart, and prefixes the second kind here), or a GitLab note.
+const commentAt = (place: Place, one: Pick<Comment, 'id' | 'thread'>): string | undefined => {
+  if (place.forge === 'gitlab') {
+    return /^\d+$/.test(one.id)
+      ? (one.thread ?? '') !== ''
+        ? `${gitlabRequest(place)}/discussions/${one.thread}/notes/${one.id}`
+        : `${gitlabRequest(place)}/notes/${one.id}`
+      : undefined
+  }
+
+  const general = /^issue-(\d+)$/.exec(one.id)?.[1]
+
+  return general !== undefined
+    ? `repos/${place.repo}/issues/comments/${general}`
+    : /^\d+$/.test(one.id)
+      ? `repos/${place.repo}/pulls/comments/${one.id}`
+      : undefined
+}
+
+// Changes what a comment of the person's own says, removes it, or adds a
+// thumbs-up to it. Answers '' when the forge took it, else why not.
+export const changeComment = async (
+  run: Run,
+  typed: string,
+  one: Pick<Comment, 'id' | 'thread'>,
+  change: { edit: string } | 'delete' | 'like',
+): Promise<string> => {
+  if (typeof change === 'object' && change.edit.trim() === '') {
+    return 'A comment cannot be left empty: delete it instead'
+  }
+
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  const at = commentAt(place, one)
+
+  if (at === undefined) {
+    return 'That is not a comment the forge lets be changed from here'
+  }
+
+  const api = (...rest: string[]) => (place.forge === 'gitlab' ? glab(place, ...rest) : gh(place, ...rest))
+  const done = await call(
+    run,
+    change === 'delete'
+      ? api('-X', 'DELETE', at)
+      : change === 'like'
+        ? place.forge === 'gitlab'
+          ? api('-X', 'POST', `${at}/award_emoji`, '-f', 'name=thumbsup')
+          : api('-X', 'POST', `${at}/reactions`, '-f', 'content=+1')
+        : api('-X', place.forge === 'gitlab' ? 'PUT' : 'PATCH', at, '-f', `body=${change.edit}`),
+  )
+
+  return done.exitCode === 0 ? '' : whyFailed(place, done, 'comment on')
+}
+
+// What can be done to a request as a whole, from the pane.
+export type RequestAct = 'merge' | 'squash' | 'rebase' | 'close' | 'ready' | 'checkout'
+
+// Does it, through the forge's CLI: merges the request (as a merge commit,
+// squashed, or rebased), closes it, marks a draft ready for review, or
+// checks its branch out here. Answers '' when it was done, else why not.
+export const actOnRequest = async (run: Run, typed: string, act: RequestAct): Promise<string> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  const number = String(place.number)
+  const where = place.forge === 'gitlab' ? ['-R', `${place.host}/${place.repo}`] : ['--repo', `${place.host}/${place.repo}`]
+  const argv =
+    place.forge === 'gitlab'
+      ? act === 'close'
+        ? ['glab', 'mr', 'close', number, ...where]
+        : act === 'ready'
+          ? ['glab', 'mr', 'update', number, '--ready', ...where]
+          : act === 'checkout'
+            ? ['glab', 'mr', 'checkout', number, ...where]
+            : ['glab', 'mr', 'merge', number, '--yes', ...(act === 'squash' ? ['--squash'] : act === 'rebase' ? ['--rebase'] : []), ...where]
+      : act === 'close'
+        ? ['gh', 'pr', 'close', number, ...where]
+        : act === 'ready'
+          ? ['gh', 'pr', 'ready', number, ...where]
+          : act === 'checkout'
+            ? ['gh', 'pr', 'checkout', number, ...where]
+            : ['gh', 'pr', 'merge', number, `--${act}`, ...where]
+  const done = await call(run, argv, 120_000)
+
+  if (done.exitCode === 0) {
+    return ''
+  }
+
+  // The CLI's own last words say why best (a failing check, a conflict, a
+  // dirty working tree); the general reasons cover its not running at all.
+  const said = lastLine(done.stderr) || lastLine(done.stdout)
+
+  return said !== '' && done.exitCode !== -1 && done.exitCode !== 127
+    ? `${place.label} was not ${act === 'checkout' ? 'checked out' : act === 'ready' ? 'marked ready' : act === 'close' ? 'closed' : 'merged'}: ${said.slice(0, 200)}`
+    : whyFailed(place, done, 'read')
 }
 
 export const fetchComments = async (run: Run, typed: string): Promise<{ comments: Comment[] } | { error: string }> => {
@@ -975,14 +1764,24 @@ export const fetchComments = async (run: Run, typed: string): Promise<{ comments
 export const postComment = async (
   run: Run,
   typed: string,
-  at: { path: string; line: number; commit: string },
+  // `startLine`, where it is before `line`, makes it a comment on those lines
+  // together. GitHub takes the range; on GitLab the comment goes on the last
+  // line and says which lines it is about.
+  // `oldLine` puts the comment on a removed line, by its number in the
+  // target's version of the file: the left side of the forge's own diff.
+  at: { path: string; line: number; commit: string; startLine?: number; oldLine?: number },
   body: string,
 ): Promise<{ comment: Comment } | { error: string }> => {
   if (body.trim() === '') {
     return { error: 'Write something before posting the comment' }
   }
 
-  if (at.path === '' || !Number.isInteger(at.line) || at.line < 1 || at.commit === '') {
+  const oldLine = at.oldLine !== undefined && Number.isInteger(at.oldLine) && at.oldLine > 0 ? at.oldLine : 0
+
+  const startLine = at.startLine !== undefined && at.startLine > 0 && at.startLine < at.line ? at.startLine : 0
+
+  // Line 0 is the file as a whole, which both forges take a comment on.
+  if (at.path === '' || !Number.isInteger(at.line) || at.line < 0 || at.commit === '') {
     return { error: 'Pick a line of a file in the request to comment on' }
   }
 
@@ -993,7 +1792,14 @@ export const postComment = async (
   }
 
   if (place.forge === 'gitlab') {
-    return gitlabPost(run, place, at, body)
+    // A removed line, a whole file, one line or several: each is placed
+    // GitLab's own way there.
+    return gitlabPost(
+      run,
+      place,
+      { ...at, ...(oldLine > 0 ? { oldLine } : {}), ...(startLine > 0 ? { startLine } : {}) },
+      body,
+    )
   }
 
   // -f keeps the body as typed (-F would read "@file" and turn "true" into a boolean); the line must be a number.
@@ -1010,10 +1816,12 @@ export const postComment = async (
       `commit_id=${at.commit}`,
       '-f',
       `path=${at.path}`,
-      '-F',
-      `line=${at.line}`,
-      '-f',
-      'side=RIGHT',
+      ...(oldLine > 0
+        ? ['-F', `line=${oldLine}`, '-f', 'side=LEFT']
+        : at.line === 0
+          ? ['-f', 'subject_type=file']
+          : ['-F', `line=${at.line}`, '-f', 'side=RIGHT']),
+      ...(startLine === 0 || oldLine > 0 ? [] : ['-F', `start_line=${startLine}`, '-f', 'start_side=RIGHT']),
     ),
   )
 
@@ -1127,6 +1935,153 @@ export const resolveThread = async (
   return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'comment on')
 }
 
+// The files of a request the person has marked as viewed on the forge
+// itself, and the request's own id there, by which one is marked. GitHub
+// keeps these; GitLab has no such mark to read, and answers undefined, as
+// does a forge that cannot be asked. Paths are from the repo's root.
+const VIEWED_QUERY =
+  'query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){id files(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}}}}'
+
+export const readViewed = async (run: Run, typed: string): Promise<{ id: string; viewed: string[] } | undefined> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place || place.forge !== 'github') {
+    return undefined
+  }
+
+  const [owner = '', name = ''] = place.repo.split('/')
+  const seen = await call(
+    run,
+    gh(place, 'graphql', '--paginate', '-f', `query=${VIEWED_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${place.number}`),
+  )
+
+  if (seen.exitCode !== 0) {
+    return undefined
+  }
+
+  try {
+    let id = ''
+    const viewed: string[] = []
+
+    // A paginated call prints one answer for each page, back to back.
+    for (const page of values(seen.stdout)) {
+      const request = record(record(record(record(page).data).repository).pullRequest)
+
+      id ||= text(request.id)
+
+      for (const raw of Array.isArray(record(request.files).nodes) ? (record(request.files).nodes as unknown[]) : []) {
+        const file = record(raw)
+
+        if (file.viewerViewedState === 'VIEWED' && text(file.path) !== '') {
+          viewed.push(text(file.path))
+        }
+      }
+    }
+
+    return id === '' ? undefined : { id, viewed: viewed.slice(0, 5000) }
+  } catch {
+    return undefined
+  }
+}
+
+// Marks a file of a request as viewed on the forge, or takes the mark off.
+// `id` is the request's own, as `readViewed` gave it; `path` is from the
+// repo's root. Answers '' when the forge took it, else why not.
+export const markViewed = async (
+  run: Run,
+  typed: string,
+  id: string,
+  path: string,
+  isViewed: boolean,
+): Promise<string> => {
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place.error
+  }
+
+  if (place.forge !== 'github' || id === '') {
+    return ''
+  }
+
+  const verb = isViewed ? 'markFileAsViewed' : 'unmarkFileAsViewed'
+  const ran = await call(
+    run,
+    gh(
+      place,
+      'graphql',
+      '-f',
+      `query=mutation($id:ID!,$path:String!){${verb}(input:{pullRequestId:$id,path:$path}){clientMutationId}}`,
+      '-f',
+      `id=${id}`,
+      '-f',
+      `path=${path}`,
+    ),
+  )
+
+  return ran.exitCode === 0 ? '' : whyFailed(place, ran, 'read')
+}
+
+// A comment as a quotation, the way a forge's own "quote reply" starts an
+// answer: each of its lines after a ">", then a clear line for what follows.
+export const quoteOf = (one: Pick<Comment, 'body'>): string =>
+  `${one.body
+    .trim()
+    .split('\n')
+    .map(line => (line.trim() === '' ? '>' : `> ${line}`))
+    .join('\n')}\n\n`
+
+// Adds a comment to the request's conversation: one on the request as a
+// whole, on no line. Neither forge threads these on a pull request's own
+// page (GitHub not at all), so an answer to one is a new comment that quotes
+// it (see `quoteOf`).
+export const postGeneral = async (
+  run: Run,
+  typed: string,
+  body: string,
+): Promise<{ comment: Comment } | { error: string }> => {
+  if (body.trim() === '') {
+    return { error: 'Write something before posting the comment' }
+  }
+
+  const place = await locate(run, typed)
+
+  if ('error' in place) {
+    return place
+  }
+
+  const posted = await call(
+    run,
+    place.forge === 'gitlab'
+      ? glab(place, '-X', 'POST', `${gitlabRequest(place)}/notes`, '-f', `body=${body}`)
+      : gh(place, '-X', 'POST', `repos/${place.repo}/issues/${place.number}/comments`, '-f', `body=${body}`),
+  )
+
+  if (posted.exitCode !== 0) {
+    return { error: whyFailed(place, posted, 'comment on') }
+  }
+
+  try {
+    const one = record(JSON.parse(posted.stdout))
+
+    return {
+      comment:
+        place.forge === 'gitlab'
+          ? {
+              id: named(one.id),
+              path: '',
+              line: 0,
+              author: text(record(one.author).username) || 'ghost',
+              body: typeof one.body === 'string' ? one.body : body,
+              when: text(one.created_at),
+            }
+          : fromGithubGeneral(one, 'issue'),
+    }
+  } catch {
+    return { error: `The comment may have been posted on ${place.label}, but its answer could not be read: reload to check` }
+  }
+}
+
 // Submits a review of the request: an approval, a request for changes, or a
 // comment, with a summary. Answers '' when the forge took it, else why not.
 export const submitReview = async (
@@ -1134,22 +2089,109 @@ export const submitReview = async (
   typed: string,
   verdict: 'approve' | 'request-changes' | 'comment',
   summary: string,
-): Promise<string> => {
-  const body = summary.trim()
+): Promise<string> => (await submitDrafted(run, typed, verdict, summary, { drafts: [], commit: '', prefix: '' })).refusal
 
-  if (verdict !== 'approve' && body === '') {
-    return 'Write a summary first: it is what the review says'
+// Submits a review with the comments written for it (`drafts`), which go to
+// the forge with the verdict. `commit` is the request's head, which the
+// comments are placed on, and `prefix` the folder under review's place in
+// the repo. Answers why it was not taken ('' when it was) and which drafts
+// did reach the forge (`sent`, by id), so those are not sent twice.
+//
+// GitHub takes the comments on lines and the verdict as one review. A
+// comment on a file as a whole is no part of that call there, and GitLab
+// has no such call at all: those are posted one at a time, before the
+// verdict.
+export const submitDrafted = async (
+  run: Run,
+  typed: string,
+  verdict: 'approve' | 'request-changes' | 'comment',
+  summary: string,
+  pending: { drafts: readonly Draft[]; commit: string; prefix: string },
+): Promise<{ refusal: string; sent: string[] }> => {
+  const body = summary.trim()
+  const sent: string[] = []
+  const { drafts, commit, prefix } = pending
+
+  if (verdict !== 'approve' && body === '' && drafts.length === 0) {
+    return { refusal: 'Write a summary first: it is what the review says', sent }
   }
 
   const place = await locate(run, typed)
 
   if ('error' in place) {
-    return place.error
+    return { refusal: place.error, sent }
   }
 
+  // The comments posted one at a time: all of them on GitLab, those on a
+  // whole file on GitHub.
+  // A comment on a removed line is on a line too (of the other side), and
+  // goes with the review.
+  const isOnLine = (one: Draft): boolean => one.line > 0 || (one.oldLine ?? 0) > 0
+
+  for (const draft of drafts.filter(one => place.forge === 'gitlab' || !isOnLine(one))) {
+    const posted = await postComment(
+      run,
+      typed,
+      {
+        path: `${prefix}${draft.path}`,
+        line: draft.line,
+        commit,
+        ...(draft.startLine === undefined ? {} : { startLine: draft.startLine }),
+        ...(draft.oldLine === undefined ? {} : { oldLine: draft.oldLine }),
+      },
+      draft.body,
+    )
+
+    if ('error' in posted) {
+      return { refusal: posted.error, sent }
+    }
+
+    sent.push(draft.id)
+  }
+
+  const refusal = await submitVerdict(
+    run,
+    place,
+    verdict,
+    body,
+    place.forge === 'gitlab' ? [] : drafts.filter(isOnLine),
+    commit,
+    prefix,
+  )
+
+  return refusal === ''
+    ? { refusal, sent: drafts.map(one => one.id) }
+    : { refusal, sent }
+}
+
+const submitVerdict = async (
+  run: Run,
+  place: Place,
+  verdict: 'approve' | 'request-changes' | 'comment',
+  body: string,
+  onLines: readonly Draft[],
+  commit: string,
+  prefix: string,
+): Promise<string> => {
   if (place.forge === 'gitlab') {
+    // GitLab takes "changes requested" as a quick action in a comment: the
+    // line `/request_changes` on its own, which it acts on and does not
+    // show. An older GitLab that does not know it shows it as text, under
+    // the summary that says the same.
     if (verdict === 'request-changes') {
-      return 'GitLab has no call for requesting changes here: submit a comment saying what to change'
+      const asked = await call(
+        run,
+        glab(
+          place,
+          '-X',
+          'POST',
+          `${gitlabRequest(place)}/notes`,
+          '-f',
+          `body=${body === '' ? 'Changes requested.' : body}\n\n/request_changes`,
+        ),
+      )
+
+      return asked.exitCode === 0 ? '' : whyFailed(place, asked, 'comment on')
     }
 
     if (verdict === 'approve') {
@@ -1173,6 +2215,44 @@ export const submitReview = async (
   }
 
   const event = verdict === 'approve' ? 'APPROVE' : verdict === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
+
+  // With comments, the review is one JSON body: a list does not fit the
+  // CLI's fields.
+  if (onLines.length > 0) {
+    const whole = await run(
+      gh(place, '-X', 'POST', `repos/${place.repo}/pulls/${place.number}/reviews`, '--input', '-'),
+      COMMENTS_MS,
+      JSON.stringify({
+        event,
+        ...(body === '' ? {} : { body }),
+        ...(commit === '' ? {} : { commit_id: commit }),
+        comments: onLines.map(one =>
+          (one.oldLine ?? 0) > 0
+            ? // A removed line is on the left of the forge's diff, by its
+              // number in the target's version of the file.
+              { path: `${prefix}${one.path}`, line: one.oldLine, side: 'LEFT', body: one.body }
+            : {
+                path: `${prefix}${one.path}`,
+                line: one.line,
+                side: 'RIGHT',
+                body: one.body,
+                ...(one.startLine !== undefined && one.startLine > 0 && one.startLine < one.line
+                  ? { start_line: one.startLine, start_side: 'RIGHT' }
+                  : {}),
+              },
+        ),
+      }),
+    ).catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: String(error) }))
+
+    return whole.exitCode === 0 ? '' : whyFailed(place, whole, 'comment on')
+  }
+
+  // GitHub refuses a comment-only review that says nothing: with its
+  // comments all posted already, there is nothing left to send.
+  if (verdict === 'comment' && body === '') {
+    return ''
+  }
+
   const sent = await call(
     run,
     gh(

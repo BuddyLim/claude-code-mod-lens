@@ -39,33 +39,59 @@ import type { InlayHint, SemanticToken } from './lsp-types'
 import { ISSUES_SENT, codeBlock, diagBlock, issueList, quoteBlock, talkBlock } from './prompt'
 import { cleanUp, recentOf, remember, settledRecents } from './recents'
 import { findingComments, isFinding, placeOf } from './ledger'
-import type { Comment, Run as ForgeRun } from './review'
+import { hostOf, mediaOf, plain, plainBlock, sampleOf } from './media'
+import type { Picture } from './pictures'
+import { PICTURES_SHOWN, fetchPicture, isFetched, isPictureFile, localPicture } from './pictures'
+import type { PatchFile } from './patch'
+import { CONTEXT, CONTEXTS, applyHunk, hunkMark, readPatch } from './patch'
+import type { Comment, Draft, Listed, Overview, RequestAct, Run as ForgeRun } from './review'
 import {
+  markViewed,
+  readViewed,
+  changeComment,
+  fold,
+  suggestionOf,
+  unfold,
+  whoAmI,
+  actOnRequest,
+  readOverview,
+  draftComment,
+  draftId,
+  isDraft,
+  submitDrafted,
   fetchComments,
   parseRequest,
+  isOnWholeFile,
   postComment,
+  postGeneral,
+  quoteOf,
   listRequests,
   replyComment,
   requestOfBranch,
   repoPrefix,
   resolveRequest,
   resolveThread,
-  submitReview,
 } from './review'
 import type { Run } from './run'
 import { tail } from './run'
 import type { Job } from './scan'
 import { allFilesOf, historyOf, isQueued, noteTouched, scanRepo } from './scan'
 import type { FileWindow, Insight } from './screens/file'
-import { fileScreen } from './screens/file'
+import { FILE_COMMENT, fileScreen } from './screens/file'
 import type { Shell } from './screens/frame'
-import { frame, kitOf } from './screens/frame'
+import { COMMENT_COLOR, TOP_MARGIN, frame, kitOf, moreBelow, stateOf } from './screens/frame'
+import { rowsBelow, rowsOf } from './rows'
 import type { GraphWindow } from './screens/graph'
 import { graphScreen } from './screens/graph'
 import { helpScreen } from './screens/help'
 import { listScreen } from './screens/list'
 import { isMarkdownFile, markdownScreen } from './screens/markdown'
+import type { ChangesWindow } from './screens/changes'
+import { changesScreen } from './screens/changes'
+import { overviewScreen } from './screens/overview'
+import { pictureScreen } from './screens/picture'
 import { recentsScreen } from './screens/recents'
+import { requestsScreen } from './screens/requests'
 import { treeScreen } from './screens/tree'
 import { foldOf } from './semantic'
 import type { Settings } from './settings'
@@ -86,6 +112,7 @@ import {
   settledView,
   totalsOf,
 } from './state'
+import { stepShown } from './changes'
 import { clamp, foldEnd } from './text'
 
 const PANE = 'lens'
@@ -144,6 +171,8 @@ let cache:
       commit: string
       lines: Span[][]
       removed: Record<number, string[]>
+      // Where the first of each run of removed lines was, in the base.
+      removedAt: Record<number, number>
       // A commit's own changed lines; the working tree's come from the scan.
       changed: LineRange[] | undefined
     }
@@ -158,11 +187,16 @@ let isLoading = false
 let draft = ''
 let draftBody = ''
 let commentDraft = ''
+// Whether anything has been typed since a comment was put in the field to be changed.
+let commentTouched = false
 // How many comments have been sent or dropped: see `FileModel.commentRound`.
 let commentRound = 0
 // The same for the review being written in the file tree's box.
 let reviewDraft = ''
 let reviewRound = 0
+// And for the comment on the request as a whole being written there.
+let talkDraft = ''
+let talkRound = 0
 
 // How the language-server bridge runs its commands, made by `serverRun` from
 // the first handle that needs it.
@@ -188,10 +222,12 @@ const showPlace = async ($: EngineInterface, named: string, line: number): Promi
 
   if (repo === '') {
     const top = await run(['git', '-C', full.replace(/\/[^/]*$/, ''), 'rev-parse', '--show-toplevel'])
-    repo = top.exitCode === 0 ? top.stdout.trim() : ''
+    // Outside any repository, the session's folder is listed where it holds
+    // the file.
+    repo = top.exitCode === 0 ? top.stdout.trim() : root
 
     if (repo === '' || !full.startsWith(`${repo}/`)) {
-      $.ui.toast(`Lens: ${named} is not in a git repository`)
+      $.ui.toast(`Lens: ${named} is not in a git repository or this session's folder`)
 
       return
     }
@@ -255,7 +291,51 @@ let branchRequest:
 
 // The repo's open pull or merge requests, for the compare panel to offer.
 // Written by `loadRequests`, when the panel opens.
-let requestsCache: { repo: string; list: { typed: string; title: string }[] } | undefined
+let requestsCache: { repo: string; list: Listed[] } | undefined
+// Whether the list is of the requests that are over (merged or closed) in
+// place of the open ones.
+let requestsPast = false
+
+// The whole comparison as one page, for the changes screen: what git said of
+// the repo, base and target in `key`. Written by `loadPatch`, when that
+// screen opens or is refreshed; `patchWanted` is the key being read.
+// `staged` is the marks of the hunks the index holds (see `hunkMark`).
+let patchCache: { key: string; files: PatchFile[]; refusal: string; staged: Set<string> } | undefined
+// How many unchanged lines each file expanded on that page shows round its
+// changes, by path, for the page in `key`; and how many each press adds.
+let pageMore: { key: string; by: Map<string, number> } = { key: '', by: new Map() }
+const MORE_STEP = 20
+// The hunk whose undoing the page is asking about, by its name; '' for none.
+let hunkAsked = ''
+let patchWanted: string | undefined
+// The files of that page as the highlighter coloured them, by path, and the
+// ones asked for: written by `colorPage` as each stretch of the page is drawn.
+let pageColors: { key: string; lines: Map<string, Span[][]>; asked: Set<string> } = {
+  key: '',
+  lines: new Map(),
+  asked: new Set(),
+}
+// How many files are highlighted at a time, and how many times one is asked
+// for before it is left plain; `colorTries` counts them, by page and path.
+const COLORED_AT_ONCE = 3
+const COLOR_TRIES = 3
+const colorTries = new Map<string, number>()
+// The changes screen's window as last drawn, for the scroll hook.
+let pageWindow: ChangesWindow = { maxTop: 0 }
+
+// The view with its count of asked-for drawings one higher: what a module
+// value changing (a list read, a file coloured) writes to have the pane
+// drawn again. A value written back unchanged is no change to draw for.
+const nudged = (last: View): View => ({ ...last, redraws: (last.redraws ?? 0) + 1 })
+
+// How many requests' ticks are kept between sessions.
+const REVIEWED_KEPT = 40
+// And how many ticked files of each.
+const REVIEWED_PATHS = 2000
+// How many lines of a request's description the file tree shows.
+const ABOUT_LINES = 3
+// The most comments one review holds unsent.
+const DRAFTS_KEPT = 200
 
 // What the folder the breadcrumb last opened holds, written by `loadCrumb`.
 let crumbCache: { dir: string; entries: string[] } | undefined
@@ -269,8 +349,12 @@ let blameCache: { path: string; commit: string; lines: Blamed[] } | undefined
 // and whether the pane's own scroll needs holding one row down, for a screen
 // that draws its own window; the drawing asks, the timer does it.
 let graphWindow: GraphWindow = { header: 0, kinds: [], maxTop: 0, bodyMax: 0 }
-let fileWindow: FileWindow = { maxTop: 1, crumbBox: undefined }
+let fileWindow: FileWindow = { maxTop: 1, shown: undefined, crumbBox: undefined }
 let wantPin = false
+// How many rows the last drawing of a screen the pane scrolls was reckoned
+// to take, and what the engine then said it took (see `rowsBelow`).
+let paneEstimate = 0
+let paneMeasured: { content: number; estimate: number } | undefined
 
 const noteEdit = async ($: EngineInterface, path: string): Promise<void> => {
   const { repo, isTelling } = await read($, view)
@@ -293,6 +377,12 @@ const runOf =
       .run(argv, init ?? {})
       .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: String(error) }))
 
+// The open file where it is a picture: itself and what it was before, each
+// as a file the terminal draws, or undefined where there is none to draw.
+let shot:
+  | { path: string; commit: string; now: Picture | undefined; before: Picture | undefined; against: string }
+  | undefined
+
 // Reads a whole file as coloured lines and keeps it for the file screen, with
 // what the diff view interleaves.
 //
@@ -306,6 +396,30 @@ const loadSource = async (
   commit = '',
 ): Promise<void> => {
   const run = runOf($)
+
+  // A picture is not read as text: it is made a file the terminal draws,
+  // and so is what it was on the other side, where it was a different one.
+  if (isPictureFile(path)) {
+    const { base, target, diffBase } = await read($, view)
+    const own = commit === '' && diffBase?.path === path && diffBase.base !== '' ? diffBase.base : ''
+    const other = commit === '' ? own || base || 'HEAD' : commit === target && base !== '' ? base : `${commit}^`
+    const [now, was] = await Promise.all([localPicture(run, repo, path, commit), localPicture(run, repo, path, other)])
+
+    shot = {
+      path,
+      commit,
+      now,
+      before: was !== undefined && was.file !== now?.file ? was : undefined,
+      against: /^[0-9a-f]{40}$/.test(other) ? other.slice(0, 8) : other,
+    }
+    cache = { path, commit, lines: [], removed: {}, removedAt: {}, changed: undefined }
+    insight = undefined
+    const stamp = await $.clock.now()
+    await update($, source, () => ({ path, lineCount: 0, note: '', stamp }))
+
+    return
+  }
+
   const committed = commit === '' ? undefined : await git.fileAt(run, repo, path, commit)
   const { lines, note } = await readSource(
     run,
@@ -319,7 +433,7 @@ const loadSource = async (
   const own = commit === '' && diffBase?.path === path && diffBase.base !== '' ? diffBase.base : ''
   const diff = await git.fileDiff(run, repo, path, commit, own || base, target ?? '', own !== '')
 
-  cache = { path, commit, lines, removed: diff.removed, changed: diff.changed }
+  cache = { path, commit, lines, removed: diff.removed, removedAt: diff.removedAt, changed: diff.changed }
   const stamp = await $.clock.now()
   await update($, source, () => ({ path, lineCount: lines.length, note, stamp }))
 
@@ -382,9 +496,18 @@ const openReview = async (
     layout: kept?.layout ?? 'tree',
     isBrowsing: kept?.isBrowsing ?? false,
   }))
+  // The ticks of the requests reviewed before come back with the review.
+  void readReviewed($).then(reviewed => update($, view, (last): View => ({ ...last, reviewed })))
+  // And the comments written for a review and not sent yet.
+  void readDrafts($).then(drafts => update($, view, (last): View => ({ ...last, drafts })))
   await update($, scan, () => ({ ...NO_SCAN, status: 'running' }))
   job = { isProject: false }
   await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+
+  // A folder git does not know has nothing to compare: its files are listed.
+  if ((await git.findRepo(runOf($), repo)) === '') {
+    return `Listing ${repo}, which is not in a git repository: its code files are checked, and nothing is compared.`
+  }
 
   if (kept === undefined || (kept.base === 'HEAD' && kept.target === '')) {
     return `Reviewing ${repo} against ${base ?? 'HEAD'}.`
@@ -874,8 +997,8 @@ const applyStash = async (
 // How the forge module runs its commands: in the folder under review.
 const forgeRun =
   (run: Run, repo: string): ForgeRun =>
-  (argv, timeoutMs = 60_000) =>
-    run(argv, { cwd: repo, timeoutMs })
+  (argv, timeoutMs = 60_000, stdin) =>
+    run(argv, { cwd: repo, timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
 
 // How long what the forge said of a branch's request is taken as still so.
 const BRANCH_REQUEST_MS = 5 * 60_000
@@ -921,9 +1044,377 @@ const findBranchRequest = async ($: EngineInterface, repo: string): Promise<stri
 
 // Asks the forge for the repo's open requests and has the compare panel,
 // which is already open, drawn again with them.
+// The overview of the request under review, as the forge gave it, or why it
+// did not. Written by `loadOverview`, when the overview screen opens.
+let overviewCache: { key: string; overview: Overview | undefined; refusal: string } | undefined
+let overviewWanted: string | undefined
+// Who is signed in to the forge for a repo, by the name comments carry: read
+// once for each, by `loadMe`, so the person's own comments can be told.
+let meCache: { repo: string; me: string } | undefined
+let meWanted = ''
+
+const loadMe = async ($: EngineInterface, repo: string): Promise<void> => {
+  meWanted = repo
+  meCache = { repo, me: await whoAmI(forgeRun(runOf($), repo)) }
+  await update($, view, nudged)
+}
+// The action on a request the overview is asking about before it is done
+// (of which request, and which), and whether one is under way.
+// The request being opened from the list, as it is typed; '' for none.
+let requestOpening = ''
+let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
+let requestActing = false
+
+// The pictures of descriptions, by their address: fetched (the file that
+// holds each), being fetched, or not drawable. Held for the session, and
+// held to a size: the oldest go when it is passed.
+const pictureCache = new Map<string, Picture | 'loading' | 'none'>()
+const PICTURES_KEPT = 200
+
+// Lets the oldest pictures go once more are held than are kept.
+const trimPictures = (): void => {
+  if (pictureCache.size > PICTURES_KEPT) {
+    for (const old of [...pictureCache.keys()].slice(0, pictureCache.size - PICTURES_KEPT)) {
+      pictureCache.delete(old)
+    }
+  }
+}
+
+// How a request stands, in a few parts for a row of the file tree: its
+// checks (the worst of them says how they stand), what its reviews come to,
+// and whether it merges. Each part is the state that colours it, in the
+// forge's own word, and the words to say.
+const standingOf = (overview: Overview | undefined): [state: string, words: string][] => {
+  if (overview === undefined) {
+    return []
+  }
+
+  const marks = overview.checks.map(check => stateOf(check.state)[0])
+  const failed = marks.filter(mark => mark === '✖').length
+  const going = marks.filter(mark => mark === '●').length
+
+  return [
+    ...(overview.checks.length === 0
+      ? [['NONE', 'no checks'] as [string, string]]
+      : [
+          failed > 0
+            ? (['FAILURE', `${failed} of ${marks.length} checks fail`] as [string, string])
+            : going > 0
+              ? (['PENDING', `${going} of ${marks.length} checks running`] as [string, string])
+              : (['SUCCESS', `${marks.length} ${marks.length === 1 ? 'check passes' : 'checks pass'}`] as [string, string]),
+        ]),
+    ...(overview.decision === ''
+      ? []
+      : [[overview.decision, overview.decision.toLowerCase().replace(/_/g, ' ')] as [string, string]]),
+    ...(overview.mergeable === ''
+      ? []
+      : [[overview.mergeable, overview.mergeable.toLowerCase().replace(/_/g, ' ')] as [string, string]]),
+  ]
+}
+
+const loadOverview = async ($: EngineInterface, repo: string, typed: string): Promise<void> => {
+  const key = `${repo}\n${typed}`
+
+  overviewWanted = key
+
+  const answer = await readOverview(forgeRun(runOf($), repo), typed)
+
+  if (overviewWanted === key) {
+    overviewWanted = undefined
+    overviewCache =
+      'error' in answer
+        ? { key, overview: undefined, refusal: plain(answer.error).slice(0, 300) }
+        : { key, overview: answer.overview, refusal: '' }
+    await update($, view, nudged)
+  }
+}
+
 const loadRequests = async ($: EngineInterface, repo: string): Promise<void> => {
-  requestsCache = { repo, list: await listRequests(forgeRun(runOf($), repo)) }
-  await update($, view, (last): View => ({ ...last }))
+  const isPast = requestsPast
+  const list = await listRequests(forgeRun(runOf($), repo), isPast)
+
+  // An answer for the other list, asked for before the switch, is let go.
+  if (isPast === requestsPast) {
+    requestsCache = { repo, list }
+  }
+  await update($, view, nudged)
+}
+
+// Reads the whole comparison for the changes screen and has it drawn again.
+const loadPatch = async (
+  $: EngineInterface,
+  repo: string,
+  base: string,
+  target: string,
+  key: string,
+  context: number,
+  ignoresSpace: boolean,
+): Promise<void> => {
+  patchWanted = key
+
+  // With the working tree's own changes, what the index holds is read
+  // beside them, the same way, to say which hunks are staged.
+  const [read, index] = await Promise.all([
+    readPatch(runOf($), repo, base, target, { context, ignoresSpace }),
+    target === '' && !ignoresSpace
+      ? readPatch(runOf($), repo, base, '', { context, isStaged: true })
+      : Promise.resolve({ files: [], refusal: '' }),
+  ])
+
+  // A comparison asked for since is the one that counts.
+  if (patchWanted === key) {
+    patchCache = {
+      key,
+      ...read,
+      staged: new Set(index.files.flatMap(file => file.hunks.map(hunk => hunkMark(file, hunk)))),
+    }
+    patchWanted = undefined
+    await update($, view, nudged)
+  }
+}
+
+// Shows more of one file round its changes on the page of every change: the
+// file is read again with more unchanged lines, and takes its place there.
+const expandFile = async (
+  $: EngineInterface,
+  repo: string,
+  base: string,
+  target: string,
+  key: string,
+  path: string,
+  ignoresSpace: boolean,
+): Promise<void> => {
+  const held = patchCache?.key === key ? patchCache : undefined
+  const at = held?.files.findIndex(file => file.path === path) ?? -1
+
+  if (held === undefined || at === -1) {
+    return
+  }
+
+  const context = (pageMore.key === key ? (pageMore.by.get(path) ?? 0) : 0) + MORE_STEP
+
+  if (pageMore.key !== key) {
+    pageMore = { key, by: new Map() }
+  }
+
+  pageMore.by.set(path, context)
+
+  const read = await readPatch(runOf($), repo, base, target, { context, ignoresSpace, paths: [path] })
+  const [again] = read.files
+
+  if (again !== undefined && patchCache === held) {
+    held.files[at] = again
+    await update($, view, nudged)
+  }
+}
+
+// Highlights the files the changes screen has drawn and not yet coloured, a
+// few at a time, drawing the page again as each few come in. A file is read
+// as the comparison's new side has it: the target commit's, or the working
+// tree's.
+const colorPage = async (
+  $: EngineInterface,
+  key: string,
+  repo: string,
+  target: string,
+  paths: readonly string[],
+): Promise<void> => {
+  if (pageColors.key !== key) {
+    pageColors = { key, lines: new Map(), asked: new Set() }
+  }
+
+  const held = pageColors
+  const wanted = paths.filter(path => !held.asked.has(path))
+
+  for (const path of wanted) {
+    held.asked.add(path)
+  }
+
+  const run = runOf($)
+
+  for (let at = 0; at < wanted.length; at += COLORED_AT_ONCE) {
+    await Promise.all(
+      wanted.slice(at, at + COLORED_AT_ONCE).map(async path => {
+        const { lines, note } = await readSource(
+          run,
+          file => $.fs.read(file).catch(() => ''),
+          repo,
+          path,
+          undefined,
+          target,
+        )
+
+        // Where the highlighter did not run there are no colours to add. It
+        // may only have been slow to start (its first run, or a scan under
+        // way beside it), so the file is asked for again a couple of times.
+        if (note === '') {
+          held.lines.set(path, lines)
+        } else {
+          const tries = (colorTries.get(`${key}\n${path}`) ?? 0) + 1
+
+          colorTries.set(`${key}\n${path}`, tries)
+
+          if (tries < COLOR_TRIES) {
+            held.asked.delete(path)
+          }
+        }
+      }),
+    )
+
+    if (pageColors === held) {
+      await update($, view, nudged)
+    }
+  }
+}
+
+// The files ticked as reviewed, as the store keeps them between sessions.
+const readReviewed = async ($: EngineInterface): Promise<Record<string, string[]>> => {
+  const stored: unknown = await $.store.get('reviewed').catch(() => undefined)
+  const kept: Record<string, string[]> = {}
+
+  if (typeof stored === 'object' && stored !== null) {
+    for (const [key, paths] of Object.entries(stored)) {
+      if (Array.isArray(paths)) {
+        kept[key] = paths
+          .filter((path): path is string => typeof path === 'string')
+          .slice(-REVIEWED_PATHS)
+      }
+    }
+  }
+
+  // What the store holds is held to the same limits as what is written.
+  return Object.fromEntries(Object.entries(kept).slice(-REVIEWED_KEPT))
+}
+
+// The comments written for reviews and not sent yet, as the store keeps them
+// between sessions: only what reads as a draft is taken.
+const readDrafts = async ($: EngineInterface): Promise<View['drafts']> => {
+  const stored: unknown = await $.store.get('drafts').catch(() => undefined)
+  const kept: View['drafts'] = {}
+
+  if (typeof stored === 'object' && stored !== null) {
+    for (const [key, list] of Object.entries(stored).slice(-REVIEWED_KEPT)) {
+      if (Array.isArray(list)) {
+        kept[key] = list.flatMap((one: unknown): Draft[] => {
+          const draft = (typeof one === 'object' && one !== null ? one : {}) as Record<string, unknown>
+
+          return typeof draft.id === 'string' &&
+            typeof draft.path === 'string' &&
+            typeof draft.line === 'number' &&
+            typeof draft.body === 'string'
+            ? [
+                {
+                  id: draft.id,
+                  path: draft.path,
+                  line: draft.line,
+                  body: draft.body,
+                  ...(typeof draft.startLine === 'number' ? { startLine: draft.startLine } : {}),
+                  ...(typeof draft.oldLine === 'number' ? { oldLine: draft.oldLine } : {}),
+                },
+              ]
+            : []
+        })
+      }
+    }
+  }
+
+  return kept
+}
+
+// Changes a request's drafts, here and in the store. A request left with
+// none is dropped, and the oldest give way as the reviewed ticks do.
+const changeDrafts = async (
+  $: EngineInterface,
+  key: string,
+  change: (list: readonly Draft[]) => Draft[],
+): Promise<void> => {
+  await update($, view, (last): View => {
+    const { [key]: held = [], ...rest } = last.drafts ?? {}
+    const list = change(held).slice(-DRAFTS_KEPT)
+
+    return {
+      ...last,
+      drafts: Object.fromEntries(
+        [...Object.entries(rest), ...(list.length === 0 ? [] : [[key, list] as const])].slice(-REVIEWED_KEPT),
+      ),
+    }
+  })
+  await $.store.set('drafts', (await read($, view)).drafts ?? {}).catch(() => undefined)
+}
+
+// Ticks or unticks a file of a request as reviewed, here and in the store.
+// The request last ticked is kept last, and the oldest give way.
+// The request whose "viewed" marks the forge keeps, once they have been
+// read: its id there, and the folder under review's place in the repo. An
+// empty id is a forge that keeps none (the ticks are then the pane's own).
+let viewedCache: { key: string; id: string; prefix: string } | undefined
+let viewedWanted = ''
+
+// Reads the files the person has marked as viewed on the forge, and makes
+// them the request's ticks: the forge's word is the one that counts, since
+// it is what the request's own page shows.
+const loadViewed = async ($: EngineInterface, repo: string, typed: string, key: string): Promise<void> => {
+  viewedWanted = key
+
+  const run = forgeRun(runOf($), repo)
+  const [seen, prefix] = await Promise.all([readViewed(run, typed), repoPrefix(run)])
+
+  viewedCache = { key, id: seen?.id ?? '', prefix }
+
+  if (seen !== undefined) {
+    const paths = seen.viewed
+      .filter(path => path.startsWith(prefix))
+      .map(path => path.slice(prefix.length))
+      .slice(-REVIEWED_PATHS)
+
+    await update($, view, (last): View => {
+      const { [key]: _held, ...rest } = last.reviewed ?? {}
+
+      return {
+        ...last,
+        reviewed: Object.fromEntries([...Object.entries(rest), [key, paths]].slice(-REVIEWED_KEPT)),
+      }
+    })
+    await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
+  }
+}
+
+const toggleReviewed = async ($: EngineInterface, key: string, path: string): Promise<void> => {
+  await update($, view, (last): View => {
+    const { [key]: held = [], ...rest } = last.reviewed ?? {}
+    const paths = (
+      held.includes(path) ? held.filter(one => one !== path) : [...held, path]
+    ).slice(-REVIEWED_PATHS)
+
+    return {
+      ...last,
+      reviewed: Object.fromEntries([...Object.entries(rest), [key, paths]].slice(-REVIEWED_KEPT)),
+    }
+  })
+  await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
+}
+
+// Marks several files of a request as reviewed, or as not, in one go.
+const setReviewed = async (
+  $: EngineInterface,
+  key: string,
+  paths: readonly string[],
+  isOn: boolean,
+): Promise<void> => {
+  const named = new Set(paths)
+
+  await update($, view, (last): View => {
+    const { [key]: held = [], ...rest } = last.reviewed ?? {}
+    const kept = held.filter(one => !named.has(one))
+
+    return {
+      ...last,
+      reviewed: Object.fromEntries(
+        [...Object.entries(rest), [key, (isOn ? [...kept, ...paths] : kept).slice(-REVIEWED_PATHS)]].slice(-REVIEWED_KEPT),
+      ),
+    }
+  })
+  await $.store.set('reviewed', (await read($, view)).reviewed ?? {}).catch(() => undefined)
 }
 
 // Starts a comparison between two things the person named: `side` is what is
@@ -1122,6 +1613,11 @@ const postReview = async (
   path: string,
   line: number,
   body: string,
+  // The first line, when the comment is on several (`line` is the last).
+  from = 0,
+  // The removed line it is on, by its number in the other side (`line` is
+  // then 0); 0 for a comment on this side.
+  old = 0,
 ): Promise<void> => {
   if (body.trim() === '') {
     $.ui.toast('Type the comment first')
@@ -1138,8 +1634,14 @@ const postReview = async (
   const answer = await postComment(
     run,
     typed,
-    { path: `${prefix}${path}`, line, commit: head },
-    body.trim(),
+    {
+      path: `${prefix}${path}`,
+      line,
+      commit: head,
+      ...(from > 0 && from < line ? { startLine: from } : {}),
+      ...(old > 0 ? { oldLine: old } : {}),
+    },
+    unfold(body.trim()),
   )
 
   if ('error' in answer) {
@@ -1154,8 +1656,8 @@ const postReview = async (
 
   commentDraft = ''
   commentRound += 1
-  $.ui.toast(`Comment posted on line ${line}`)
-  await update($, view, last => ({ ...last, commentLine: 0 }))
+  $.ui.toast(line === 0 ? `Comment posted on ${path}` : `Comment posted on line ${line}`)
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, commentOld: 0 }))
 }
 
 // Answers the thread whose first comment is `root`, on the forge.
@@ -1178,7 +1680,7 @@ const postReply = async (
     return
   }
 
-  const answer = await replyComment(forgeRun(runOf($), repo), typed, root, body.trim())
+  const answer = await replyComment(forgeRun(runOf($), repo), typed, root, unfold(body.trim()))
 
   if ('error' in answer) {
     $.ui.toast(answer.error, { timeoutMs: 10_000 })
@@ -1195,7 +1697,7 @@ const postReply = async (
   commentDraft = ''
   commentRound += 1
   $.ui.toast(`Replied to ${root.author}`)
-  await update($, view, last => ({ ...last, commentLine: 0, replyTo: '' }))
+  await update($, view, last => ({ ...last, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
 }
 
 // Marks the thread `root` starts as resolved, or open again, on the forge.
@@ -1234,14 +1736,67 @@ const settleThread = async (
 }
 
 // Submits a review of the request under review, and says how it went.
+// Posts a comment on the request as a whole. `quoted` is the comment it
+// answers, which it then starts by quoting: neither forge threads these, so
+// that is how an answer says what it is to.
+const sendTalk = async (
+  $: EngineInterface,
+  repo: string,
+  typed: string,
+  quoted: Comment | undefined,
+  body: string,
+): Promise<void> => {
+  if (body.trim() === '') {
+    $.ui.toast('Type the comment first')
+
+    return
+  }
+
+  const answer = await postGeneral(
+    forgeRun(runOf($), repo),
+    typed,
+    `${quoted === undefined ? '' : quoteOf(quoted)}${unfold(body.trim())}`,
+  )
+
+  if ('error' in answer) {
+    $.ui.toast(answer.error, { timeoutMs: 10_000 })
+
+    return
+  }
+
+  if (commentsCache !== undefined && commentsCache.key === `${repo}\n${typed}`) {
+    commentsCache.comments.push(answer.comment)
+  }
+
+  talkDraft = ''
+  talkRound += 1
+  $.ui.toast(quoted === undefined ? 'Comment posted' : `Replied to ${quoted.author}`)
+  await update($, view, (last): View => ({ ...last, talkReply: '' }))
+}
+
 const sendReview = async (
   $: EngineInterface,
   repo: string,
   typed: string,
   verdict: 'approve' | 'request-changes' | 'comment',
   summary: string,
+  // The request's head when it is not what is checked out ('' then).
+  target = '',
 ): Promise<void> => {
-  const refusal = await submitReview(forgeRun(runOf($), repo), typed, verdict, summary)
+  const run = forgeRun(runOf($), repo)
+  const key = `${repo}\n${typed}`
+  const drafts = (await read($, view)).drafts?.[key] ?? []
+  // The comments written for the review go with it, on the request's head.
+  const [commit, prefix] =
+    drafts.length === 0
+      ? ['', '']
+      : await Promise.all([git.fullHash(runOf($), repo, target === '' ? 'HEAD' : target), repoPrefix(run)])
+  const { refusal, sent } = await submitDrafted(run, typed, verdict, unfold(summary), { drafts, commit, prefix })
+
+  // What reached the forge is no longer waiting, whether or not the rest did.
+  if (sent.length > 0) {
+    await changeDrafts($, key, list => list.filter(one => !sent.includes(one.id)))
+  }
 
   if (refusal !== '') {
     $.ui.toast(refusal, { timeoutMs: 10_000 })
@@ -1252,7 +1807,7 @@ const sendReview = async (
   reviewDraft = ''
   reviewRound += 1
   $.ui.toast(
-    verdict === 'approve' ? 'Approved' : verdict === 'comment' ? 'Review comment sent' : 'Changes requested',
+    `${verdict === 'approve' ? 'Approved' : verdict === 'comment' ? 'Review sent' : 'Changes requested'}${sent.length === 0 ? '' : `, with ${sent.length} ${sent.length === 1 ? 'comment' : 'comments'}`}`,
   )
   await update($, view, last => ({ ...last, isReviewing: false }))
   // What was said shows among the request's comments on the next scan.
@@ -1369,7 +1924,11 @@ export const register: Register = (on, options) => {
     const isFolder = /^[~./]/.test(words[0] ?? '')
     const folder = isFolder ? (words[0] ?? '.') : '.'
     const base = isFolder ? words[1] : words[0]
-    const repo = await git.findRepo(runOf($), folder)
+    const isRecent = words[0] === 'recent' && words.length === 1
+    // A folder git does not know is opened too, to list its files.
+    const repo = isRecent
+      ? ''
+      : (await git.findRepo(runOf($), folder)) || (await git.findFolder(runOf($), folder))
 
     if (repo !== '') {
       return { text: await openReview($, repo, base) }
@@ -1377,12 +1936,12 @@ export const register: Register = (on, options) => {
 
     if (isFolder) {
       return {
-        text: `/lens: ${folder} is not a folder inside a git repository. Check the path, or run /lens with no folder to pick a recent one.`,
+        text: `/lens: ${folder} is not a folder. Check the path, or run /lens recent to pick a recent one.`,
       }
     }
 
-    // Run where there is no repo, with none named: the pane opens on the
-    // repos reviewed lately, to pick one.
+    // Asked for the repos reviewed lately (/lens recent), or run where the
+    // folder cannot be read: the pane opens on them, to pick one.
     const list = await readRecents($)
 
     await update($, recents, () => list)
@@ -1392,8 +1951,8 @@ export const register: Register = (on, options) => {
     return {
       text:
         list.length === 0
-          ? 'This folder is not inside a git repository. Name one: /lens ~/Code/my-repo [base]'
-          : 'This folder is not inside a git repository: pick a recent one in the pane, or name one (/lens ~/Code/my-repo).',
+          ? 'Nothing has been reviewed lately. Name a folder: /lens ~/Code/my-repo [base]'
+          : 'Pick a recent one in the pane, or name a folder (/lens ~/Code/my-repo).',
     }
   })
 
@@ -1442,7 +2001,18 @@ export const register: Register = (on, options) => {
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const now = await read($, view)
 
-    if (e.origin.kind !== 'person' || now.screen === 'tree' || now.screen === 'list') {
+    // How tall the drawing came out, in the engine's own count: what says
+    // how much is below the window, in place of the estimate.
+    paneMeasured = { content: e.contentRows, estimate: paneEstimate }
+
+    // The screens as long as their lists are pages of the pane's own to scroll.
+    if (
+      e.origin.kind !== 'person' ||
+      now.screen === 'tree' ||
+      now.screen === 'list' ||
+      now.screen === 'requests' ||
+      now.screen === 'overview'
+    ) {
       return next(e)
     }
 
@@ -1459,6 +2029,18 @@ export const register: Register = (on, options) => {
       !(now.isDiff ?? false)
     ) {
       return next(e)
+    }
+
+    // The page of every change draws its own window too: the wheel and the
+    // scroll keys move its first row.
+    if (now.screen === 'changes') {
+      await update(
+        $,
+        view,
+        (last): View => ({ ...last, pageTop: clamp((last.pageTop ?? 0) + e.by, 0, pageWindow.maxTop) }),
+      )
+
+      return {}
     }
 
     if (now.screen === 'graph') {
@@ -1496,7 +2078,14 @@ export const register: Register = (on, options) => {
 
     await update($, view, last => ({
       ...last,
-      top: clamp((last.top ?? 1) + e.by, 1, fileWindow.maxTop),
+      // In the changes-only view the window steps among the lines that show.
+      top: clamp(
+        fileWindow.shown === undefined
+          ? (last.top ?? 1) + e.by
+          : stepShown(fileWindow.shown, last.top ?? 1, e.by),
+        1,
+        fileWindow.maxTop,
+      ),
     }))
 
     return {}
@@ -1549,13 +2138,17 @@ export const register: Register = (on, options) => {
       requestTyped !== '' && commentsCache?.key === `${repo}\n${requestTyped}`
         ? commentsCache
         : undefined
-    const requestComments = (reviewed?.comments ?? []).flatMap(one =>
-      one.path === ''
-        ? [one]
-        : one.path.startsWith(reviewed?.prefix ?? '')
-          ? [{ ...one, path: one.path.slice((reviewed?.prefix ?? '').length) }]
-          : [],
-    )
+    const requestComments = (reviewed?.comments ?? [])
+      .flatMap(one =>
+        one.path === ''
+          ? [one]
+          : one.path.startsWith(reviewed?.prefix ?? '')
+            ? [{ ...one, path: one.path.slice((reviewed?.prefix ?? '').length) }]
+            : [],
+      )
+      // What other people wrote is drawn as plain text: nothing in it that
+      // a terminal would act on reaches the pane.
+      .map(one => ({ ...one, author: plain(one.author), body: plainBlock(one.body) }))
     // The ledger mod's review findings, where it is loaded and has a run, join
     // them: each shows on its line as a thread does. Reading the run here
     // draws the pane again when it changes.
@@ -1564,8 +2157,27 @@ export const register: Register = (on, options) => {
       () => undefined,
     )
     const sessionRoot = await $.session.cwd().catch(() => '')
+    // With a request under review, who the person is on the forge is asked
+    // once, to tell their own comments by.
+    if (requestTyped !== '' && meCache?.repo !== repo && meWanted !== repo) {
+      void loadMe($, repo)
+    }
+
+    // And what the request says of itself is read once, for the file tree
+    // to show its title and the first lines of its description.
+    const aboutKey = `${repo}\n${requestTyped}`
+    const aboutRequest = requestTyped !== '' && overviewCache?.key === aboutKey ? overviewCache : undefined
+
+    if (requestTyped !== '' && aboutRequest === undefined && overviewWanted !== aboutKey) {
+      void loadOverview($, repo, requestTyped)
+    }
+
+    // The comments written for the review and not sent yet are drawn where
+    // they will sit, as comments of their own kind.
+    const drafts = requestTyped === '' ? [] : (now.drafts[`${repo}\n${requestTyped}`] ?? [])
     const comments = [
       ...requestComments,
+      ...drafts.map(draftComment),
       ...findingComments(
         ledgerRun,
         repo,
@@ -1590,10 +2202,11 @@ export const register: Register = (on, options) => {
 
     const shell: Shell = {
       columns: (e.props.bodyColumns ?? 80) - inset - 2 * settings.sidePadding,
-      rows: (e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30) - inset,
+      rows: (e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30) - inset - TOP_MARGIN,
       inset,
       padding: settings.sidePadding,
       repoName: repo.split('/').pop() ?? '',
+      isPlain: found.isPlain,
       // git lists the main checkout first; any other is a worktree of it.
       worktreeOf:
         found.worktrees.length > 1 && found.worktrees[0]?.isCurrent === false
@@ -1623,12 +2236,37 @@ export const register: Register = (on, options) => {
     // A screen that draws its own window (`isOwn`) needs the pane held one
     // row down (see `frame`): asked for here, done by the timer once the
     // screen has been drawn.
-    const framed = (screen: RenderChildren, isOwn = false) => {
+    //
+    // Where there is more below the window than it shows, a mark says so on
+    // its last row. A screen that draws its own window says how many rows it
+    // has left (`left`); for the rest it is worked out from the drawing, and
+    // from the engine's own count once the person has scrolled.
+    const framed = (screen: RenderChildren, isOwn = false, color?: string, left = 0) => {
       if (isOwn) {
         wantPin = (e.props.scroll?.offset ?? 1) !== 1
       }
 
-      return frame(kit, isComparing, settings.sidePadding, screen, isOwn)
+      const tree = frame(kit, isComparing, settings.sidePadding, screen, isOwn, color)
+      const scroll = e.props.scroll
+
+      if (scroll === undefined) {
+        return tree
+      }
+
+      if (isOwn) {
+        return moreBelow(kit, tree, scroll.offset + scroll.bodyRows - 1, left > 0 ? `▼ ${left} more below` : '')
+      }
+
+      paneEstimate = rowsOf(tree as never, e.props.bodyColumns ?? 80)
+
+      const { below, isExact } = rowsBelow(paneEstimate, { offset: scroll.offset, rows: scroll.bodyRows }, paneMeasured)
+
+      return moreBelow(
+        kit,
+        tree,
+        scroll.offset + scroll.bodyRows - 1,
+        below <= 0 ? '' : isExact ? `▼ ${below} more below` : '▼ more below',
+      )
     }
 
     // What several screens' actions are made of.
@@ -1638,6 +2276,29 @@ export const register: Register = (on, options) => {
     }
     const help = (): void => set(last => ({ ...last, isHelp: true }))
 
+      // A request has been pressed: its page is drawn at once, as it is
+      // while the forge is asked about it, so the bars that stand for it do
+      // not change shape when the request has been opened and is being read.
+      if (requestOpening !== '') {
+        const still = (): void => undefined
+
+        return framed(
+          overviewScreen(
+            kit,
+            {
+              shell,
+              label: `${requestOpening.startsWith('!') ? 'MR' : 'PR'} ${requestOpening}`,
+              overview: undefined,
+              refusal: '',
+              pictures: pictureCache,
+              now: await $.clock.now(),
+              asking: '',
+              isActing: false,
+            },
+            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, help: still },
+          ),
+        )
+      }
     if (now.isHelp) {
       return framed(
         helpScreen(kit, shell, now.screen, {
@@ -1713,6 +2374,439 @@ export const register: Register = (on, options) => {
           help,
         }),
       )
+    }
+
+    // The files of the request under review ticked as reviewed, and the
+    // name they are kept under; '' with no request, when nothing is ticked.
+    const seenKey = requestTyped === '' ? '' : `${repo}\n${requestTyped}`
+    const seen = seenKey === '' ? [] : (now.reviewed[seenKey] ?? [])
+    // Where the forge keeps "viewed" marks of its own (GitHub), they are
+    // read once for the request and are what the ticks start as; a tick
+    // made here is then made there too.
+    if (seenKey !== '' && viewedCache?.key !== seenKey && viewedWanted !== seenKey) {
+      void loadViewed($, repo, requestTyped, seenKey)
+    }
+
+    const markReviewed = (path: string): void => {
+      if (seenKey === '') {
+        return
+      }
+
+      const held = viewedCache?.key === seenKey ? viewedCache : undefined
+      const isNowViewed = !seen.includes(path)
+
+      void toggleReviewed($, seenKey, path)
+
+      if (held !== undefined && held.id !== '') {
+        void markViewed(forgeRun(runOf($), repo), requestTyped, held.id, `${held.prefix}${path}`, isNowViewed).then(
+          refusal => {
+            if (refusal !== '') {
+              $.ui.toast(`Ticked here, but not on the forge: ${refusal}`, { timeoutMs: 8000 })
+            }
+          },
+        )
+      }
+    }
+
+    // A folder's tick: every file under it is marked, or every one unmarked,
+    // here at once and on the forge one after another, with one word said
+    // if the forge refused any.
+    const markReviewedAll = (paths: readonly string[], isOn: boolean): void => {
+      const todo = paths.filter(path => seen.includes(path) !== isOn)
+
+      if (seenKey === '' || todo.length === 0) {
+        return
+      }
+
+      const held = viewedCache?.key === seenKey ? viewedCache : undefined
+
+      void (async () => {
+        await setReviewed($, seenKey, todo, isOn)
+
+        let refused = ''
+
+        for (const path of held !== undefined && held.id !== '' ? todo : []) {
+          refused ||= await markViewed(forgeRun(runOf($), repo), requestTyped, held?.id ?? '', `${held?.prefix ?? ''}${path}`, isOn)
+        }
+
+        if (refused !== '') {
+          $.ui.toast(`Ticked here, but not all on the forge: ${refused}`, { timeoutMs: 8000 })
+        }
+      })()
+    }
+
+    if (now.screen === 'overview') {
+      const key = `${repo}\n${requestTyped}`
+      const held = overviewCache?.key === key ? overviewCache : undefined
+
+      if (held === undefined && overviewWanted !== key && requestTyped !== '') {
+        void loadOverview($, repo, requestTyped)
+      }
+
+      // The description's first pictures are fetched once each, from the
+      // forge's own hosts alone, and drawn when they have come.
+      const forge = hostOf(held?.overview?.url ?? '')
+      const wantedPictures = mediaOf(held?.overview?.body ?? '')
+        .filter(one => one.kind === 'image' && isFetched(one.url, forge))
+        .slice(0, PICTURES_SHOWN)
+        .filter(one => !pictureCache.has(one.url))
+
+      for (const one of wantedPictures) {
+        trimPictures()
+        pictureCache.set(one.url, 'loading')
+        void fetchPicture(runOf($), one.url, forge).then(picture => {
+          pictureCache.set(one.url, picture ?? 'none')
+
+          return update($, view, nudged)
+        })
+      }
+
+      return framed(
+        overviewScreen(
+          kit,
+          {
+            shell,
+            label: requestLabel,
+            overview: held?.overview,
+            refusal: requestTyped === '' ? 'No request is under review' : (held?.refusal ?? ''),
+            pictures: pictureCache,
+            now: await $.clock.now(),
+            asking: requestAsked.key === key ? requestAsked.act : '',
+            isActing: requestActing,
+          },
+          {
+            // Back goes where the overview was opened from: the list of requests, or the file tree.
+            back: () => {
+              if (now.overviewFrom === 'requests' && requestsCache?.repo !== repo) {
+                void loadRequests($, repo)
+              }
+
+              // Back to the list is out of the request altogether: the
+              // comparison it was read as ends with it, so the list (and
+              // the tree behind it) is the working tree's again.
+              if (now.overviewFrom === 'requests') {
+                rescan()
+              }
+
+              // Leaving the request's page this way, the tree is nobody's
+              // next step: it has nothing behind it to go back to.
+              set(
+                (last): View => ({
+                  ...last,
+                  screen: last.overviewFrom === 'requests' ? 'requests' : 'tree',
+                  codeFrom: 'tree',
+                  ...(last.overviewFrom === 'requests' ? { base: 'HEAD', target: '', baseWorktree: '' } : {}),
+                }),
+              )
+            },
+            // On to the code: the files it changes, or every change on one page.
+            openFiles: () => set((last): View => ({ ...last, screen: 'tree', codeFrom: 'overview' })),
+            openChanges: () => {
+              patchCache = undefined
+              pageColors = { key: '', lines: new Map(), asked: new Set() }
+              set((last): View => ({ ...last, screen: 'changes', pageTop: 0, codeFrom: 'overview' }))
+            },
+            refresh: () => {
+              overviewCache = undefined
+              set(nudged)
+            },
+            ask: act => {
+              requestAsked = { key, act }
+              set(nudged)
+            },
+            // Done only from the question's own yes: the action must be the
+            // one asked about, of this request.
+            act: act => {
+              if (requestAsked.key !== key || requestAsked.act !== act || requestActing) {
+                return
+              }
+
+              requestAsked = { key: '', act: '' }
+              requestActing = true
+              set(nudged)
+              void actOnRequest(forgeRun(runOf($), repo), requestTyped, act)
+                .then(refusal => {
+                  $.ui.toast(
+                    refusal !== ''
+                      ? refusal
+                      : `${requestLabel}: ${act === 'checkout' ? 'checked out' : act === 'ready' ? 'marked ready' : act === 'close' ? 'closed' : 'merged'}`,
+                    { timeoutMs: refusal === '' ? 5000 : 12_000 },
+                  )
+                })
+                .finally(() => {
+                  requestActing = false
+                  // What the forge and the working tree say now is read again.
+                  overviewCache = undefined
+                  job = { isProject: false }
+                  void update($, view, nudged)
+                })
+            },
+            // What has come in since the person last reviewed it: the
+            // request's head against the commit that review was of.
+            sinceReview: () => {
+              const from = held?.overview?.lastReviewed ?? ''
+
+              if (from === '') {
+                $.ui.toast('You have not reviewed this request yet')
+              } else if (target === '') {
+                $.ui.toast('Open the request from the requests list (p) first, then compare')
+              } else {
+                void startCompare($, repo, target, from)
+              }
+            },
+            help,
+          },
+        ),
+      )
+    }
+
+    if (now.screen === 'requests') {
+      const prefix = `${repo}\n`
+
+
+      return framed(
+        requestsScreen(
+          kit,
+          {
+            shell,
+            list: requestsCache?.repo === repo ? requestsCache.list : undefined,
+            current: requestTyped,
+            isPast: requestsPast,
+            reviewed: Object.fromEntries(
+              Object.entries(now.reviewed)
+                .filter(([key]) => key.startsWith(prefix))
+                .map(([key, paths]) => [key.slice(prefix.length), paths.length]),
+            ),
+            now: await $.clock.now(),
+          },
+          {
+            back: () => set((last): View => ({ ...last, screen: 'tree', codeFrom: 'tree' })),
+            refresh: () => {
+              requestsCache = undefined
+              void loadRequests($, repo)
+              set(nudged)
+            },
+            // Between the open requests and those that are over.
+            togglePast: () => {
+              requestsPast = !requestsPast
+              requestsCache = undefined
+              void loadRequests($, repo)
+              set(nudged)
+            },
+            // A request is a comparison by itself: its head against where it
+            // forked, which the file tree then lists.
+            //
+            // Opened from the list, a request is first shown as what it is
+            // (its title, what it says of itself, where it stands): the
+            // overview, from which its files and its changes are a key
+            // away. Where the request could not be opened, the list stays.
+            //
+            // One is opened at a time: the list gives way to the shape of
+            // the page that is coming as soon as one is pressed, so there is
+            // nothing left to press twice, and a press that does arrive
+            // while one is being opened is dropped.
+            open: typed => {
+              if (requestOpening !== '') {
+                return
+              }
+
+              requestOpening = typed
+              // What was read of it before is let go now, so it is asked
+              // for once, while it opens, and its page is not emptied again
+              // after it has been filled.
+              overviewCache = undefined
+              set(nudged)
+              void startCompare($, repo, '', typed)
+                .then(async () => {
+                  if ((await read($, view)).requestTyped === typed) {
+                    await update($, view, (last): View => ({ ...last, screen: 'overview', overviewFrom: 'requests' }))
+                  }
+                })
+                .finally(() => {
+                  requestOpening = ''
+
+                  return update($, view, nudged)
+                })
+            },
+            help,
+          },
+        ),
+      )
+    }
+
+    if (now.screen === 'changes') {
+      // The branch's own request, with no comparison on, is read as the
+      // request has it: from where the branch forked, to the files as they
+      // stand.
+      const isOfBranch = !isComparing && ofBranch !== undefined && ofBranch.base !== ''
+      const pageBase = isOfBranch ? ofBranch.base : now.base
+      const pageKey = `${repo}\n${pageBase}\n${target}\n${now.pageContext}\n${now.pageSpace}`
+      const page = patchCache?.key === pageKey ? patchCache : undefined
+
+      if (page === undefined && patchWanted !== pageKey) {
+        void loadPatch($, repo, pageBase, target, pageKey, now.pageContext, now.pageSpace)
+      }
+
+      // A change is staged or undone a hunk at a time only where the page is
+      // of the working tree against what is checked out, spaces and all: a
+      // hunk read any other way is not one git takes back.
+      const canStage =
+        target === '' && !isComparing && !isOfBranch && !found.isPlain && !now.pageSpace && now.base === 'HEAD'
+
+      const drawn = changesScreen(
+          kit,
+          {
+            shell,
+            top: now.pageTop,
+            context: now.pageContext,
+            ignoresSpace: now.pageSpace,
+            colors: pageColors.key === pageKey ? pageColors.lines : new Map(),
+            title: isOfBranch
+              ? `${requestLabel}: your branch as it stands`
+              : shell.request !== ''
+                ? shell.request
+                : isComparing
+                  ? `${shell.side} vs ${shell.against}`
+                  : 'Uncommitted changes',
+            files: page?.files,
+            refusal: page?.refusal ?? '',
+            statusOf: new Map(
+              [...(ofBranch?.files ?? []), ...found.files].map(one => [one.path, one.status]),
+            ),
+            comments: comments.filter(one => !(now.hidesResolved && one.isResolved === true)),
+            canMark: seenKey !== '',
+            reviewed: seen,
+            untracked: found.files.filter(one => one.status === '?').length,
+            isSplit: now.pageSplit,
+            isFinding: now.pageFinding,
+            find: now.pageFind,
+            canStage,
+            staged: page?.staged ?? new Set<string>(),
+            asking: hunkAsked,
+            isCommitting: now.pageCommitting && canStage,
+          },
+          {
+            back: () => set((last): View => ({ ...last, screen: last.codeFrom === 'overview' ? 'overview' : 'tree' })),
+            refresh: () => {
+              rescan()
+              patchCache = undefined
+              pageColors = { key: '', lines: new Map(), asked: new Set() }
+              set(nudged)
+            },
+            // A file opens as the comparison has it, and back returns here.
+            open: (path, line) =>
+              void (target === '' ? openAt(path, line) : openCommitAt(target, path, line)).then(() =>
+                update($, view, (last): View => ({ ...last, origin: 'changes' })),
+              ),
+            toggleReviewed: markReviewed,
+            scrollTo: row => set((last): View => ({ ...last, pageTop: row })),
+            say: text => $.ui.toast(text),
+            // More lines round each change, step by step and back round;
+            // and lines that differ only in their spaces, left out or not.
+            moreContext: () =>
+              set((last): View => {
+                const at = CONTEXTS.findIndex(step => step === (last.pageContext ?? CONTEXT))
+
+                return { ...last, pageContext: CONTEXTS[(at + 1) % CONTEXTS.length] ?? CONTEXT }
+              }),
+            toggleSpace: () => set((last): View => ({ ...last, pageSpace: !(last.pageSpace ?? false) })),
+            toggleSplit: () => set((last): View => ({ ...last, pageSplit: !(last.pageSplit ?? false) })),
+            expand: path => void expandFile($, repo, pageBase, target, pageKey, path, now.pageSpace),
+            toggleFind: () =>
+              set((last): View => ({ ...last, pageFinding: !(last.pageFinding ?? false), pageFind: '' })),
+            setFind: text => set((last): View => ({ ...last, pageFind: text.trim().slice(0, 200) })),
+            ask: name => {
+              hunkAsked = name
+              set(nudged)
+            },
+            // A hunk is handed back to git as git wrote it: into the index,
+            // out of it, or undone in the file. Undoing is done only from
+            // its own question's yes.
+            hunk: (path, index, how, mark) => {
+              const file = page?.files.find(one => one.path === path)
+              const hunk = file?.hunks[index]
+
+              if (!canStage || file === undefined || hunk === undefined) {
+                return
+              }
+
+              // The hunk acted on is the one whose button was pressed: where
+              // the page has been read again since and that place holds
+              // another, nothing is done.
+              if (hunkMark(file, hunk) !== mark) {
+                $.ui.toast('That change has moved since it was drawn: look again, then press')
+
+                return
+              }
+
+              // And an undoing is of the very hunk that was asked about.
+              if (how === 'discard' && hunkAsked !== mark) {
+                return
+              }
+
+              hunkAsked = ''
+              void applyHunk(runOf($), repo, file, hunk, how).then(refusal => {
+                $.ui.toast(
+                  refusal !== ''
+                    ? `git did not ${how} it: ${refusal}`
+                    : how === 'discard'
+                      ? `That change is undone in ${path}`
+                      : how === 'stage'
+                        ? 'Staged'
+                        : 'Taken back out of what is staged',
+                  { timeoutMs: refusal === '' ? 3000 : 10_000 },
+                )
+                // The page is read again where it stands.
+                patchCache = undefined
+                pageMore = { key: '', by: new Map() }
+                rescan()
+                void update($, view, nudged)
+              })
+            },
+            toggleCommit: () =>
+              set((last): View => ({ ...last, pageCommitting: !(last.pageCommitting ?? false) })),
+            // What is staged is committed as it is: no file is named, so
+            // nothing but the index goes into the commit.
+            commitStaged: message => {
+              if (message.trim() === '') {
+                $.ui.toast('Type what changed first')
+
+                return
+              }
+
+              void runOf($)(['git', 'commit', '-m', unfold(message.trim())], { cwd: repo, timeoutMs: 60_000 }).then(
+                done => {
+                  $.ui.toast(
+                    done.exitCode === 0
+                      ? 'Committed what was staged'
+                      : `git did not commit: ${(done.stderr || done.stdout).trim().split('\n').pop() ?? ''}`,
+                    { timeoutMs: done.exitCode === 0 ? 4000 : 10_000 },
+                  )
+
+                  if (done.exitCode === 0) {
+                    patchCache = undefined
+                    rescan()
+                    void update($, view, (last): View => ({ ...nudged(last), pageCommitting: false }))
+                  }
+                },
+              )
+            },
+            help,
+          },
+        )
+
+      pageWindow = drawn.window
+
+      // The files in and just under the window are highlighted, where they
+      // have not been.
+      if (
+        page !== undefined &&
+        drawn.shown.some(path => pageColors.key !== pageKey || !pageColors.asked.has(path))
+      ) {
+        void colorPage($, pageKey, repo, target, drawn.shown)
+      }
+
+      return framed(drawn.tree, true, undefined, Math.max(0, drawn.window.maxTop - (now.pageTop ?? 0)))
     }
 
     // What the graph and the file tree both offer: a commit or a stash
@@ -1858,7 +2952,7 @@ export const register: Register = (on, options) => {
 
       graphWindow = drawn.window
 
-      return framed(drawn.tree, true)
+      return framed(drawn.tree, true, undefined, Math.max(0, drawn.window.maxTop - (now.graphTop ?? 0)))
     }
 
     if (now.screen === 'tree') {
@@ -1868,13 +2962,35 @@ export const register: Register = (on, options) => {
       const isFreshKnown = inChanged.some(diag => diag.isNew !== undefined)
       const sendable = isFreshKnown ? inChanged.filter(diag => diag.isNew === true) : inChanged
       const needTicks = () => $.ui.toast('Tick some files first (☐)')
+      // The files listed are those whose path holds what the person typed
+      // to narrow the lists by, whatever its case; all of them with nothing
+      // typed.
+      const wanted = now.filter.trim().toLowerCase()
+      const isListed = (path: string): boolean => wanted === '' || path.toLowerCase().includes(wanted)
 
       return framed(
         treeScreen(
           kit,
           {
             shell,
-            files: found.files,
+            files: found.files.filter(one => isListed(one.path)),
+            filter: now.filter,
+            // Where b goes back to, when the files were opened from the
+            // request's own page; '' for a tree that is nobody's next step.
+            backTo: now.codeFrom === 'overview' && requestTyped !== '' ? plain(requestLabel).slice(0, 40) : '',
+            about:
+              requestTyped === ''
+                ? undefined
+                : {
+                    // Whatever the forge said is drawn as plain text of a
+                    // bounded length, whichever answer it came in.
+                    label: plain(requestLabel).slice(0, 80),
+                    title: plain(aboutRequest?.overview?.title ?? ofBranch?.title ?? '').slice(0, 300),
+                    lines: sampleOf(aboutRequest?.overview?.body ?? '', ABOUT_LINES, Math.max(20, shell.columns - 4)),
+                    isLoading: aboutRequest === undefined,
+                    refusal: plain(aboutRequest?.refusal ?? '').slice(0, 300),
+                    standing: standingOf(aboutRequest?.overview),
+                  },
             stats: found.stats,
             dirty: found.dirty,
             diags: found.diags,
@@ -1885,14 +3001,21 @@ export const register: Register = (on, options) => {
             checked: now.checked,
             isDiscarding: now.isDiscarding,
             isMore: now.isMore || settings.showsAllKeys,
-            isBrowsing: now.isBrowsing,
-            allFiles: now.isBrowsing ? allFilesOf(repo) : [],
+            isPlain: found.isPlain,
+            isBrowsing: now.isBrowsing || found.isPlain,
+            allFiles: now.isBrowsing || found.isPlain ? allFilesOf(repo).filter(isListed) : [],
             isTelling: now.isTelling,
             issuesToSend: sendable.length,
             comments,
+            canMark: seenKey !== '',
+            reviewed: seen,
             stashes: found.stashes,
             isReviewing: now.isReviewing,
+            pending: drafts.length,
             reviewRound,
+            talkOpen: now.talkOpen,
+            talkReply: now.talkReply,
+            talkRound,
             request:
               ofBranch === undefined || ofBranch.files.length === 0
                 ? undefined
@@ -1901,7 +3024,7 @@ export const register: Register = (on, options) => {
                     typed: ofBranch.typed,
                     url: ofBranch.url,
                     title: ofBranch.title,
-                    files: ofBranch.files,
+                    files: ofBranch.files.filter(one => isListed(one.path)),
                     stats: ofBranch.stats,
                   },
             selected: now.selected,
@@ -1963,7 +3086,7 @@ export const register: Register = (on, options) => {
               reviewDraft = text
             },
             submitReview: (verdict, entered) =>
-              void sendReview($, repo, requestTyped, verdict, entered ?? reviewDraft),
+              void sendReview($, repo, requestTyped, verdict, entered ?? reviewDraft, target),
             checkProject: () => {
               job = { isProject: true }
             },
@@ -1976,7 +3099,7 @@ export const register: Register = (on, options) => {
             openGraph: () => set((last): View => ({ ...last, screen: 'graph', backFile: '' })),
             stopComparing: () => {
               rescan()
-              set((last): View => ({ ...last, base: 'HEAD', target: '', baseWorktree: '' }))
+              set((last): View => ({ ...last, base: 'HEAD', target: '', baseWorktree: '', codeFrom: 'tree' }))
             },
             toggleMore: () => set(last => ({ ...last, isMore: !(last.isMore ?? false) })),
             help,
@@ -1993,6 +3116,7 @@ export const register: Register = (on, options) => {
                   ),
             toggleTelling: () => set(last => ({ ...last, isTelling: !(last.isTelling ?? false) })),
             // The language server of the first changed file it can read searches.
+            setFilter: text => set((last): View => ({ ...last, filter: text.trim().slice(0, 200) })),
             searchNames: query =>
               void searchSymbols(
                 $,
@@ -2007,7 +3131,7 @@ export const register: Register = (on, options) => {
               // A file the change does not touch has not been checked: opening
               // it asks for it to be, along with the last few opened the same
               // way.
-              if (target === '' && !found.files.some(one => one.path === path)) {
+              if (target === '' && !found.isPlain && !found.files.some(one => one.path === path)) {
                 await update($, view, last => ({
                   ...last,
                   extra: [path, ...(last.extra ?? []).filter(one => one !== path)].slice(0, EXTRA_FILES),
@@ -2031,7 +3155,9 @@ export const register: Register = (on, options) => {
                   // In a comparison a file opens on what differs.
                   // In a comparison a file opens on what differs; markdown
                   // opens as it reads, its threads set into the page.
-                  isDiff: isMarkdownFile(path) ? false : isComparing ? true : last.isDiff,
+                  // Where git knows nothing of the folder, nothing differs.
+                  isDiff:
+                    isMarkdownFile(path) || found.isPlain ? false : isComparing ? true : last.isDiff,
                   isPreview: isMarkdownFile(path) ? true : last.isPreview,
                 }),
               )
@@ -2096,6 +3222,43 @@ export const register: Register = (on, options) => {
             scrollBody: line => set(last => ({ ...last, bodyTop: line })),
             applyStash: ref => void applyStash($, repo, ref, false),
             popStash: ref => void applyStash($, repo, ref, true),
+            openOverview: () => {
+              // Asked again each time it is opened: checks and reviews move.
+              overviewCache = undefined
+              set((last): View => ({ ...last, screen: 'overview', overviewFrom: 'tree' }))
+            },
+            // Back to what the request is, where its files were opened from
+            // there: the overview as it was, which keeps where it came from.
+            backToOverview: () => set((last): View => ({ ...last, screen: 'overview' })),
+            openRequests: () => {
+              void loadRequests($, repo)
+              set((last): View => ({ ...last, screen: 'requests' }))
+            },
+            openChanges: () => {
+              // Read again each time it is opened: the files may have changed.
+              patchCache = undefined
+              pageColors = { key: '', lines: new Map(), asked: new Set() }
+              set((last): View => ({ ...last, screen: 'changes', pageTop: 0, codeFrom: 'tree' }))
+            },
+            toggleReviewed: markReviewed,
+            markAll: markReviewedAll,
+            openTalk: id => set((last): View => ({ ...last, talkOpen: id })),
+            writeTalk: id => {
+              talkDraft = ''
+              talkRound += 1
+              set((last): View => ({ ...last, talkReply: id }))
+            },
+            typeTalk: text => {
+              talkDraft = text
+            },
+            postTalk: entered =>
+              void sendTalk(
+                $,
+                repo,
+                requestTyped,
+                comments.find(one => one.id === now.talkReply && one.path === ''),
+                entered ?? talkDraft,
+              ),
           },
         ),
       )
@@ -2126,11 +3289,33 @@ export const register: Register = (on, options) => {
       set(
         (was): View => ({
           ...was,
-          screen: commit === '' ? 'tree' : (was.origin ?? 'graph'),
+          // A file opened from the page of every change goes back to it.
+          screen: was.origin === 'changes' ? 'changes' : commit === '' ? 'tree' : (was.origin ?? 'graph'),
           commit: '',
         }),
       )
     const { Markdown } = kit
+
+    // A picture is drawn as itself, beside what it was where it changed.
+    if (isPictureFile(file)) {
+      const drawn = shot !== undefined && shot.path === file && shot.commit === commit ? shot : undefined
+
+      return framed(
+        pictureScreen(
+          kit,
+          {
+            shell,
+            file,
+            commit,
+            isLoaded: held !== undefined && drawn !== undefined,
+            now: drawn?.now,
+            before: drawn?.before,
+            against: drawn?.against ?? '',
+          },
+          { back, help, refresh: () => void loadSource($, repo, file, commit) },
+        ),
+      )
+    }
 
     // The request's threads on this file's lines, for the rendered page.
     const pageTalk =
@@ -2204,18 +3389,49 @@ export const register: Register = (on, options) => {
     const isOwnDiff = commit === '' && now.diffBase.path === file && now.diffBase.base !== ''
     const talk =
       commit === target
-        ? comments.filter(
-            one =>
-              one.path === file &&
-              one.line > 0 &&
-              // A resolved thread is left out where the person asked for that.
-              !(now.hidesResolved && one.isResolved === true),
-          )
+        ? comments
+            // A comment or a ledger finding on the file as a whole has no
+            // line of its own: it is shown on the file's first, and says so.
+            .map(one =>
+              one.path === file && isOnWholeFile(one)
+                ? { ...one, line: 1, body: `(whole file) ${one.body}` }
+                : one,
+            )
+            // A comment on a removed line is shown under the removed lines
+            // it is among: on the line of this side they are drawn before.
+            .map(one => {
+              const old = one.path === file && one.line === 0 ? (one.oldLine ?? 0) : 0
+              const before =
+                old === 0
+                  ? undefined
+                  : Object.entries(held?.removedAt ?? {}).find(
+                      ([at, first]) => old >= first && old < first + (held?.removed[Number(at)]?.length ?? 0),
+                    )?.[0]
+
+              return before === undefined
+                ? one
+                : {
+                    ...one,
+                    line: clamp(Number(before), 1, Math.max(1, lineCount)),
+                    body: `(removed line ${old}) ${one.body}`,
+                  }
+            })
+            .filter(
+              one =>
+                one.path === file &&
+                one.line > 0 &&
+                // A resolved thread is left out where the person asked for that.
+                !(now.hidesResolved && one.isResolved === true),
+            )
         : []
     // The first comment of the thread on a line: what a reply answers and
     // what resolving settles. A reply is listed under the comment it answers.
     const rootOn = (n: number): Comment | undefined => {
-      const first = talk.find(one => one.line === n)
+      // A request's thread before a ledger finding on the same line: reply
+      // and resolve are the thread's.
+      const first =
+        talk.find(one => one.line === n && !isFinding(one) && !isDraft(one)) ??
+        talk.find(one => one.line === n && !isDraft(one))
 
       return first === undefined || first.replyTo === undefined
         ? first
@@ -2232,6 +3448,7 @@ export const register: Register = (on, options) => {
         texts,
         note: shown.note,
         removed: held?.removed ?? {},
+        removedAt: held?.removedAt ?? {},
         changed:
           commit === '' && !isOwnDiff ? (found.changed[file] ?? []) : (held?.changed ?? []),
         diffAgainst: isOwnDiff ? now.diffBase.name : '',
@@ -2244,6 +3461,7 @@ export const register: Register = (on, options) => {
         cursor: now.cursor,
         isExpanded: now.isExpanded,
         isDiff: now.isDiff,
+        isChanges: now.isChanges,
         isMore: now.isMore || settings.showsAllKeys,
         isHinting: now.isHinting,
         isFinding: now.isFinding,
@@ -2252,6 +3470,13 @@ export const register: Register = (on, options) => {
         canComment,
         isCommenting,
         commentLine: now.commentLine,
+        commentFrom: now.commentFrom,
+        commentOld: now.commentOld,
+        me: meCache?.repo === repo ? meCache.me : '',
+        editing: now.editing,
+        deleting: now.deleting,
+        draft: now.editing === '' ? '' : commentDraft,
+        typed: commentDraft,
         replyTo: now.replyTo,
         hidesResolved: now.hidesResolved,
         commentRound,
@@ -2269,7 +3494,16 @@ export const register: Register = (on, options) => {
         showIssue: (cursor, top) => set(last => ({ ...last, cursor, top })),
         nextChange: top =>
           top === undefined ? $.ui.toast('No more changes below') : set(last => ({ ...last, top })),
-        toggleDiff: () => set(was => ({ ...was, isDiff: !was.isDiff })),
+        // Round the three views: the file, its diff, the diff cut down to
+        // what differs.
+        toggleDiff: () =>
+          set(was =>
+            !was.isDiff
+              ? { ...was, isDiff: true, isChanges: false }
+              : !(was.isChanges ?? false)
+                ? { ...was, isChanges: true }
+                : { ...was, isDiff: false, isChanges: false },
+          ),
         toggleExpanded: () => set(was => ({ ...was, isExpanded: !was.isExpanded })),
         toggleBlame: () =>
           blame === undefined
@@ -2293,11 +3527,31 @@ export const register: Register = (on, options) => {
         showMatch: (index, top) => set(last => ({ ...last, findAt: index, top })),
         leaveFindField: () => void $.ui.focus({ requestId: PANE, key: 'find-next' }),
         closeFind: () => set(was => ({ ...was, isFinding: false, find: '' })),
+        // A removed line picked to comment on: the box opens under the line
+        // of this side that those removed lines are drawn before.
+        pressOldLine: (old, before) =>
+          set(last => ({
+            ...last,
+            commentLine: clamp(before, 1, Math.max(1, lineCount)),
+            commentFrom: 0,
+            commentOld: old,
+            replyTo: '',
+            editing: '',
+          })),
         pressLine: n =>
           // While commenting on a request, a line number picks the line
           // to comment on.
+          // With the box already open on a line, a later line's number
+          // stretches the comment down to it (the first line stays); the
+          // first line's own number, or an earlier one, starts again there.
           isCommenting
-            ? set(last => ({ ...last, commentLine: n, replyTo: '' }))
+            ? set(last => {
+                const first = (last.commentFrom ?? 0) > 0 ? last.commentFrom : (last.commentLine ?? 0)
+
+                return first > 0 && n > first && (last.replyTo ?? '') === ''
+                  ? { ...last, commentLine: n, commentFrom: first, commentOld: 0 }
+                  : { ...last, commentLine: n, commentFrom: 0, commentOld: 0, replyTo: '' }
+              })
             : // The fold is the function or class the server says starts
               // here; without a server, what the indentation suggests.
               void sendToComposer(
@@ -2321,7 +3575,10 @@ export const register: Register = (on, options) => {
           ),
         // A review thread goes with the code it is about: the function or
         // class that starts on its line, or else a few lines either side.
-        sendTalk: n => {
+        // Only the card pressed goes to the prompt: a request's thread is
+        // other people's words, and is not sent along with the ledger's
+        // findings on the same line, nor they with it.
+        sendTalk: (n, isLedger = false) => {
           const fold = (info === undefined ? undefined : foldOf(info.items, n))?.to ?? foldEnd(texts, n)
           const [from, to] =
             fold > n ? [n, Math.min(fold, n + TALK_CODE)] : [Math.max(1, n - 3), Math.min(lineCount, n + 3)]
@@ -2333,7 +3590,7 @@ export const register: Register = (on, options) => {
               requestLabel,
               file,
               n,
-              talk.filter(one => one.line === n),
+              talk.filter(one => one.line === n && isFinding(one) === isLedger && !isDraft(one)),
               from,
               to,
               texts,
@@ -2435,7 +3692,7 @@ export const register: Register = (on, options) => {
           const root = rootOn(n)
 
           if (root !== undefined) {
-            set(was => ({ ...was, isCommenting: true, commentLine: n, replyTo: root.id }))
+            set(was => ({ ...was, isCommenting: true, commentLine: n, commentFrom: 0, commentOld: 0, replyTo: root.id }))
           }
         },
         resolveOn: (n, isResolved) => {
@@ -2450,16 +3707,171 @@ export const register: Register = (on, options) => {
         cancelComment: () => {
           commentDraft = ''
           commentRound += 1
-          set(was => ({ ...was, commentLine: 0, replyTo: '' }))
+          set(was => ({ ...was, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
         },
+        commentOnFile: () => {
+          commentDraft = ''
+          commentRound += 1
+          set(was => ({
+            ...was,
+            commentLine: was.commentLine === FILE_COMMENT ? 0 : FILE_COMMENT,
+            commentFrom: 0, commentOld: 0,
+            replyTo: '',
+          }))
+        },
+        // A comment of the person's own: put back in the field to be
+        // changed; asked about, then removed; and any comment given a
+        // thumbs-up.
+        editComment: (id, n) => {
+          commentDraft = fold(comments.find(one => one.id === id)?.body ?? '')
+          commentTouched = false
+          commentRound += 1
+          set(was => ({
+            ...was,
+            isCommenting: true,
+            editing: id,
+            deleting: '',
+            commentLine: n,
+            commentFrom: 0, commentOld: 0,
+            replyTo: '',
+          }))
+        },
+        askDelete: id => set(was => ({ ...was, deleting: id })),
+        deleteComment: id => {
+          const one = comments.find(held => held.id === id)
+
+          if (one === undefined || now.deleting !== id) {
+            return
+          }
+
+          void changeComment(forgeRun(runOf($), repo), requestTyped, one, 'delete').then(refusal => {
+            if (refusal !== '') {
+              $.ui.toast(refusal, { timeoutMs: 10_000 })
+            } else {
+              // What answered it goes from the pane with it; the forge keeps
+              // or drops those as it does.
+              if (commentsCache !== undefined) {
+                commentsCache.comments = commentsCache.comments.filter(
+                  held => held.id !== id && held.replyTo !== id,
+                )
+              }
+
+              $.ui.toast('Comment deleted')
+            }
+
+            set(was => ({ ...was, deleting: '' }))
+          })
+        },
+        likeComment: id => {
+          const one = comments.find(held => held.id === id)
+
+          if (one !== undefined) {
+            void changeComment(forgeRun(runOf($), repo), requestTyped, one, 'like').then(refusal =>
+              $.ui.toast(refusal === '' ? `👍 added to ${one.author}'s comment` : refusal, {
+                timeoutMs: refusal === '' ? 4000 : 10_000,
+              }),
+            )
+          }
+        },
+        // Drops comments written for the review and not sent yet.
+        discardDrafts: ids =>
+          void changeDrafts($, `${repo}\n${requestTyped}`, list =>
+            list.filter(one => !ids.includes(one.id)),
+          ),
+        // Back to a comment on the one line the box is under.
+        commentOnOneLine: () => set(was => ({ ...was, commentFrom: 0 })),
         typeComment: text => {
+          // A field drawn holding a comment being changed may first report
+          // itself empty, before anything is typed: that is not the person
+          // clearing it, and what the comment said is kept.
+          if (text === '' && now.editing !== '' && !commentTouched) {
+            return
+          }
+
+          commentTouched = true
           commentDraft = text
+          // What is typed is drawn in full under the field, so the screen
+          // is drawn again as it changes.
+          set(nudged)
         },
-        postComment: entered => {
+        // An answer to a thread is posted at once. A comment of its own waits
+        // with the review's others unless it is asked to go now (`isNow`).
+        postComment: (entered, how = 'review') => {
+          const isNow = how === 'now'
           const root = now.replyTo === '' ? undefined : rootOn(now.commentLine)
+          const typedText = (entered ?? commentDraft).trim()
+          // A suggestion is the typed text as a replacement for the lines
+          // the comment is on, in the form the forge offers to apply.
+          const body = how === 'suggest' && typedText !== '' ? suggestionOf(typedText) : unfold(typedText)
+          // A comment of the person's own being changed takes what the
+          // field holds in place of what it said.
+          const edited = now.editing === '' ? undefined : comments.find(one => one.id === now.editing)
+
+          if (edited !== undefined) {
+            void changeComment(forgeRun(runOf($), repo), requestTyped, edited, { edit: unfold(typedText) }).then(
+              refusal => {
+                if (refusal !== '') {
+                  $.ui.toast(refusal, { timeoutMs: 10_000 })
+
+                  return
+                }
+
+                const held = commentsCache?.comments.find(one => one.id === edited.id)
+
+                if (held !== undefined) {
+                  held.body = unfold(typedText)
+                }
+
+                commentDraft = ''
+                commentRound += 1
+                $.ui.toast('Comment changed')
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
+              },
+            )
+
+            return
+          }
 
           if (root !== undefined) {
             void postReply($, repo, requestTyped, root, entered ?? commentDraft)
+
+            return
+          }
+
+          if (!isNow) {
+            if (body === '') {
+              $.ui.toast('Type the comment first')
+
+              return
+            }
+
+            // A comment on a removed line is on no line of this side.
+            const line = now.commentLine === FILE_COMMENT || now.commentOld > 0 ? 0 : now.commentLine
+
+            commentDraft = ''
+            commentRound += 1
+            void $.clock
+              .now()
+              .then(at =>
+                changeDrafts($, `${repo}\n${requestTyped}`, list => [
+                  ...list,
+                  {
+                    id: `${at}-${list.length}`,
+                    path: file,
+                    line,
+                    body,
+                    ...(now.commentFrom > 0 && now.commentFrom < line ? { startLine: now.commentFrom } : {}),
+                    ...(now.commentOld > 0 ? { oldLine: now.commentOld } : {}),
+                  },
+                ]),
+              )
+              .then(() => {
+                $.ui.toast(
+                  `Added to your review (${drafts.length + 1} waiting): send it from the file tree with v`,
+                  { timeoutMs: 6000 },
+                )
+                set(was => ({ ...was, commentLine: 0, commentFrom: 0, commentOld: 0, replyTo: '', editing: '' }))
+              })
 
             return
           }
@@ -2470,8 +3882,11 @@ export const register: Register = (on, options) => {
             requestTyped,
             target,
             file,
-            now.commentLine,
+            // Line 0 is the file as a whole.
+            now.commentLine === FILE_COMMENT || now.commentOld > 0 ? 0 : now.commentLine,
             entered ?? commentDraft,
+            now.commentFrom,
+            now.commentOld,
           )
         },
       },
@@ -2479,6 +3894,7 @@ export const register: Register = (on, options) => {
 
     fileWindow = drawn.window
 
-    return framed(drawn.tree, true)
+    // While commenting, the frame is in the comments' colour.
+    return framed(drawn.tree, true, isCommenting ? COMMENT_COLOR : undefined, Math.max(0, drawn.window.maxTop - Math.max(1, now.top ?? 1)))
   })
 }

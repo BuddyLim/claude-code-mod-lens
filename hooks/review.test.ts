@@ -2,12 +2,26 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   fetchComments,
+  listRequests,
   forgeOf,
+  isOnWholeFile,
   parseRequest,
   postComment,
+  postGeneral,
+  quoteOf,
   remoteParts,
   repoPrefix,
   resolveRequest,
+  submitDrafted,
+  changeComment,
+  gitlabLineCode,
+  readOverview,
+  markViewed,
+  readViewed,
+  fold,
+  suggestedLines,
+  suggestionOf,
+  unfold,
 } from './review'
 import type { Run } from './review'
 
@@ -594,6 +608,186 @@ test('a GitHub comment is posted on the right side of the head commit', async ()
   expect(sent).toEqual([['git', 'remote', 'get-url', 'origin'], GH_POST])
 })
 
+test('a review goes to GitHub with the comments written for it, as one call', async () => {
+  const sent: { argv: string[]; stdin: string | undefined }[] = []
+  const run: Run = async (argv, _timeout, stdin) => {
+    sent.push({ argv, stdin })
+
+    return argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : ok('{}')
+  }
+  const drafts = [
+    { id: 'a', path: 'a.ts', line: 40, body: 'why?' },
+    { id: 'b', path: 'a.ts', line: 12, startLine: 9, body: 'these four' },
+  ]
+
+  expect(
+    await submitDrafted(run, '12', 'request-changes', 'see inline', { drafts, commit: 'f'.repeat(40), prefix: 'src/' }),
+  ).toEqual({ refusal: '', sent: ['a', 'b'] })
+
+  const review = sent[sent.length - 1]
+
+  expect(review?.argv.slice(-3)).toEqual(['repos/acme/app/pulls/12/reviews', '--input', '-'])
+  expect(JSON.parse(review?.stdin ?? '{}')).toEqual({
+    event: 'REQUEST_CHANGES',
+    body: 'see inline',
+    commit_id: 'f'.repeat(40),
+    comments: [
+      { path: 'src/a.ts', line: 40, side: 'RIGHT', body: 'why?' },
+      { path: 'src/a.ts', line: 12, side: 'RIGHT', body: 'these four', start_line: 9, start_side: 'RIGHT' },
+    ],
+  })
+
+  // With comments waiting, a comment-only review needs no summary; with
+  // none, it still does.
+  expect((await submitDrafted(run, '12', 'comment', '', { drafts, commit: 'f'.repeat(40), prefix: '' })).refusal).toBe('')
+  expect(await submitDrafted(run, '12', 'comment', '', { drafts: [], commit: '', prefix: '' })).toEqual({
+    refusal: 'Write a summary first: it is what the review says',
+    sent: [],
+  })
+
+  // A review the forge refuses leaves its comments waiting.
+  const refusing: Run = async argv => (argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : failed('HTTP 422'))
+
+  expect((await submitDrafted(refusing, '12', 'comment', 'x', { drafts, commit: 'f'.repeat(40), prefix: '' })).sent).toEqual([])
+})
+
+test('a comment typed on one line is sent on several, and a suggestion is read back', async () => {
+  expect(unfold('first\\nsecond')).toBe('first\nsecond')
+  expect(fold('first\r\nsecond\nthird')).toBe('first\\nsecond\\nthird')
+  expect(unfold(fold('a\nb'))).toBe('a\nb')
+  expect(suggestionOf('const limit = 12\\nconst more = 1')).toBe('```suggestion\nconst limit = 12\nconst more = 1\n```')
+  expect(suggestedLines('Try this:\n```suggestion\nconst limit = 12\n  const more = 1\n```\nthanks')).toEqual([
+    'const limit = 12',
+    '  const more = 1',
+  ])
+  // A block that suggests removing its lines is no lines at all.
+  expect(suggestedLines('```suggestion\n```')).toEqual([''])
+  expect(suggestedLines('no block here')).toBe(undefined)
+})
+
+test('a comment of your own is changed, removed and liked where the forge keeps it', async () => {
+  const asked: string[] = []
+  const run: Run = async argv => {
+    asked.push(argv.join(' '))
+
+    return argv[0] === 'git' ? ok('https://github.com/acme/app.git\n') : ok('{}')
+  }
+  const sent = () => asked.filter(line => line.startsWith('gh ')).pop()
+
+  expect(await changeComment(run, '12', { id: '77' }, { edit: 'better' })).toBe('')
+  expect(sent()).toBe(`${GH} -X PATCH repos/acme/app/pulls/comments/77 -f body=better`)
+  expect(await changeComment(run, '12', { id: 'issue-88' }, 'delete')).toBe('')
+  expect(sent()).toBe(`${GH} -X DELETE repos/acme/app/issues/comments/88`)
+  expect(await changeComment(run, '12', { id: '77' }, 'like')).toBe('')
+  expect(sent()).toBe(`${GH} -X POST repos/acme/app/pulls/comments/77/reactions -f content=+1`)
+  // A review's summary, a ledger finding and an empty edit are not sent at all.
+  asked.length = 0
+  expect(await changeComment(run, '12', { id: 'review-5' }, 'delete')).toBe(
+    'That is not a comment the forge lets be changed from here',
+  )
+  expect(await changeComment(run, '12', { id: '77' }, { edit: '  ' })).toBe(
+    'A comment cannot be left empty: delete it instead',
+  )
+  expect(asked.filter(line => line.startsWith('gh '))).toEqual([])
+})
+
+test('the files marked as viewed on GitHub are read, and a tick is made there too', async () => {
+  const asked: string[] = []
+  const page = (files: [string, string][], id = 'PR_1') =>
+    JSON.stringify({
+      data: { repository: { pullRequest: { id, files: { nodes: files.map(([path, state]) => ({ path, viewerViewedState: state })) } } } },
+    })
+  const run: Run = async argv => {
+    asked.push(argv.join(' '))
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : // Two pages, as a paginated call prints them: back to back.
+        ok(`${page([['src/a.ts', 'VIEWED'], ['src/b.ts', 'UNVIEWED']])}${page([['docs/c.md', 'VIEWED'], ['d.ts', 'DISMISSED']])}`)
+  }
+
+  expect(await readViewed(run, '12')).toEqual({ id: 'PR_1', viewed: ['src/a.ts', 'docs/c.md'] })
+  expect(await markViewed(run, '12', 'PR_1', 'src/b.ts', true)).toBe('')
+  expect(asked[asked.length - 1]?.includes('markFileAsViewed(input:{pullRequestId:$id,path:$path})')).toBe(true)
+  expect(asked[asked.length - 1]?.endsWith('-f id=PR_1 -f path=src/b.ts')).toBe(true)
+  await markViewed(run, '12', 'PR_1', 'src/a.ts', false)
+  expect(asked[asked.length - 1]?.includes('unmarkFileAsViewed')).toBe(true)
+
+  // GitLab keeps no such mark: nothing is read, and nothing is asked of it.
+  const gitlab: Run = async argv => (argv[0] === 'git' ? ok('https://gitlab.com/acme/app.git\n') : failed('no'))
+
+  expect(await readViewed(gitlab, '!34')).toBe(undefined)
+  expect(await markViewed(gitlab, '!34', '', 'a.ts', true)).toBe('')
+})
+
+test('a GitHub comment on several lines names the first of them too', async () => {
+  const sent: string[][] = []
+
+  const run: Run = async argv => {
+    sent.push(argv)
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : ok(JSON.stringify(ghLine(9, { body: 'x', user: { login: 'me' }, start_line: 31 })))
+  }
+
+  expect(await postComment(run, '12', { ...AT, startLine: 31 }, 'x')).toMatchObject({
+    comment: { line: 40, startLine: 31 },
+  })
+  expect(sent[1]?.slice(-4)).toEqual(['-F', 'start_line=31', '-f', 'start_side=RIGHT'])
+  // A first line that is not before the last is no range.
+  sent.length = 0
+  await postComment(run, '12', { ...AT, startLine: 40 }, 'x')
+  expect(sent[1]?.includes('start_side=RIGHT')).toBe(false)
+})
+
+test('a comment on a removed line goes on the left of the forge’s diff, by its old number', async () => {
+  const sent: { argv: string[]; stdin: string | undefined }[] = []
+  const run: Run = async (argv, _timeout, stdin) => {
+    sent.push({ argv, stdin })
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : ok(JSON.stringify(ghLine(9, { body: 'why gone?', user: { login: 'me' }, line: 17, side: 'LEFT' })))
+  }
+
+  // Posted at once: its line is the old side's, and it comes back as one.
+  expect(await postComment(run, '12', { ...AT, line: 0, oldLine: 17 }, 'why gone?')).toMatchObject({
+    comment: { path: 'src/a.ts', line: 0, oldLine: 17 },
+  })
+  expect(sent[1]?.argv.slice(-4)).toEqual(['-F', 'line=17', '-f', 'side=LEFT'])
+
+  // Waiting for the review: it goes with the comments on lines, not alone.
+  sent.length = 0
+  await submitDrafted(run, '12', 'comment', '', {
+    drafts: [{ id: 'a', path: 'a.ts', line: 0, oldLine: 17, body: 'why gone?' }],
+    commit: 'f'.repeat(40),
+    prefix: 'src/',
+  })
+  expect(sent.filter(one => one.argv[0] === 'gh').length).toBe(1)
+  expect(JSON.parse(sent[sent.length - 1]?.stdin ?? '{}').comments).toEqual([
+    { path: 'src/a.ts', line: 17, side: 'LEFT', body: 'why gone?' },
+  ])
+})
+
+test('a GitHub comment on line 0 is posted on the file as a whole', async () => {
+  const sent: string[][] = []
+
+  const run: Run = async argv => {
+    sent.push(argv)
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : ok(JSON.stringify(ghLine(9, { body: 'needs a test', user: { login: 'me' }, line: null, subject_type: 'file' })))
+  }
+  const posted = await postComment(run, '12', { ...AT, line: 0 }, 'needs a test')
+
+  // It names the file and no line, and is not taken for one that lost its line.
+  expect(posted).toMatchObject({ comment: { path: 'src/a.ts', line: 0, isOutdated: false } })
+  expect('comment' in posted && isOnWholeFile(posted.comment)).toBe(true)
+  expect(sent[1]).toEqual([...GH_POST.slice(0, 8), 'body=needs a test', ...GH_POST.slice(9, 13), '-f', 'subject_type=file'])
+})
+
 const glPosted = (position: Record<string, unknown> | undefined) =>
   ok(JSON.stringify({ id: 'd9', individual_note: false, notes: [note(9, position ? { position } : { type: null })] }))
 
@@ -676,6 +870,159 @@ test('a GitLab comment carries the three commits, and the old line of an unchang
   expect(bare.sent.at(-1)).toEqual(glPost({ ...position, old_path: 'src/a.ts' }))
 })
 
+test('GitLab takes a comment on several lines, on a removed line, and a request for changes', async () => {
+  const position = {
+    position_type: 'text',
+    base_sha: 'base',
+    start_sha: 'start',
+    head_sha: 'f'.repeat(40),
+    old_path: 'src/old.ts',
+    new_path: 'src/a.ts',
+  }
+  const git = {
+    [GL_NAMES]: ok('M\0README.md\0R090\0src/old.ts\0src/a.ts\0'),
+    [`git diff --no-color --no-ext-diff -U0 -M base ${'f'.repeat(40)} -- src/old.ts src/a.ts`]: ok(
+      'diff --git a/src/old.ts b/src/a.ts\n@@ -9,0 +10,3 @@ x\n+a\n+b\n+c\n@@ -48,2 +50,0 @@ y\n-d\n-e\n',
+    ),
+  }
+  const where = (argv: string[] | undefined) =>
+    JSON.parse((argv?.find(part => part.startsWith('position=')) ?? 'position={}').slice('position='.length)) as Record<string, unknown>
+
+  // The name of a line is the SHA-1 of its file's path, then the two counters.
+  expect(await gitlabLineCode('README.md', 1, 1)).toBe('8ec9a00bfd09b3190ac6b22251dbb1aa95a0579d_1_1')
+
+  // Several lines: the first and the last are named GitLab's way. Lines 11
+  // and 12 were added before the base's line 10; line 40 was line 37.
+  const ranged = glRun(git, glPosted({ ...position, new_line: 40, old_line: 37 }))
+
+  await postComment(ranged.run, '!34', { ...AT, startLine: 11 }, 'Why?')
+  expect(where(ranged.sent.at(-1))).toEqual({
+    ...position,
+    new_line: 40,
+    old_line: 37,
+    line_range: {
+      start: { line_code: await gitlabLineCode('src/a.ts', 10, 11), type: 'new' },
+      end: { line_code: await gitlabLineCode('src/a.ts', 37, 40), type: 'new' },
+    },
+  })
+  expect(ranged.sent.filter(argv => argv.includes('POST')).length).toBe(1)
+
+  // Where GitLab does not take the range, the comment still goes: on the
+  // last line, saying which lines it is about.
+  const posts: string[][] = []
+  const refusing: Run = async argv => {
+    const line = argv.join(' ')
+
+    if (argv.includes('POST')) {
+      posts.push(argv)
+
+      return posts.length === 1 ? failed('HTTP 400') : glPosted({ ...position, new_line: 40, old_line: 37 })
+    }
+
+    return line === GITHUB
+      ? ok('git@gitlab.com:group/sub/app.git\n')
+      : line === GL_MR
+        ? ok(JSON.stringify({ diff_refs: { base_sha: 'base', start_sha: 'start', head_sha: 'f'.repeat(40) } }))
+        : (git[line] ?? failed('fatal: bad object'))
+  }
+
+  expect('comment' in (await postComment(refusing, '!34', { ...AT, startLine: 11 }, 'Why?'))).toBe(true)
+  expect(posts.length).toBe(2)
+  expect('line_range' in where(posts[1])).toBe(false)
+  expect(posts[1]?.includes('body=Lines 11–40: Why?')).toBe(true)
+
+  // A removed line is placed by its line in the base, under the name the
+  // file had there.
+  const gone = glRun(git, glPosted({ ...position, old_line: 48 }))
+  const removed = await postComment(gone.run, '!34', { ...AT, line: 0, oldLine: 48 }, 'Why?')
+
+  expect(where(gone.sent.at(-1))).toEqual({ ...position, old_line: 48 })
+  expect(removed).toMatchObject({ comment: { path: 'src/a.ts', line: 0, oldLine: 48 } })
+
+  // Changes are requested with the quick action GitLab acts on.
+  const asked = glRun({}, ok('{}'))
+
+  expect((await submitDrafted(asked.run, '!34', 'request-changes', 'Needs a test', { drafts: [], commit: '', prefix: '' })).refusal).toBe('')
+  expect(asked.sent.at(-1)?.slice(-2)).toEqual(['-f', 'body=Needs a test\n\n/request_changes'])
+})
+
+test('a GitLab overview has the pipeline’s jobs, the commits, who reviewed, and where you last looked', async () => {
+  const answers: Record<string, unknown> = {
+    [GL_MR]: {
+      title: 'Add it',
+      description: 'Why it is added.',
+      author: { username: 'cat' },
+      state: 'opened',
+      draft: true,
+      web_url: 'https://gitlab.com/group/sub/app/-/merge_requests/34',
+      target_branch: 'main',
+      source_branch: 'topic',
+      detailed_merge_status: 'mergeable',
+      head_pipeline: { id: 77, status: 'failed', web_url: 'https://gitlab.com/p/77' },
+      reviewers: [{ username: 'dog' }, { username: 'owl' }],
+      labels: ['feature'],
+      changes_count: '4',
+    },
+    [`${GL_MR}/approvals`]: { approved: false, approvals_left: 1, approved_by: [{ user: { username: 'dog' } }] },
+    [`${GL_MR}/commits?per_page=100`]: [
+      { short_id: 'bbbbbbb', title: 'Second', author_name: 'Cat' },
+      { short_id: 'aaaaaaa', title: 'First', author_name: 'Cat' },
+    ],
+    [`${GL} user`]: { username: 'me' },
+    [`${GL} projects/group%2Fsub%2Fapp/pipelines/77/jobs?per_page=100`]: [
+      { stage: 'test', name: 'unit', status: 'success', web_url: 'https://gitlab.com/j/1' },
+      { stage: 'test', name: 'lint', status: 'failed', web_url: 'https://gitlab.com/j/2' },
+    ],
+    [`${GL_MR}/notes?sort=desc&order_by=created_at&per_page=100`]: [
+      { author: { username: 'cat' }, created_at: '2026-02-09T00:00:00Z', system: false },
+      { author: { username: 'me' }, created_at: '2026-02-05T00:00:00Z', system: false },
+    ],
+    [`${GL_MR}/versions`]: [
+      { head_commit_sha: 'c'.repeat(40), created_at: '2026-02-08T00:00:00Z' },
+      { head_commit_sha: 'b'.repeat(40), created_at: '2026-02-04T00:00:00Z' },
+      { head_commit_sha: 'a'.repeat(40), created_at: '2026-02-01T00:00:00Z' },
+    ],
+  }
+  const run: Run = async argv => {
+    const line = argv.join(' ')
+
+    return line === GITHUB
+      ? ok('git@gitlab.com:group/sub/app.git\n')
+      : line in answers
+        ? ok(JSON.stringify(answers[line]))
+        : failed(`unexpected: ${line}`)
+  }
+  const got = await readOverview(run, '!34')
+
+  expect('overview' in got ? got.overview : got.error).toMatchObject({
+    title: 'Add it',
+    body: 'Why it is added.',
+    author: 'cat',
+    isDraft: true,
+    base: 'main',
+    head: 'topic',
+    mergeable: 'mergeable',
+    decision: 'REVIEW_REQUIRED',
+    checks: [
+      { name: 'test: unit', state: 'success', url: 'https://gitlab.com/j/1' },
+      { name: 'test: lint', state: 'failed', url: 'https://gitlab.com/j/2' },
+    ],
+    reviews: [
+      { author: 'dog', state: 'APPROVED' },
+      { author: 'owl', state: 'REVIEW_REQUESTED' },
+    ],
+    // Oldest first, as GitHub lists them.
+    commits: [
+      { hash: 'aaaaaaa', subject: 'First', author: 'Cat' },
+      { hash: 'bbbbbbb', subject: 'Second', author: 'Cat' },
+    ],
+    labels: ['feature'],
+    files: 4,
+    // The head the request had when you last wrote on it.
+    lastReviewed: 'b'.repeat(40),
+  })
+})
+
 test('posting says in one sentence why it did not happen', async () => {
   const github = (answer: Ran) => fake({ [GITHUB]: ok('https://github.com/acme/app.git\n'), [GH_POST.join(' ')]: answer })
   const body = '@ann is this true?\nsecond line'
@@ -703,7 +1050,7 @@ test('posting says in one sentence why it did not happen', async () => {
     error: 'PR #12 was not found in acme/app, or you may not see it',
   })
   expect(await postComment(fake({}).run, '12', AT, '  ')).toEqual({ error: 'Write something before posting the comment' })
-  expect(await postComment(fake({}).run, '12', { ...AT, line: 0 }, 'x')).toEqual({
+  expect(await postComment(fake({}).run, '12', { ...AT, line: -1 }, 'x')).toEqual({
     error: 'Pick a line of a file in the request to comment on',
   })
 
@@ -793,4 +1140,135 @@ test('the prefix is the sub-folder the commands run in', async () => {
   expect(await repoPrefix(fake({ 'git rev-parse --show-prefix': ok('frontend/src/\n') }).run)).toBe('frontend/src/')
   expect(await repoPrefix(fake({ 'git rev-parse --show-prefix': ok('\n') }).run)).toBe('')
   expect(await repoPrefix(fake({}).run)).toBe('')
+})
+
+test('an answer in the conversation quotes what it answers, and is posted as a comment of its own', async () => {
+  expect(quoteOf({ body: 'first line\n\nsecond line\n' })).toBe('> first line\n>\n> second line\n\n')
+
+  const body = `${quoteOf({ body: 'why 12?' })}it is the least a subject needs`
+  const { run, asked } = fake({
+    [GITHUB]: ok('https://github.com/acme/app.git\n'),
+    [`${GH} -X POST repos/acme/app/issues/12/comments -f body=${body}`]: ok(
+      JSON.stringify({ id: 77, user: { login: 'me' }, body, created_at: '2026-10-10T00:00:00Z' }),
+    ),
+  })
+
+  expect(await postGeneral(run, '#12', body)).toEqual({
+    comment: { id: 'issue-77', path: '', line: 0, author: 'me', body, when: '2026-10-10T00:00:00Z' },
+  })
+  expect(asked.length).toBe(2)
+  // Nothing is asked of the forge for an empty comment.
+  expect(await postGeneral(fake({}).run, '#12', '  ')).toEqual({
+    error: 'Write something before posting the comment',
+  })
+})
+
+test('the open requests say whether their checks pass and how their reviews stand, on both forges', async () => {
+  const github: Run = async argv => {
+    const line = argv.join(' ')
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : line.includes('graphql')
+        ? ok(
+            JSON.stringify({
+              data: {
+                repository: {
+                  pullRequests: {
+                    nodes: [
+                      { number: 12, reviewDecision: 'CHANGES_REQUESTED', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
+                      { number: 13, reviewDecision: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] } },
+                    ],
+                  },
+                },
+              },
+            }),
+          )
+        : line.includes('pulls?state=open')
+          ? ok(JSON.stringify([{ number: 12, title: 'One', user: { login: 'ann' } }, { number: 13, title: 'Two', user: { login: 'bob' } }, { number: 14, title: 'Three', user: { login: 'bob' } }]))
+          : ok(JSON.stringify({ login: 'ann' }))
+  }
+  const listed = await listRequests(github)
+
+  expect(listed.map(one => [one.typed, one.checks, one.decision, one.isMine])).toEqual([
+    ['#12', 'FAILURE', 'CHANGES_REQUESTED', true],
+    // No checks and no review: nothing is said of either.
+    ['#13', 'NONE', '', false],
+    // One the standing did not name is still listed.
+    ['#14', '', '', false],
+  ])
+
+  const gitlab: Run = async argv => {
+    const line = argv.join(' ')
+
+    return argv[0] === 'git'
+      ? ok('https://gitlab.com/acme/app.git\n')
+      : line.includes('graphql')
+        ? ok(JSON.stringify({ data: { project: { mergeRequests: { nodes: [{ iid: '34', approved: true, approvedBy: { nodes: [{ username: 'bob' }] }, headPipeline: { status: 'RUNNING' } }, { iid: '35', approved: true, approvedBy: { nodes: [] }, headPipeline: { status: 'SKIPPED' } }] } } } }))
+        : line.includes('merge_requests?state=opened')
+          ? ok(JSON.stringify([{ iid: 34, title: 'One', author: { username: 'ann' } }, { iid: 35, title: 'Two', author: { username: 'ann' } }]))
+          : ok(JSON.stringify({ username: 'zed' }))
+  }
+
+  expect((await listRequests(gitlab)).map(one => [one.typed, one.checks, one.decision])).toEqual([
+    ['!34', 'RUNNING', 'APPROVED'],
+    // Approved by nobody, because nobody had to: not said to be approved.
+    ['!35', 'SKIPPED', ''],
+  ])
+
+  // A forge that will not say how they stand still lists them.
+  const silent: Run = async argv =>
+    argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : argv.join(' ').includes('graphql')
+        ? failed('no')
+        : argv.join(' ').includes('pulls?state=open')
+          ? ok(JSON.stringify([{ number: 12, title: 'One', user: { login: 'ann' } }]))
+          : failed('no')
+
+  expect((await listRequests(silent)).map(one => [one.typed, one.checks])).toEqual([['#12', '']])
+})
+
+test('the requests that are over are listed as merged or closed, latest first, on both forges', async () => {
+  const asked: string[] = []
+  const github: Run = async argv => {
+    const line = argv.join(' ')
+
+    asked.push(line)
+
+    return argv[0] === 'git'
+      ? ok('https://github.com/acme/app.git\n')
+      : line.includes('pulls?state=closed')
+        ? ok(
+            JSON.stringify([
+              { number: 5, title: 'Dropped', state: 'closed', merged_at: null, updated_at: '2026-01-01T00:00:00Z', user: { login: 'ann' } },
+              { number: 6, title: 'Landed', state: 'closed', merged_at: '2026-02-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z', user: { login: 'bob' } },
+            ]),
+          )
+        : ok(JSON.stringify({ login: 'ann' }))
+  }
+
+  expect((await listRequests(github, true)).map(one => [one.typed, one.state, one.isMine])).toEqual([
+    ['#6', 'merged', false],
+    ['#5', 'closed', true],
+  ])
+  // How their checks stood is not asked: it is of no use for one that is over.
+  expect(asked.some(line => line.includes('graphql'))).toBe(false)
+
+  const gitlab: Run = async argv => {
+    const line = argv.join(' ')
+
+    return argv[0] === 'git'
+      ? ok('https://gitlab.com/acme/app.git\n')
+      : line.includes('state=merged')
+        ? ok(JSON.stringify([{ iid: 8, title: 'Landed', state: 'merged', updated_at: '2026-03-01T00:00:00Z', author: { username: 'ann' } }]))
+        : line.includes('state=closed')
+          ? ok(JSON.stringify([{ iid: 9, title: 'Dropped', state: 'closed', updated_at: '2026-04-01T00:00:00Z', author: { username: 'ann' } }]))
+          : ok(JSON.stringify({ username: 'zed' }))
+  }
+
+  expect((await listRequests(gitlab, true)).map(one => [one.typed, one.state])).toEqual([
+    ['!9', 'closed'],
+    ['!8', 'merged'],
+  ])
 })

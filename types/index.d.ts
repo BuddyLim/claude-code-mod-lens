@@ -75,7 +75,9 @@ export type LineRange = [from: number, to: number]
 export type View = {
   repo: string
   base: string
-  screen: 'tree' | 'file' | 'graph' | 'list'
+  // `requests` lists the repo's open pull or merge requests; `changes` is the
+  // whole comparison on one page.
+  screen: 'tree' | 'file' | 'graph' | 'list' | 'requests' | 'changes' | 'overview'
   file: string
   // The first line the file screen's window shows, 1-based.
   top: number
@@ -89,12 +91,42 @@ export type View = {
   // Whether the file screen interleaves what the base had (a diff) or shows
   // the file as it is.
   isDiff: boolean
+  // Whether the diff is cut down to what differs: each change and each
+  // commented line, with a few lines around it.
+  isChanges: boolean
   // The commit the file screen shows the file at; '' for the working tree.
   commit: string
   // The uncommitted and untracked files ticked for a commit or a stash.
   checked: string[]
   // The screen a commit's or stash's file was opened from, where back returns.
-  origin: 'tree' | 'graph'
+  origin: 'tree' | 'graph' | 'changes'
+  // The files of each request ticked as reviewed, by the folder under review
+  // and what the request is typed as ("/repo\n#12"): kept between sessions.
+  reviewed: Record<string, string[]>
+  // The comments written for each request's review and not sent yet, by the
+  // same name as `reviewed`: they go to the forge with the verdict. `line`
+  // is 0 for a file as a whole; `startLine` makes it a comment on several;
+  // `oldLine` puts it on a removed line, by its number in the other side.
+  drafts: Record<
+    string,
+    { id: string; path: string; line: number; startLine?: number; oldLine?: number; body: string }[]
+  >
+  // The first row the page of every change shows in its window, 0-based;
+  // how many unchanged lines it shows round each change; and whether lines
+  // that differ only in their spaces are left out of it.
+  pageTop: number
+  pageContext: number
+  pageSpace: boolean
+  // On that page: whether the two sides are drawn beside each other;
+  // whether the search's field is open and what is looked for; and whether
+  // the field for a commit of what is staged shows.
+  pageSplit: boolean
+  pageFinding: boolean
+  pageFind: string
+  pageCommitting: boolean
+  // How many times the hooks module has asked for the pane to be drawn again
+  // because something it holds outside the state changed.
+  redraws: number
   // The first line the picked commit's body box shows, 0-based.
   bodyTop: number
   // The first line the graph screen's window shows, 0-based.
@@ -115,6 +147,24 @@ export type View = {
   requestTyped: string
   isCommenting: boolean
   commentLine: number
+  // The first line of the comment being typed when it is on several lines
+  // (`commentLine` is then the last); 0 when it is on one.
+  commentFrom: number
+  // The removed line the comment being typed is on, by its number in the
+  // other side of the comparison; 0 when it is on a line of this side.
+  commentOld: number
+  // The screen the overview was opened from, where its back returns.
+  overviewFrom: 'tree' | 'requests'
+  // Where a request's code (its files, or the page of every change) was
+  // opened from, and so where back returns: the overview, or the file tree.
+  codeFrom: 'tree' | 'overview'
+  // What the file tree's lists are narrowed by: only files whose path holds
+  // it are listed; '' lists them all.
+  filter: string
+  // The comment of the person's own being changed in the field, and the one
+  // being asked about before it is deleted, by id; '' for none.
+  editing: string
+  deleting: string
   // A working-tree file whose diff is read against a commit other than
   // `base`: a file of the checked-out branch's request, against where the
   // request forked from its target. `path` '' is none.
@@ -123,6 +173,11 @@ export type View = {
   // whether the file tree's box for submitting a review is open.
   hidesResolved: boolean
   isReviewing: boolean
+  // The conversation in the file tree: the comment opened in full ('' for
+  // none), and what is being typed ('' nothing, 'new' a comment of its own,
+  // else the id of the comment an answer quotes).
+  talkOpen: string
+  talkReply: string
   // The first comment of the thread being answered, by its id; '' while the
   // comment being typed starts a thread of its own.
   replyTo: string
@@ -221,6 +276,9 @@ export type Scan = {
   // batch at a time, the file the person has open first.
   checked: number
   toCheck: number
+  // Whether the folder is in no git repository: its files are listed as they
+  // stand, and nothing is compared.
+  isPlain: boolean
 }
 
 export type LineStat = [added: number, deleted: number]

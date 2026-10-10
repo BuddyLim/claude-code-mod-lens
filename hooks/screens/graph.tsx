@@ -213,8 +213,30 @@ export const graphScreen = (
       add(cells, offer)
     }
 
+    // The files sit in a box of their own, drawn a row at a time since the
+    // lanes run down beside every row: it sets them apart from the rows of
+    // the commits and stashes around them.
+    const boxWidth = textRoom
+    const edge = (text: string) => (
+      <Text color={COMMIT_BOX} dimColor>
+        {text}
+      </Text>
+    )
+    const title = ` ${chosen.files.length} ${chosen.files.length === 1 ? 'file' : 'files'} changed `
+    const boxed = (content: () => RenderChildren) =>
+      add(cells, () => (
+        <Box width={boxWidth}>
+          {edge('│ ')}
+          {content()}
+          <Box flexGrow={1} />
+          {edge(' │')}
+        </Box>
+      ))
+
+    add(cells, () => edge(`╭─${title}${'─'.repeat(Math.max(0, boxWidth - title.length - 3))}╮`))
+
     if (chosen.files.length === 0) {
-      add(cells, () => <Text dimColor>No files changed here.</Text>)
+      boxed(() => <Text dimColor>No files changed here.</Text>)
     }
 
     for (const one of chosen.files.slice(0, COMMIT_FILES)) {
@@ -222,12 +244,12 @@ export const graphScreen = (
       const stat = chosen.stats[one.path]
       const change = STATUS_WORD[one.status]
 
-      add(cells, () => [
+      boxed(() => [
         <Text color={icon.color}>{icon.glyph} </Text>,
         <Button
           plain
           key={`changed:${id}:${one.path}`}
-          label={cut(one.path, textRoom - 26)}
+          label={cut(one.path, textRoom - 30)}
           onPress={() => actions.openFile(id, one.path)}
         />,
         change !== undefined && <Text color={change[1]}>  {change[0]}</Text>,
@@ -237,10 +259,10 @@ export const graphScreen = (
     }
 
     if (chosen.files.length > COMMIT_FILES) {
-      add(cells, () => (
-        <Text dimColor>… {chosen.files.length - COMMIT_FILES} more files</Text>
-      ))
+      boxed(() => <Text dimColor>… {chosen.files.length - COMMIT_FILES} more files</Text>)
     }
+
+    add(cells, () => edge(`╰${'─'.repeat(Math.max(0, boxWidth - 2))}╯`))
   }
 
   const stashLines = (one: Stash, cells: readonly Span[], isAdrift: boolean) => {
@@ -486,13 +508,19 @@ export const graphScreen = (
     ])
 
     // The stashes made on this commit, hung under it.
-    for (const one of stashes) {
-      if (one.base === row.hash) {
-        stashLines(one, below, false)
-      }
+    // A clear row sets them apart from the commit above, whose branch badges
+    // they would otherwise sit against, and from the commit below.
+    const hung = stashes.filter(one => one.base === row.hash)
+
+    if (hung.length > 0) {
+      add(below, () => undefined)
     }
 
-    if (below.some(cell => cell[0] !== '')) {
+    for (const one of hung) {
+      stashLines(one, below, false)
+    }
+
+    if (hung.length > 0 || below.some(cell => cell[0] !== '')) {
       add(below, () => undefined)
     }
   }

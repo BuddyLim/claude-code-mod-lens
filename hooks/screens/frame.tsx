@@ -9,7 +9,9 @@
 import type { ElementTable, Elements, RenderChildren } from 'claude-code'
 
 import type { Severity } from '../../types'
+import { isFinding } from '../ledger'
 import type { Comment } from '../review'
+import { isDraft } from '../review'
 
 // The elements of the surface the pane is on. Every surface has the first
 // three; a screen draws without the others where a surface lacks them.
@@ -21,6 +23,7 @@ export type Kit = {
   Markdown: Elements['terminal']['Markdown'] | undefined
   Raster: Elements['terminal']['Raster'] | undefined
   Link: Elements['terminal']['Link'] | undefined
+  Image: Elements['terminal']['Image'] | undefined
 }
 
 export const kitOf = (table: ElementTable): Kit => ({
@@ -31,6 +34,7 @@ export const kitOf = (table: ElementTable): Kit => ({
   Markdown: 'Markdown' in table ? table.Markdown : undefined,
   Raster: 'Raster' in table ? table.Raster : undefined,
   Link: 'Link' in table ? table.Link : undefined,
+  Image: 'Image' in table ? table.Image : undefined,
 })
 
 // The changed files in one row of numbers: lines added and deleted across
@@ -57,6 +61,9 @@ export type Shell = {
   padding: number
   // The folder under review, by its own name.
   repoName: string
+  // Whether the folder is in no git repository: its files are listed as they
+  // stand, and nothing is compared.
+  isPlain: boolean
   // The repo the folder under review is a worktree of, by name; '' when it
   // is the repo's main checkout (or its only one).
   worktreeOf: string
@@ -91,14 +98,16 @@ export type Shell = {
 
 export const COLOR: Record<Severity, string> = { error: 'red', warning: 'yellow', info: 'cyan' }
 export const MARK: Record<Severity, string> = { error: '✖', warning: '⚠', info: 'ℹ' }
-// git's one-letter status as a word, in the colour VS Code gives it.
+// git's one-letter status as the letter a file's row shows (modified, added,
+// deleted, renamed, type changed, new: the help screen spells them out), in
+// the colour VS Code gives it.
 export const STATUS_WORD: Record<string, [word: string, color: string]> = {
-  M: ['modified', '#e2c08d'],
-  A: ['added', '#73c991'],
-  D: ['deleted', '#f14c4c'],
-  R: ['renamed', '#73c991'],
-  T: ['type changed', '#e2c08d'],
-  '?': ['new', '#73c991'],
+  M: ['m', '#e2c08d'],
+  A: ['a', '#73c991'],
+  D: ['d', '#f14c4c'],
+  R: ['r', '#73c991'],
+  T: ['t', '#e2c08d'],
+  '?': ['n', '#73c991'],
 }
 export const CARD_BACKGROUND = '#1f1f1f'
 // A worktree's mark and colour, on the graph's badges and the first line.
@@ -114,12 +123,92 @@ export const COMMENT_COLOR = '#c586c0'
 export const GITHUB_ICON = '\u{f09b}'
 export const GITLAB_ICON = '\u{f296}'
 export const GITLAB_COLOR = '#fc6d26'
+// A check's or a review's state, in whichever forge's words, as a mark and a
+// colour: what passed, what failed, what is still going or waiting.
+export const stateOf = (state: string): [mark: string, color: string] => {
+  const word = state.trim().toUpperCase()
+
+  // Each is a whole word a forge says, never a part of one ("UNSUCCESSFUL"
+  // is no success), and what failed is asked first. A word neither list
+  // knows is drawn as not settled: nothing is called good on a guess.
+  return FAILED.has(word) ? ['✖', 'red'] : PASSED.has(word) ? ['✓', 'green'] : ['●', 'yellow']
+}
+
+const PASSED = new Set(['SUCCESS', 'SUCCESSFUL', 'APPROVED', 'PASSED', 'MERGEABLE', 'CLEAN', 'NEUTRAL', 'SKIPPED'])
+const FAILED = new Set([
+  'FAILURE',
+  'FAILED',
+  'ERROR',
+  'CHANGES_REQUESTED',
+  'CONFLICT',
+  'CONFLICTING',
+  'TIMED_OUT',
+  'CANCELED',
+  'CANCELLED',
+  'ACTION_REQUIRED',
+  'STARTUP_FAILURE',
+  'BLOCKED',
+  'DIRTY',
+])
+// What a run of checks is while it has neither passed nor failed.
+const GOING = new Set(['PENDING', 'EXPECTED', 'RUNNING', 'IN_PROGRESS', 'QUEUED', 'CREATED', 'PREPARING', 'WAITING_FOR_RESOURCE'])
+
+// The same in a few words, for a row that has no room for the forge's own:
+// "checks pass", "checks fail", "checks running". Checks that were skipped
+// did not pass, and a word that is none of these is said as the forge said
+// it, so the row never claims more than the forge did.
+export const checksWord = (state: string): string => {
+  const word = state.trim().toUpperCase()
+
+  return word === ''
+    ? ''
+    : FAILED.has(word)
+      ? 'checks fail'
+      : word === 'NONE'
+        ? 'no checks'
+        : word === 'SKIPPED' || word === 'NEUTRAL'
+        ? 'checks skipped'
+        : PASSED.has(word)
+          ? 'checks pass'
+          : GOING.has(word)
+            ? 'checks running'
+            : `checks ${word.toLowerCase().replace(/[^a-z]+/g, ' ').trim().slice(0, 24)}`
+}
+
+// The mark and colour of a run of checks as a whole: as `stateOf`, but
+// skipped checks are not drawn as passed.
+export const checksMark = (state: string): [mark: string, color: string] =>
+  /^(SKIPPED|NEUTRAL|NONE)$/i.test(state.trim()) ? ['○', 'gray'] : stateOf(state)
+
+// The mark of a link that opens a page elsewhere.
+export const LINK_ICON = '\u{f08e}'
+// The mark that stands for "files", before how many a request changes.
+export const FILES_ICON = '\u{f0c5}'
+// A ledger finding is drawn as a thread too, with a mark and a colour of its
+// own: it comes from a review run in this session, not from the forge.
+export const LEDGER_ICON = '\u{f0ae}'
+export const LEDGER_COLOR = '#4fc1ff'
+// The mark and the colour of a thread, by its first comment: a ledger
+// finding's, or a request comment's. A resolved thread's colour is the
+// caller's to choose.
+export const talkIcon = (one: Comment): string =>
+  isDraft(one) ? '✎' : isFinding(one) ? LEDGER_ICON : COMMENT_ICON
+export const talkColor = (one: Comment | undefined): string =>
+  one !== undefined && isDraft(one)
+    ? PENDING_COLOR
+    : one !== undefined && isFinding(one)
+      ? LEDGER_COLOR
+      : COMMENT_COLOR
+// A comment written for the review and not sent yet: the colour of what waits.
+export const PENDING_COLOR = '#e2c08d'
 // The colour of a review thread that has been resolved.
 export const RESOLVED_COLOR = '#9a8444'
 // How many lines of a commit's body show at once.
 export const BODY_ROWS = 12
 // The most files listed under a commit or a stash.
 export const COMMIT_FILES = 40
+// The rows left clear above every screen (the frame draws one blank row).
+export const TOP_MARGIN = 1
 // The border drawn round every screen while a comparison is on.
 const COMPARE_COLOR = '#ffab40'
 
@@ -140,8 +229,9 @@ export const statusLine = ({ Text }: Kit, shell: Shell) => (
         {WORKTREE_ICON} worktree of {shell.worktreeOf} ·{' '}
       </Text>
     )}
-    {shell.repoName} · {shell.request === '' ? shell.side : shell.request}
-    {shell.request !== ''
+    {shell.repoName} ·{' '}
+    {shell.isPlain ? 'not a git repository' : shell.request === '' ? shell.side : shell.request}
+    {shell.request !== '' || shell.isPlain
       ? ''
       : shell.isComparing
         ? ` vs ${shell.against}`
@@ -165,10 +255,59 @@ export const notesOf = ({ Text }: Kit, notes: readonly string[]) =>
     </Text>
   ))
 
+// Rows of grey bars where text is on its way: each as wide as its share of
+// the room (0 to 1; 0 is a clear row), so what is coming has a shape before
+// it has words. `label` says what is being waited for, on the first row,
+// for anyone who reads the pane rather than looks at it.
+export const SKELETON_COLOR = '#3a3a3a'
+export const skeleton = (
+  { Box, Text }: Kit,
+  shares: readonly number[],
+  columns: number,
+  label = '',
+) => (
+  <Box flexDirection="column">
+    {label !== '' && (
+      <Text dimColor wrap="truncate-end">
+        {label}
+      </Text>
+    )}
+    {shares.map(share => (
+      <Box height={1} overflow="hidden">
+        <Text color={SKELETON_COLOR}>
+          {share <= 0 ? ' ' : '█'.repeat(Math.max(1, Math.min(200, Math.round(Math.max(4, columns) * share))))}
+        </Text>
+      </Box>
+    ))}
+  </Box>
+)
+
 // Every screen has `h`: the keys that work on it, and what the marks mean.
 export const helpButton = ({ Button }: Kit, onPress: () => void) => (
   <Button plain key="help" hotkey="h" label="keys" onPress={onPress} />
 )
+
+// A drawing with a mark laid over the last row of the window (`row`, counted
+// from the drawing's first) when there is more below than the window shows:
+// `label` is what it says ("↓ 12 more"), '' for nothing below. The mark is
+// laid over the drawing, so nothing under it moves.
+export const moreBelow = ({ Box, Text }: Kit, tree: ReturnType<typeof frame>, row: number, label: string) =>
+  label === '' ? (
+    tree
+  ) : (
+    <Box flexDirection="column">
+      {tree}
+      {/* Quiet: the comparison's orange on grey, in the middle of the row,
+          where it is not taken for part of what it lies over. */}
+      <Box position="absolute" top={Math.max(0, row)} left={0} right={0} justifyContent="center">
+        <Text backgroundColor={SKELETON_COLOR} color={COMPARE_COLOR}>
+          {'  '}
+          {label}
+          {'  '}
+        </Text>
+      </Box>
+    </Box>
+  )
 
 // The frame round a screen. While a comparison is on, every screen is drawn
 // inside a bright border, so it cannot be mistaken for the plain view of the
@@ -189,20 +328,25 @@ export const frame = (
   padding: number,
   screen: RenderChildren,
   isOwn = false,
+  // The border's colour in place of the comparison's own: the comments',
+  // while a comment is being written.
+  color = COMPARE_COLOR,
 ) => {
-  const framed = isComparing ? (
-    <Box
-      key="pin"
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={COMPARE_COLOR}
-      paddingX={padding}
-    >
-      {screen}
-    </Box>
-  ) : (
-    <Box key="pin" flexDirection="column" paddingX={padding}>
-      {screen}
+  // Every screen starts a row down from the pane's own top edge, border and
+  // all: the row is part of what the pane is held at, so a screen that draws
+  // its own window keeps it too.
+  const framed = (
+    <Box key="pin" flexDirection="column">
+      <Text> </Text>
+      {isComparing ? (
+        <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={padding}>
+          {screen}
+        </Box>
+      ) : (
+        <Box flexDirection="column" paddingX={padding}>
+          {screen}
+        </Box>
+      )}
     </Box>
   )
 
