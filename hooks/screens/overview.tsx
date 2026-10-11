@@ -14,7 +14,7 @@ import { isDraft, isOnWholeFile } from '../review'
 import { rowsOf } from '../rows'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMIT_BOX, FILES_ICON, LINK_ICON, RESOLVED_COLOR, helpButton, stateOf, skeleton, statusLine, talkColor, talkIcon } from './frame'
+import { COMMIT_BOX, FILES_ICON, LINK_ICON, RESOLVED_COLOR, barred, helpButton, stateOf, skeleton, statusLine, talkColor, talkIcon } from './frame'
 import type { TalkActions } from './talk'
 import { conversation } from './talk'
 
@@ -26,8 +26,6 @@ const LISTED = 40
 // How many of the conversation, and of the threads on files, are listed
 // until the rest are asked for; and the most of each that are.
 const FOLDED = 5
-// The most rows the line beside a description runs for.
-const BAR_ROWS = 600
 const TALK_ALL = 40
 const THREADS_ALL = 60
 // How many of its commits are listed until the rest are asked for.
@@ -146,6 +144,62 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
     ) : (
       <Text>{label}</Text>
     )
+
+  // What the request says of itself, and what it attaches: each is drawn
+  // with a line down its left side, as tall as its rows come to.
+  const tall = (rows: readonly unknown[]): number =>
+    rowsOf({ type: 'Box', props: { flexDirection: 'column' }, children: rows as never }, Math.max(8, shell.columns - 2))
+  const said =
+    Markdown === undefined
+      ? body
+          .slice(0, BODY_SHOWN)
+          .split('\n')
+          .slice(0, 400)
+          .map(line => <Text wrap="truncate-end">{line === '' ? ' ' : line}</Text>)
+      : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => <Markdown text={piece} />)
+  const attached = [
+    // The same links as in the description, gathered: what it shows or
+    // attaches, apart from the pages it only points to.
+    <Box height={1} overflow="hidden">
+      <Text dimColor wrap="truncate-end">
+        The pictures, videos and files the description links to, gathered here; pictures are drawn.
+      </Text>
+    </Box>,
+    ...media.slice(0, LISTED).flatMap(one => {
+      const picture = model.pictures.get(one.url)
+      // A picture is drawn under its link where it has been fetched and the
+      // terminal draws pictures; its words stand in elsewhere.
+      const cells =
+        picture === undefined || picture === 'loading' || picture === 'none'
+          ? undefined
+          : cellsOf(picture, Math.max(8, shell.columns - 6), PICTURE_ROWS)
+
+      return [
+        <Box height={1} overflow="hidden">
+          <Text dimColor>{MEDIA_WORD[one.kind].padEnd(8)}</Text>
+          {link(one.url, one.label)}
+          {picture === 'loading' && <Text dimColor>  fetching…</Text>}
+        </Box>,
+        Image !== undefined && cells !== undefined && picture !== undefined && typeof picture === 'object' && (
+          <Box marginLeft={2} marginBottom={1}>
+            <Image
+              source={{ file: picture.file, format: 'png' }}
+              columns={cells.columns}
+              rows={cells.rows}
+              alt={one.label === '' ? ' ' : one.label}
+            />
+          </Box>
+        ),
+      ]
+    }),
+    media.some(one => one.kind === 'video') && (
+      <Box height={1} overflow="hidden">
+        <Text dimColor wrap="truncate-end">
+          A video cannot be played here: its link opens it in the browser.
+        </Text>
+      </Box>
+    ),
+  ]
 
   return (
     <Box flexDirection="column">
@@ -285,33 +339,7 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
               the request says of itself is set apart from what lens says of
               it, at its own brightness. The bar is a cell of background as
               tall as the text beside it. */}
-          {body !== '' && (
-            <Box>
-              {/* A thin line, not a cell of colour: one stroke a row, laid
-                  beside the text from its top to its bottom and cut off
-                  there, so it is as tall as the text whatever that comes to. */}
-              <Box position="absolute" top={0} bottom={0} left={0} width={1} overflow="hidden">
-                {/* About as many strokes as the text has rows, should a
-                    surface not cut the line where the text ends. */}
-                <Text color="#5a5a5a">
-                  {'│\n'.repeat(
-                    Math.min(BAR_ROWS, Math.max(1, rowsOf({ type: 'Markdown', props: { text: body.slice(0, BODY_SHOWN) } }, shell.columns - 4))),
-                  )}
-                </Text>
-              </Box>
-              <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={2}>
-                {Markdown === undefined
-                  ? body
-                      .slice(0, BODY_SHOWN)
-                      .split('\n')
-                      .slice(0, 400)
-                      .map(line => <Text>{line === '' ? ' ' : line}</Text>)
-                  : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => (
-                      <Markdown text={piece} />
-                    ))}
-              </Box>
-            </Box>
-          )}
+          {body !== '' && barred(kit, said, tall(said))}
           {body.length > BODY_SHOWN && <Text dimColor>… the rest of it is on the request's page.</Text>}
 
           {/* A terminal draws no picture, video or document in place: each
@@ -319,43 +347,8 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
           {media.length > 0 && heading(`Attachments (${media.length})`)}
           {/* The same links as in the description above, gathered: what it
               shows or attaches, apart from the pages it only points to. */}
-          {media.length > 0 && (
-            <Text dimColor wrap="truncate-end">
-              The pictures, videos and files the description links to, gathered here; pictures are drawn.
-            </Text>
-          )}
-          {media.slice(0, LISTED).flatMap(one => {
-            const picture = model.pictures.get(one.url)
-            // A picture is drawn under its link where it has been fetched
-            // and the terminal draws pictures; its words stand in elsewhere.
-            const cells =
-              picture === undefined || picture === 'loading' || picture === 'none'
-                ? undefined
-                : cellsOf(picture, Math.max(8, shell.columns - 4), PICTURE_ROWS)
-
-            return [
-              <Box height={1} overflow="hidden">
-                <Text dimColor>{MEDIA_WORD[one.kind].padEnd(8)}</Text>
-                {link(one.url, one.label)}
-                {picture === 'loading' && <Text dimColor>  fetching…</Text>}
-              </Box>,
-              Image !== undefined && cells !== undefined && picture !== undefined && typeof picture === 'object' && (
-                <Box marginLeft={2} marginBottom={1}>
-                  <Image
-                    source={{ file: picture.file, format: 'png' }}
-                    columns={cells.columns}
-                    rows={cells.rows}
-                    alt={one.label === '' ? ' ' : one.label}
-                  />
-                </Box>
-              ),
-            ]
-          })}
-          {media.some(one => one.kind === 'video') && (
-            <Text dimColor wrap="truncate-end">
-              A video cannot be played here: its link opens it in the browser.
-            </Text>
-          )}
+          {/* They are the description's own, so the same line runs beside them. */}
+          {media.length > 0 && barred(kit, attached, tall(attached))}
 
           {/* What was said on the request as a whole: its latest few, each
               opened by its author's name, with the box to answer in. */}

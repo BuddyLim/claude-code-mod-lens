@@ -287,6 +287,26 @@ export const helpButton = ({ Button }: Kit, onPress: () => void) => (
   <Button plain key="help" hotkey="h" label="keys" onPress={onPress} />
 )
 
+// What someone else wrote, set apart by a thin grey line down its left side,
+// as beside a quotation. The line is a stroke a row, `rows` of them: as many
+// as what it stands beside takes, by the caller's count. It is laid beside
+// the text and cut where the text ends where the surface cuts it, so a
+// count a little long does no harm there, and one a little short only stops
+// the line early.
+export const BAR_COLOR = '#5a5a5a'
+export const barred = ({ Box, Text }: Kit, content: RenderChildren, rows: number) => (
+  <Box>
+    <Box position="absolute" top={0} bottom={0} left={0} width={1} overflow="hidden">
+      <Box height="100%" width={1} overflow="hidden">
+        <Text color={BAR_COLOR}>{Array.from({ length: Math.max(1, Math.min(600, rows)) }, () => '│').join('\n')}</Text>
+      </Box>
+    </Box>
+    <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={2}>
+      {content}
+    </Box>
+  </Box>
+)
+
 // A drawing with a mark laid over the last row of the window (`row`, counted
 // from the drawing's first) when there is more below than the window shows:
 // `label` is what it says ("↓ 12 more"), '' for nothing below. The mark is

@@ -41,6 +41,24 @@ const cellsOf = (node: Drawn): number => {
         : textOf(node).length + (node.type === 'Button' && props.plain !== true ? 4 : 0)
 }
 
+// Markdown about as it is drawn, for counting its rows: without where its
+// links go, its marks of emphasis and code, a heading's hashes, a fence's
+// own lines and a table's ruled one, and with a run of blank lines as one.
+// Drawn markdown is never longer than this, so a count from it errs short.
+const shownOf = (markdown: string): string =>
+  markdown
+    .split('\n')
+    .filter(line => !/^\s{0,3}(```|~~~)/.test(line) && !/^\s*\|?\s*:?-{3,}[\s|:-]*$/.test(line))
+    .map(line =>
+      line
+        .replace(/!?\[([^\]\n]{0,300})\]\([^)\n]{0,2100}\)/g, '$1')
+        .replace(/[*_`]{1,3}/g, '')
+        .replace(/^\s{0,3}#{1,6}\s+/, ''),
+    )
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
 // The rows one element takes in `columns` cells.
 export const rowsOf = (node: Drawn, columns: number): number => {
   if (!isDrawn(node)) {
@@ -66,7 +84,7 @@ export const rowsOf = (node: Drawn, columns: number): number => {
         : node.type === 'Text' || node.type === 'Markdown'
           ? isCut
             ? 1
-            : (node.type === 'Markdown' && typeof props.text === 'string' ? props.text : text)
+            : (node.type === 'Markdown' && typeof props.text === 'string' ? shownOf(props.text) : text)
                 .split('\n')
                 .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / room)), 0)
           : 1
