@@ -278,14 +278,26 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
               markdown, a piece at a time. */}
           {heading('Description')}
           {body === '' && <Text dimColor>It has no description.</Text>}
-          {body !== '' &&
-            (Markdown === undefined
-              ? body
-                  .slice(0, BODY_SHOWN)
-                  .split('\n')
-                  .slice(0, 400)
-                  .map(line => <Text color="#a8a8a8">{line === '' ? ' ' : line}</Text>)
-              : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => <Markdown text={piece} />))}
+          {/* A grey bar runs down its left side, as beside a quotation: what
+              the request says of itself is set apart from what lens says of
+              it, at its own brightness. The bar is a cell of background as
+              tall as the text beside it. */}
+          {body !== '' && (
+            <Box>
+              <Box width={1} flexShrink={0} backgroundColor="#5a5a5a" />
+              <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={1}>
+                {Markdown === undefined
+                  ? body
+                      .slice(0, BODY_SHOWN)
+                      .split('\n')
+                      .slice(0, 400)
+                      .map(line => <Text>{line === '' ? ' ' : line}</Text>)
+                  : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => (
+                      <Markdown text={piece} />
+                    ))}
+              </Box>
+            </Box>
+          )}
           {body.length > BODY_SHOWN && <Text dimColor>… the rest of it is on the request's page.</Text>}
 
           {/* A terminal draws no picture, video or document in place: each
