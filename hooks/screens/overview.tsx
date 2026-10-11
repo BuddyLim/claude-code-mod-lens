@@ -4,6 +4,8 @@
 // it, whether it can be merged, and its commits. It is as long as that, so
 // the pane scrolls it.
 
+import type { RenderChildren } from 'claude-code'
+
 import { ageOf } from '../git'
 import type { Media } from '../media'
 import { hostOf, markLinks, mediaOf } from '../media'
@@ -14,7 +16,7 @@ import { isDraft, isOnWholeFile } from '../review'
 import { rowsOf } from '../rows'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMIT_BOX, FILES_ICON, LINK_ICON, RESOLVED_COLOR, barred, helpButton, stateOf, skeleton, statusLine, talkColor, talkIcon } from './frame'
+import { COMMIT_BOX, FILES_ICON, LINK_ICON, BAR_COLOR, RESOLVED_COLOR, barred, helpButton, stateOf, skeleton, statusLine, talkColor, talkIcon } from './frame'
 import type { TalkActions } from './talk'
 import { conversation } from './talk'
 
@@ -157,14 +159,25 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
           .slice(0, 400)
           .map(line => <Text wrap="truncate-end">{line === '' ? ' ' : line}</Text>)
       : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => <Markdown text={piece} />)
+  // The attachments' line is drawn a row at a time, a stroke beside each row
+  // and as many beside a picture as it is tall: every row here has a height
+  // that is known, so the line is exactly as long as what it stands beside.
+  const beside = (row: RenderChildren, rows = 1) => (
+    <Box height={rows} overflow="hidden">
+      <Box width={2} flexShrink={0}>
+        <Text color={BAR_COLOR}>{Array.from({ length: rows }, () => '│').join('\n')}</Text>
+      </Box>
+      {row}
+    </Box>
+  )
   const attached = [
     // The same links as in the description, gathered: what it shows or
     // attaches, apart from the pages it only points to.
-    <Box height={1} overflow="hidden">
+    beside(
       <Text dimColor wrap="truncate-end">
         The pictures, videos and files the description links to, gathered here; pictures are drawn.
-      </Text>
-    </Box>,
+      </Text>,
+    ),
     ...media.slice(0, LISTED).flatMap(one => {
       const picture = model.pictures.get(one.url)
       // A picture is drawn under its link where it has been fetched and the
@@ -175,30 +188,37 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
           : cellsOf(picture, Math.max(8, shell.columns - 6), PICTURE_ROWS)
 
       return [
-        <Box height={1} overflow="hidden">
-          <Text dimColor>{MEDIA_WORD[one.kind].padEnd(8)}</Text>
-          {link(one.url, one.label)}
-          {picture === 'loading' && <Text dimColor>  fetching…</Text>}
-        </Box>,
-        Image !== undefined && cells !== undefined && picture !== undefined && typeof picture === 'object' && (
-          <Box marginLeft={2} marginBottom={1}>
-            <Image
-              source={{ file: picture.file, format: 'png' }}
-              columns={cells.columns}
-              rows={cells.rows}
-              alt={one.label === '' ? ' ' : one.label}
-            />
-          </Box>
+        beside(
+          <Box height={1} overflow="hidden">
+            <Text dimColor>{MEDIA_WORD[one.kind].padEnd(8)}</Text>
+            {link(one.url, one.label)}
+            {picture === 'loading' && <Text dimColor>  fetching…</Text>}
+          </Box>,
         ),
+        Image !== undefined &&
+          cells !== undefined &&
+          picture !== undefined &&
+          typeof picture === 'object' &&
+          // The picture, a step in, with a clear row under it.
+          beside(
+            <Box marginLeft={2} height={cells.rows} overflow="hidden">
+              <Image
+                source={{ file: picture.file, format: 'png' }}
+                columns={cells.columns}
+                rows={cells.rows}
+                alt={one.label === '' ? ' ' : one.label}
+              />
+            </Box>,
+            cells.rows + 1,
+          ),
       ]
     }),
-    media.some(one => one.kind === 'video') && (
-      <Box height={1} overflow="hidden">
+    media.some(one => one.kind === 'video') &&
+      beside(
         <Text dimColor wrap="truncate-end">
           A video cannot be played here: its link opens it in the browser.
-        </Text>
-      </Box>
-    ),
+        </Text>,
+      ),
   ]
 
   return (
@@ -348,7 +368,7 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
           {/* The same links as in the description above, gathered: what it
               shows or attaches, apart from the pages it only points to. */}
           {/* They are the description's own, so the same line runs beside them. */}
-          {media.length > 0 && barred(kit, attached, tall(attached))}
+          {media.length > 0 && <Box flexDirection="column">{attached}</Box>}
 
           {/* What was said on the request as a whole: its latest few, each
               opened by its author's name, with the box to answer in. */}

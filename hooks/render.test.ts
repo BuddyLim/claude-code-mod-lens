@@ -259,6 +259,8 @@ test('the overview draws what a request says, where it stands and what it links 
   // The description is handed to the surface as markdown, and its picture is listed as a link.
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Attachments \(1\)/ })).toBeDefined()
+  // A line runs beside the attachments: a stroke for the note and one for the link, at the least.
+  expect((await ui.findAll({ type: 'Text', text: /^│/ })).length >= 3).toBe(true)
   // What was said is on the page too: the conversation, and the threads on
   // files a row each, the first five until the rest are asked for.
   expect(await ui.find({ type: 'Text', text: /Conversation \(1\)/ })).toBeDefined()
