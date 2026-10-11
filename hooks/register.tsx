@@ -1064,6 +1064,9 @@ const loadMe = async ($: EngineInterface, repo: string): Promise<void> => {
 let requestOpening = ''
 // The request whose every commit the overview lists, by its key; '' for none.
 let commitsOpen = ''
+// The same for all of its conversation, and for every thread on its files.
+let talkAll = ''
+let threadsAll = ''
 let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
 let requestActing = false
 
@@ -2297,8 +2300,15 @@ export const register: Register = (on, options) => {
               asking: '',
               isActing: false,
               isCommitsOpen: false,
+              comments: [],
+              canTalk: false,
+              talkOpen: '',
+              talkReply: '',
+              talkRound,
+              isTalkAll: false,
+              isThreadsAll: false,
             },
-            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, toggleCommits: still, help: still },
+            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, toggleCommits: still, toggleTalkAll: still, toggleThreadsAll: still, openThread: still, openTalk: still, writeTalk: still, typeTalk: still, postTalk: still, help: still },
           ),
         )
       }
@@ -2438,6 +2448,28 @@ export const register: Register = (on, options) => {
       })()
     }
 
+    // What the conversation of a request does, wherever it is drawn: the file
+    // tree, and the request's own page.
+    const talkActions = {
+      openTalk: (id: string): void => set((last): View => ({ ...last, talkOpen: id })),
+      writeTalk: (id: string): void => {
+        talkDraft = ''
+        talkRound += 1
+        set((last): View => ({ ...last, talkReply: id }))
+      },
+      typeTalk: (text: string): void => {
+        talkDraft = text
+      },
+      postTalk: (entered?: string): void =>
+        void sendTalk(
+          $,
+          repo,
+          requestTyped,
+          comments.find(one => one.id === now.talkReply && one.path === ''),
+          entered ?? talkDraft,
+        ),
+    }
+
     if (now.screen === 'overview') {
       const key = `${repo}\n${requestTyped}`
       const held = overviewCache?.key === key ? overviewCache : undefined
@@ -2477,6 +2509,13 @@ export const register: Register = (on, options) => {
             asking: requestAsked.key === key ? requestAsked.act : '',
             isActing: requestActing,
             isCommitsOpen: commitsOpen === key,
+            comments,
+            canTalk: requestLabel !== '',
+            talkOpen: now.talkOpen,
+            talkReply: now.talkReply,
+            talkRound,
+            isTalkAll: talkAll === key,
+            isThreadsAll: threadsAll === key,
           },
           {
             // Back goes where the overview was opened from: the list of requests, or the file tree.
@@ -2503,6 +2542,18 @@ export const register: Register = (on, options) => {
                 }),
               )
             },
+            ...talkActions,
+            toggleTalkAll: () => {
+              talkAll = talkAll === key ? '' : key
+              set(nudged)
+            },
+            toggleThreadsAll: () => {
+              threadsAll = threadsAll === key ? '' : key
+              set(nudged)
+            },
+            // A thread opens its file where it is: the request's own version
+            // of it, or the working tree's where the request is the branch's.
+            openThread: (path, line) => void (target === '' ? openAt(path, line) : openCommitAt(target, path, line)),
             toggleCommits: () => {
               commitsOpen = commitsOpen === key ? '' : key
               set(nudged)
@@ -3250,23 +3301,7 @@ export const register: Register = (on, options) => {
             },
             toggleReviewed: markReviewed,
             markAll: markReviewedAll,
-            openTalk: id => set((last): View => ({ ...last, talkOpen: id })),
-            writeTalk: id => {
-              talkDraft = ''
-              talkRound += 1
-              set((last): View => ({ ...last, talkReply: id }))
-            },
-            typeTalk: text => {
-              talkDraft = text
-            },
-            postTalk: entered =>
-              void sendTalk(
-                $,
-                repo,
-                requestTyped,
-                comments.find(one => one.id === now.talkReply && one.path === ''),
-                entered ?? talkDraft,
-              ),
+            ...talkActions,
           },
         ),
       )

@@ -229,6 +229,9 @@ test('the overview draws what a request says, where it stands and what it links 
     '--abbrev-ref': 'feature\n',
     'pulls?state=open&head=': JSON.stringify([{ number: 12, title: 'Add the thing', base: { ref: 'main' }, html_url: 'https://github.com/acme/app/pull/12' }]),
     'gh pr view 12': JSON.stringify(seen),
+    // What was said on it: seven threads on a file's lines, and one comment on the request as a whole.
+    'pulls/12/comments?per_page': JSON.stringify(Array.from({ length: 7 }, (_, at) => ({ id: at + 1, path: 'src/a.ts', line: 41 + at, side: 'RIGHT', subject_type: 'line', user: { login: 'bob' }, body: `thought ${at + 1}`, created_at: '2026-01-01T10:00:00Z' }))),
+    'issues/12/comments?per_page': JSON.stringify([{ id: 70, user: { login: 'bob' }, body: 'Looks close', created_at: '2026-01-02T12:00:00Z' }]),
     'gh api': '[]',
     // A picture of the description, fetched: where it was put, and its size.
     'lens-pictures': '/Users/t/.cache/lens-pictures/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png\n640 320\n',
@@ -256,6 +259,15 @@ test('the overview draws what a request says, where it stands and what it links 
   // The description is handed to the surface as markdown, and its picture is listed as a link.
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Attachments \(1\)/ })).toBeDefined()
+  // What was said is on the page too: the conversation, and the threads on
+  // files a row each, the first five until the rest are asked for.
+  expect(await ui.find({ type: 'Text', text: /Conversation \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Comments on files \(7 open\)/ })).toBeDefined()
+  expect((await ui.find({ key: 'thread:1' }))?.text).toBe('src/a.ts:41')
+  expect(await ui.find({ key: 'thread:6' })).toBe(undefined)
+  expect((await ui.find({ key: 'threads-more' }))?.text).toBe('▾ show 2 more threads')
+  await ui.press({ key: 'threads-more' })
+  expect(await ui.find({ key: 'thread:7' })).toBeDefined()
   // Its latest five commits are listed, the newest first; the rest unfold.
   expect(await ui.find({ type: 'Text', text: /Step 7/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Text', text: /^\S+ Step \d/ })).length).toBe(5)

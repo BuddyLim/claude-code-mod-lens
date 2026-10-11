@@ -5,7 +5,7 @@
 import { ageOf } from '../git'
 import type { Listed } from '../review'
 import type { Kit, Shell } from './frame'
-import { GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksMark, checksWord, helpButton, skeleton, stateOf, statusLine } from './frame'
+import { COMMENT_COLOR, COMMENT_ICON, GITHUB_ICON, GITLAB_COLOR, GITLAB_ICON, checksMark, checksWord, helpButton, skeleton, stateOf, statusLine } from './frame'
 
 export type RequestsModel = {
   shell: Shell
@@ -45,6 +45,15 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
   const row = (one: Listed) => {
     const seconds = one.when === '' ? NaN : (model.now - Date.parse(one.when)) / 1000
     const ticked = model.reviewed[one.typed] ?? 0
+    // How much has been said on it, in a few words: threads still open,
+    // those resolved, and comments on the request as a whole.
+    const talk = [
+      one.open === 0 ? '' : `${one.open} open`,
+      one.resolved === 0 ? '' : `${one.resolved} resolved`,
+      one.said === 0 ? '' : `${one.said} ${one.said === 1 ? 'comment' : 'comments'}`,
+    ]
+      .filter(part => part !== '')
+      .join(' · ')
     const trail = [
       one.author === '' ? '' : `@${one.author}`,
       Number.isFinite(seconds) ? ageOf(Math.max(0, seconds)) : '',
@@ -90,6 +99,14 @@ export const requestsScreen = (kit: Kit, model: RequestsModel, actions: Requests
           <Text dimColor wrap="truncate-end">
             {'  '}
             {trail}
+            {talk === '' ? (
+              ''
+            ) : (
+              <Text color={COMMENT_COLOR} dimColor={one.open === 0}>
+                {' · '}
+                {COMMENT_ICON} {talk}
+              </Text>
+            )}
           </Text>
         </Box>
         <Box height={1} overflow="hidden" marginLeft={2}>

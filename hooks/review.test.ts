@@ -1176,7 +1176,7 @@ test('the open requests say whether their checks pass and how their reviews stan
                 repository: {
                   pullRequests: {
                     nodes: [
-                      { number: 12, reviewDecision: 'CHANGES_REQUESTED', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
+                      { number: 12, reviewDecision: 'CHANGES_REQUESTED', comments: { totalCount: 4 }, reviewThreads: { nodes: [{ isResolved: true }, { isResolved: false }, { isResolved: false }] }, commits: { nodes: [{ commit: { statusCheckRollup: { state: 'FAILURE' } } }] } },
                       { number: 13, reviewDecision: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] } },
                     ],
                   },
@@ -1190,6 +1190,7 @@ test('the open requests say whether their checks pass and how their reviews stan
   }
   const listed = await listRequests(github)
 
+  expect(listed.map(one => [one.said, one.open, one.resolved])).toEqual([[4, 2, 1], [0, 0, 0], [0, 0, 0]])
   expect(listed.map(one => [one.typed, one.checks, one.decision, one.isMine])).toEqual([
     ['#12', 'FAILURE', 'CHANGES_REQUESTED', true],
     // No checks and no review: nothing is said of either.

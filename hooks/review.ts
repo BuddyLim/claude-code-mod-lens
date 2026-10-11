@@ -1152,13 +1152,19 @@ export type Listed = {
   // forge's own words; '' where it has none or the forge did not say.
   checks: string
   decision: string
+  // How much has been said on it: comments on the request as a whole (on
+  // GitLab, every note), and its threads on files still open and resolved
+  // (GitHub; 0 where the forge did not say).
+  said: number
+  open: number
+  resolved: number
 }
 
 // The standing of each open request, asked of each forge its own way: the
 // state its last commit's checks add up to (GitHub), or its head pipeline's
 // (GitLab), and whether it is approved.
 const GITHUB_STANDING =
-  'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:50,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}'
+  'query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:50,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number reviewDecision comments{totalCount} reviewThreads(first:100){nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}'
 const GITLAB_STANDING =
   'query($path:ID!){project(fullPath:$path){mergeRequests(state:opened,first:50,sort:UPDATED_DESC){nodes{iid approved approvedBy(first:1){nodes{username}} headPipeline{status}}}}}'
 
@@ -1228,7 +1234,7 @@ export const listRequests = async (run: Run, isPast = false): Promise<Listed[]> 
   }
 
   // Each request's standing by its number; none where the forge did not say.
-  const standing = new Map<number, { checks: string; decision: string }>()
+  const standing = new Map<number, { checks: string; decision: string; said: number; open: number; resolved: number }>()
 
   try {
     const data = record(record(JSON.parse(stood.stdout)).data)
@@ -1240,7 +1246,13 @@ export const listRequests = async (run: Run, isPast = false): Promise<Listed[]> 
       const node = record(raw)
       const commit = record(record((Array.isArray(record(node.commits).nodes) ? (record(node.commits).nodes as unknown[]) : [])[0]).commit)
 
+      const threads = Array.isArray(record(node.reviewThreads).nodes) ? (record(node.reviewThreads).nodes as unknown[]) : []
+      const settled = threads.filter(thread => record(thread).isResolved === true).length
+
       standing.set(Number(isGitlab ? node.iid : node.number), {
+        said: whole(record(node.comments).totalCount),
+        open: threads.length - settled,
+        resolved: settled,
         // A request the forge answered for that has no checks says so (NONE):
         // the row then tells "none" from "the forge was not asked".
         checks: plain(text(isGitlab ? record(node.headPipeline).status : record(commit.statusCheckRollup).state)).slice(0, 40) || 'NONE',
@@ -1304,6 +1316,11 @@ export const listRequests = async (run: Run, isPast = false): Promise<Listed[]> 
                     : 'open') as Listed['state'],
               checks: standing.get(number)?.checks ?? '',
               decision: standing.get(number)?.decision ?? '',
+              // GitLab's list says how many notes people left; GitHub's are
+              // counted beside the checks, with which threads are settled.
+              said: isGitlab ? whole(one.user_notes_count) : (standing.get(number)?.said ?? 0),
+              open: standing.get(number)?.open ?? 0,
+              resolved: standing.get(number)?.resolved ?? 0,
               summary:
                 sampleOf(
                   typeof (isGitlab ? one.description : one.body) === 'string'

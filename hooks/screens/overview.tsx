@@ -9,16 +9,24 @@ import type { Media } from '../media'
 import { hostOf, markLinks, mediaOf } from '../media'
 import type { Picture } from '../pictures'
 import { cellsOf } from '../pictures'
-import type { Overview, RequestAct } from '../review'
+import type { Comment, Overview, RequestAct } from '../review'
+import { isDraft, isOnWholeFile } from '../review'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
-import { COMMIT_BOX, FILES_ICON, LINK_ICON, helpButton, stateOf, skeleton, statusLine } from './frame'
+import { COMMIT_BOX, FILES_ICON, LINK_ICON, RESOLVED_COLOR, helpButton, stateOf, skeleton, statusLine, talkColor, talkIcon } from './frame'
+import type { TalkActions } from './talk'
+import { conversation } from './talk'
 
 // The most of a description that is drawn, and the size of each piece of it:
 // an element's text is bounded, and so is the tree as a whole.
 const BODY_SHOWN = 40_000
 const BODY_PIECE = 8000
 const LISTED = 40
+// How many of the conversation, and of the threads on files, are listed
+// until the rest are asked for; and the most of each that are.
+const FOLDED = 5
+const TALK_ALL = 40
+const THREADS_ALL = 60
 // How many of its commits are listed until the rest are asked for.
 const COMMITS_FOLDED = 5
 // The most rows one picture takes.
@@ -44,6 +52,17 @@ export type OverviewModel = {
   isActing: boolean
   // Whether every commit is listed, in place of the latest few.
   isCommitsOpen: boolean
+  // What has been said on the request: on it as a whole, and on its files.
+  // `canTalk` is whether something can be said on it from here.
+  comments: readonly Comment[]
+  canTalk: boolean
+  talkOpen: string
+  talkReply: string
+  talkRound: number
+  // Whether all of the conversation, and every thread on a file, is listed
+  // in place of the first few.
+  isTalkAll: boolean
+  isThreadsAll: boolean
 }
 
 export type OverviewActions = {
@@ -60,8 +79,13 @@ export type OverviewActions = {
   act: (act: RequestAct) => void
   // Between the latest few commits and all of them.
   toggleCommits: () => void
+  // The same for the conversation, and for the threads on files.
+  toggleTalkAll: () => void
+  toggleThreadsAll: () => void
+  // Opens a file at the line a thread is on.
+  openThread: (path: string, line: number) => void
   help: () => void
-}
+} & Omit<TalkActions, 'open'>
 
 const MEDIA_WORD: Record<Media['kind'], string> = { image: 'picture', video: 'video', file: 'file' }
 
@@ -86,6 +110,18 @@ const YES: Record<RequestAct, string> = {
 export const overviewScreen = (kit: Kit, model: OverviewModel, actions: OverviewActions) => {
   const { Box, Button, Text, Markdown, Link, Image } = kit
   const { shell, overview } = model
+  // What was said on the request as a whole; and the threads on its files,
+  // by their first comments, those still open first.
+  const general = model.comments.filter(one => one.path === '' && one.line === 0 && !isDraft(one))
+  const threads = model.comments
+    .filter(one => one.path !== '' && one.replyTo === undefined)
+    .sort(
+      (a, b) =>
+        Number(a.isResolved === true) - Number(b.isResolved === true) ||
+        a.path.localeCompare(b.path) ||
+        a.line - b.line,
+    )
+  const settled = threads.filter(one => one.isResolved === true).length
   const body = (overview?.body ?? '').trim()
   const media = mediaOf(body)
   const failing = (overview?.checks ?? []).filter(check => stateOf(check.state)[0] === '✖').length
@@ -293,6 +329,101 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
             <Text dimColor wrap="truncate-end">
               A video cannot be played here: its link opens it in the browser.
             </Text>
+          )}
+
+          {/* What was said on the request as a whole: its latest few, each
+              opened by its author's name, with the box to answer in. */}
+          {general.length === 0 && model.canTalk && (
+            <Box flexDirection="column">
+              <Text> </Text>
+              <Box columnGap={2}>
+                <Text bold>Conversation (0)</Text>
+                <Button
+                  plain
+                  key="talk-new"
+                  hotkey="o"
+                  label={model.talkReply === 'new' ? 'close' : 'comment'}
+                  onPress={() => actions.writeTalk(model.talkReply === 'new' ? '' : 'new')}
+                />
+              </Box>
+            </Box>
+          )}
+          {conversation(
+            kit,
+            {
+              shell,
+              comments: general,
+              canTalk: model.canTalk,
+              isInSection: false,
+              rows: model.isTalkAll ? TALK_ALL : FOLDED,
+              talkOpen: model.talkOpen,
+              talkReply: model.talkReply,
+              talkRound: model.talkRound,
+            },
+            { ...actions, open: () => undefined },
+          )}
+          {general.length > FOLDED && (
+            <Box>
+              <Button
+                plain
+                dimColor
+                key="talk-more"
+                label={
+                  model.isTalkAll
+                    ? `▴ show only the latest ${FOLDED}`
+                    : `▾ show ${Math.min(TALK_ALL, general.length) - FOLDED} earlier comments`
+                }
+                onPress={actions.toggleTalkAll}
+              />
+            </Box>
+          )}
+
+          {/* The threads on its files, a row each: what is still open
+              first. A thread's place opens its file there. */}
+          {threads.length > 0 &&
+            heading(`Comments on files (${threads.length - settled} open${settled === 0 ? '' : ` · ${settled} resolved`})`)}
+          {threads.slice(0, model.isThreadsAll ? THREADS_ALL : FOLDED).map(one => {
+            const replies = model.comments.filter(other => other.replyTo === one.id).length
+            const place =
+              one.line > 0
+                ? `${one.path}:${one.line}`
+                : `${one.path} (${isOnWholeFile(one) ? 'whole file' : one.oldLine !== undefined ? 'removed line' : 'outdated'})`
+
+            return (
+              <Box height={1} overflow="hidden">
+                <Box flexShrink={0}>
+                  <Text color={one.isResolved === true ? RESOLVED_COLOR : talkColor(one)}>{talkIcon(one)} </Text>
+                  <Button
+                    plain
+                    key={`thread:${one.id}`}
+                    label={place}
+                    onPress={() => actions.openThread(one.path, Math.max(1, one.line))}
+                  />
+                </Box>
+                <Text dimColor={one.isResolved === true} wrap="truncate-end">
+                  {'  '}
+                  {one.author === '' ? '' : `@${one.author}: `}
+                  {one.body.replace(/\s+/g, ' ').slice(0, 300)}
+                  {replies === 0 ? '' : `  · ${replies} ${replies === 1 ? 'reply' : 'replies'}`}
+                  {one.isResolved === true ? '  ✓ resolved' : ''}
+                </Text>
+              </Box>
+            )
+          })}
+          {threads.length > FOLDED && (
+            <Box>
+              <Button
+                plain
+                dimColor
+                key="threads-more"
+                label={
+                  model.isThreadsAll
+                    ? `▴ show only the first ${FOLDED}`
+                    : `▾ show ${Math.min(THREADS_ALL, threads.length) - FOLDED} more threads`
+                }
+                onPress={actions.toggleThreadsAll}
+              />
+            </Box>
           )}
 
           {overview.commits.length > 0 && heading(`Commits (${overview.commits.length})`)}
