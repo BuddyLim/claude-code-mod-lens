@@ -99,7 +99,7 @@ export type View = {
   // The uncommitted and untracked files ticked for a commit or a stash.
   checked: string[]
   // The screen a commit's or stash's file was opened from, where back returns.
-  origin: 'tree' | 'graph' | 'changes'
+  origin: 'tree' | 'graph' | 'changes' | 'overview'
   // The files of each request ticked as reviewed, by the folder under review
   // and what the request is typed as ("/repo\n#12"): kept between sessions.
   reviewed: Record<string, string[]>

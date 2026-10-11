@@ -268,6 +268,14 @@ test('the overview draws what a request says, where it stands and what it links 
   expect((await ui.find({ key: 'threads-more' }))?.text).toBe('▾ show 2 more threads')
   await ui.press({ key: 'threads-more' })
   expect(await ui.find({ key: 'thread:7' })).toBeDefined()
+  // A thread opens its file, and back from there is back to this page.
+  await ui.press({ key: 'thread:1' })
+  await clock.advance(2000)
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /Where it stands/ })).toBe(undefined)
+  await ui.press({ key: 'back' })
+  await ui.drawn()
+  expect(await ui.find({ type: 'Text', text: /Where it stands/ })).toBeDefined()
   // Its latest five commits are listed, the newest first; the rest unfold.
   expect(await ui.find({ type: 'Text', text: /Step 7/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Text', text: /^\S+ Step \d/ })).length).toBe(5)

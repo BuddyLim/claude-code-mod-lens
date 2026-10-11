@@ -2553,7 +2553,10 @@ export const register: Register = (on, options) => {
             },
             // A thread opens its file where it is: the request's own version
             // of it, or the working tree's where the request is the branch's.
-            openThread: (path, line) => void (target === '' ? openAt(path, line) : openCommitAt(target, path, line)),
+            openThread: (path, line) =>
+              void (target === '' ? openAt(path, line) : openCommitAt(target, path, line)).then(() =>
+                update($, view, (last): View => ({ ...last, origin: 'overview' })),
+              ),
             toggleCommits: () => {
               commitsOpen = commitsOpen === key ? '' : key
               set(nudged)
@@ -3333,7 +3336,8 @@ export const register: Register = (on, options) => {
         (was): View => ({
           ...was,
           // A file opened from the page of every change goes back to it.
-          screen: was.origin === 'changes' ? 'changes' : commit === '' ? 'tree' : (was.origin ?? 'graph'),
+          // One opened from a thread on the request's page goes back to that page.
+          screen: was.origin === 'changes' ? 'changes' : was.origin === 'overview' ? 'overview' : commit === '' ? 'tree' : (was.origin ?? 'graph'),
           commit: '',
         }),
       )
