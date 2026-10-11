@@ -116,6 +116,19 @@ import { stepShown } from './changes'
 import { clamp, foldEnd } from './text'
 
 const PANE = 'lens'
+
+// The parked mod's pane, which lens draws in while that mod hosts it. Parked
+// says so in its own `guest` state when a file of one of its items is opened:
+// the file is then read where the item was, with no other pane to switch to.
+// Parked draws its own rows above (the way back), and lens has the rest.
+const HOST = 'parked'
+const HOST_ROWS = 2
+const GUEST = { plugin: 'parked', key: 'guest' } as const
+const isGuest = ($: EngineInterface): Promise<boolean> =>
+  $.state.get(GUEST).then(
+    got => got.value === true,
+    () => false,
+  )
 // How many unchanged files opened from the tree of every file stay among
 // those checked.
 const EXTRA_FILES = 20
@@ -214,6 +227,10 @@ let insightFor: string | undefined
 // file is in becomes the one under review, unless the folder under review
 // already holds the file.
 const showPlace = async ($: EngineInterface, named: string, line: number): Promise<void> => {
+  // Asked by a mod that is showing lens in its own pane, lens's own pane is
+  // left as it is: opening it would bring it forward whenever the prompt, and
+  // not the host's pane, happened to hold the keyboard.
+  const isHosted = await isGuest($)
   const run = runOf($)
   const root = await $.session.cwd().catch(() => '')
   const full = placeOf(named, root)
@@ -232,7 +249,7 @@ const showPlace = async ($: EngineInterface, named: string, line: number): Promi
       return
     }
 
-    await openReview($, repo, undefined)
+    await openReview($, repo, undefined, isHosted)
   }
 
   const path = full.slice(repo.length + 1)
@@ -255,7 +272,10 @@ const showPlace = async ($: EngineInterface, named: string, line: number): Promi
       crumb: NO_CRUMB,
     }),
   )
-  await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+
+  if (!isHosted) {
+    await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+  }
 }
 
 // The ledger mod's run, where that mod is loaded: its findings are drawn with
@@ -483,6 +503,8 @@ const openReview = async (
   $: EngineInterface,
   repo: string,
   base: string | undefined,
+  // Set where another mod's pane is to show the review: the pane is not opened.
+  isHosted = false,
 ): Promise<string> => {
   const kept =
     base === undefined && settings.remembers
@@ -502,7 +524,10 @@ const openReview = async (
   void readDrafts($).then(drafts => update($, view, (last): View => ({ ...last, drafts })))
   await update($, scan, () => ({ ...NO_SCAN, status: 'running' }))
   job = { isProject: false }
-  await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+
+  if (!isHosted) {
+    await $.ui.open({ id: PANE, title: 'Lens', focus: true })
+  }
 
   // A folder git does not know has nothing to compare: its files are listed.
   if ((await git.findRepo(runOf($), repo)) === '') {
@@ -2003,7 +2028,12 @@ export const register: Register = (on, options) => {
 
   // The file and graph screens draw their own window, so the person's wheel
   // and scroll keys move that window's first line and the engine's stays put.
-  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+  on('ui.scroll', async ($, e, next) => {
+    // Lens's own pane, or the one that hosts it.
+    if (e.requestId !== PANE && !(e.requestId === HOST && (await isGuest($)))) {
+      return next(e)
+    }
+
     const now = await read($, view)
 
     // How tall the drawing came out, in the engine's own count: what says
@@ -2100,7 +2130,26 @@ export const register: Register = (on, options) => {
   // that screen draw them. A model is plain data read here; an action is a
   // closure over this drawing's handle. Nothing here writes state: the
   // actions do, when they are pressed.
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane' }, async ($, raw, next) => {
+    const isHosted = raw.requestId === HOST && (await isGuest($))
+
+    if (raw.requestId !== PANE && !isHosted) {
+      return next(raw)
+    }
+
+    // Hosted, the pane's first rows are the host's, and the window is that
+    // much shorter.
+    const above = isHosted ? await next(raw) : undefined
+    const e = isHosted
+      ? {
+          ...raw,
+          props: {
+            ...raw.props,
+            scroll: { ...raw.props.scroll, bodyRows: Math.max(4, raw.props.scroll.bodyRows - HOST_ROWS) },
+          },
+        }
+      : raw
+    const tree = await (async () => {
     const kit = kitOf($.ui.resolve(e))
     const { Text } = kit
     const now = settledView(await read($, view))
@@ -3943,5 +3992,19 @@ export const register: Register = (on, options) => {
 
     // While commenting, the frame is in the comments' colour.
     return framed(drawn.tree, true, isCommenting ? COMMENT_COLOR : undefined, Math.max(0, drawn.window.maxTop - Math.max(1, now.top ?? 1)))
+    })()
+
+    if (above === undefined) {
+      return tree
+    }
+
+    const { Box } = $.ui.resolve(raw)
+
+    return (
+      <Box flexDirection="column">
+        {above}
+        {tree}
+      </Box>
+    )
   })
 }

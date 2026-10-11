@@ -10,6 +10,8 @@ declare module 'claude-code' {
   interface PluginState {
     parked: {
       jump: ParkedJumpSeen | null
+      // Whether parked is showing lens's screens in its own pane.
+      guest: boolean
     }
   }
 }
