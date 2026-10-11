@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { chunkMarkdown, foldEnd, wrapText, splitMarkdown, tableWidths } from './text'
+import { chunkMarkdown, fitStash, foldEnd, wrapText, splitMarkdown, tableWidths } from './text'
 
 test('a fold runs to the end of its block, and a plain line is its own fold', async () => {
   const texts = ['function total(list) {', '  const sum = 0', '', '  return sum', '}', 'total([])']
@@ -71,4 +71,35 @@ test('a table too wide for its room takes it from the widest columns', () => {
   expect(tableWidths(rows, 200, 3)).toEqual([3, 60, 30])
   expect(tableWidths(rows, 60, 3).reduce((sum, width) => sum + width, 0)).toBe(54)
   expect(tableWidths(rows, 60, 3)[0]).toBe(3)
+})
+
+test('a stash row gives up its trail, then its subject, as the pane narrows', async () => {
+  const one = {
+    ref: 'stash@{0}',
+    subject: 'WIP on main: abc1234 a long subject line',
+    base: 'abc1234',
+    when: '3 days ago',
+  }
+  // What the row takes: the badge and a space, the name, a space and the
+  // subject, a space and the trail, a space and the buttons.
+  const width = (fit: ReturnType<typeof fitStash>) =>
+    5 +
+    one.ref.length +
+    (fit.subject === '' ? 0 : 1 + fit.subject.length) +
+    (fit.trail === '' ? 0 : 1 + fit.trail.length) +
+    (fit.isStacked ? 0 : 10)
+
+  expect(fitStash(one, 120)).toEqual({
+    subject: one.subject,
+    trail: 'on abc1234 · 3 days',
+    isStacked: false,
+  })
+  expect(fitStash(one, 50).trail).toBe('3 days')
+  expect(fitStash(one, 40).trail).toBe('')
+  expect(fitStash(one, 26)).toEqual({ subject: '', trail: '', isStacked: false })
+  expect(fitStash(one, 20).isStacked).toBe(true)
+
+  for (let columns = 15; columns <= 130; columns += 1) {
+    expect(width(fitStash(one, columns)) <= columns).toBe(true)
+  }
 })

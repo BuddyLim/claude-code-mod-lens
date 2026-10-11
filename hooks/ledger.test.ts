@@ -50,6 +50,11 @@ test('a finding’s path is read from the session’s folder, wherever that is a
   expect(paths('repo/src/a.ts', '/repo', '/')).toEqual(['src/a.ts'])
   expect(paths('../src/a.ts', '/repo', '/repo/docs')).toEqual(['src/a.ts'])
   expect(paths('/repo/src/a.ts', '/repo', '/elsewhere')).toEqual(['src/a.ts'])
+  // Written from a folder above, by a session that has since moved into the
+  // folder under review: the path's own first parts say where it starts.
+  expect(paths('.claude/skills/lens/hooks/a.ts', '/home/.claude/skills/lens', '/home/.claude/skills/lens')).toEqual([
+    'hooks/a.ts',
+  ])
   // Written from somewhere else: a changed file that ends the same is meant.
   expect(paths('mod/src/a.ts', '/repo', '/home', ['src/a.ts'])).toEqual(['src/a.ts'])
   expect(paths('a.ts', '/repo', '/home', ['src/a.ts'])).toEqual(['src/a.ts'])

@@ -197,3 +197,30 @@ test('another language is checked by its server alone, and a missing server is n
   await scanRepo(ports, subject, { isProject: false })
   expect(scan()).toMatchObject({ toCheck: 0, notes: [] })
 })
+
+test('a folder git does not know has its files listed, and only its code checked', async () => {
+  const { ports, scan } = world({})
+  const asked: string[] = []
+
+  ports.run = async argv => {
+    asked.push(argv.join(' '))
+
+    if (argv.includes('--git-dir')) {
+      return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git' }
+    }
+
+    return {
+      exitCode: 0,
+      stdout: argv[0] === 'sh' && (argv[2] ?? '').startsWith('find . ') ? 'README.md\napp/main.py\nnotes.txt\n' : '',
+      stderr: '',
+    }
+  }
+
+  await scanRepo(ports, { ...subject, repo: '/folder' }, { isProject: false })
+
+  expect(scan()).toMatchObject({ status: 'done', isPlain: true, files: [], toCheck: 1, checked: 1 })
+  expect(allFilesOf('/folder')).toEqual(['README.md', 'app/main.py', 'notes.txt'])
+  // Nothing else is asked of git, and no checker is handed what it cannot read.
+  expect(asked.filter(command => command.startsWith('git ')).length).toBe(1)
+  expect(asked.some(command => /README\.md|notes\.txt/.test(command) && !command.startsWith('sh '))).toBe(false)
+})

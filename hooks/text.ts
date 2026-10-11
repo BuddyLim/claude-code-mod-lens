@@ -247,3 +247,37 @@ export const tableWidths = (
 
   return widths
 }
+
+// What a stash's row says in a file tree `columns` wide, so the row stays one
+// line: its mark, its name and its two buttons always show; the commit it
+// was made on goes first, then how long ago, then the subject is cut short.
+// `isStacked` is a row too narrow even for the buttons, which then take a
+// line of their own.
+export const fitStash = (
+  one: { ref: string; subject: string; base: string; when: string },
+  columns: number,
+): { subject: string; trail: string; isStacked: boolean } => {
+  // The mark's badge (four cells, should the glyph be drawn two wide) and a
+  // space, then the name.
+  const named = 5 + one.ref.length
+  // A space, then "apply pop".
+  const room = columns - named - 10
+  const cut = (text: string, width: number): string =>
+    width < 4 ? '' : text.length > width ? `${text.slice(0, width - 1)}…` : text
+
+  if (room < 0) {
+    return { subject: cut(one.subject, columns - named - 1), trail: '', isStacked: true }
+  }
+
+  const when = one.when.replace(' ago', '')
+  const trail =
+    [one.base === '' ? when : `on ${one.base} · ${when}`, when].find(
+      text => text !== '' && room - text.length - 1 >= 12,
+    ) ?? ''
+
+  return {
+    subject: cut(one.subject, room - (trail === '' ? 0 : trail.length + 1) - 1),
+    trail,
+    isStacked: false,
+  }
+}

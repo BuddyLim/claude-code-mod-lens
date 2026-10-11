@@ -37,12 +37,28 @@ export const placeOf = (path: string, root: string): string =>
 // those, a changed file whose path ends with the finding's is the one meant.
 const placed = (path: string, repo: string, root: string, files: readonly string[]): string | undefined => {
   const full = folded(path.startsWith('/') ? path : `${root}/${path}`)
+  const under = full.startsWith(`${repo}/`) ? full.slice(repo.length + 1) : undefined
+  const tail = folded(path).replace(/^\//, '')
 
-  if (full.startsWith(`${repo}/`)) {
-    return full.slice(repo.length + 1)
+  if (under !== undefined && (path.startsWith('/') || files.includes(under))) {
+    return under
   }
 
-  const tail = folded(path).replace(/^\//, '')
+  // A path written from a folder above the one under review starts with
+  // that folder's own last parts (`skills/lens/hooks/a.ts` for a review of
+  // `…/skills/lens`), whatever the session's folder is by now.
+  const parts = tail.split('/')
+
+  for (let at = parts.length - 1; at >= 1; at -= 1) {
+    if (repo.endsWith(`/${parts.slice(0, at).join('/')}`)) {
+      return parts.slice(at).join('/')
+    }
+  }
+
+  if (under !== undefined) {
+    return under
+  }
+
 
   return files.find(one => one === tail || one.endsWith(`/${tail}`) || tail.endsWith(`/${one}`))
 }

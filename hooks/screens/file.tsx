@@ -11,24 +11,30 @@ import type { RenderChildren } from 'claude-code'
 
 import type { Crumb, Diag, LineRange, Lookup, Span } from '../../types'
 import { countLabel, diagsByLine } from '../diags'
+import { changeLines, stepShown } from '../changes'
 import type { Blamed } from '../git'
 import { kindColor } from '../lists'
 import type { InlayHint, OutlineItem, SemanticToken } from '../lsp-types'
 import type { MiniLine } from '../minimap'
 import { minimapCells } from '../minimap'
 import { markSpans, withInlays } from '../parts'
+import { isFinding as isLedgerFinding } from '../ledger'
 import type { Comment } from '../review'
+import { draftId, isDraft } from '../review'
 import { applySemantic, enclosing, outlineRows } from '../semantic'
 import { clamp, findMatches, shortRef, wrapText } from '../text'
 import { iconOf } from '../tree'
+import { changedWords } from '../words'
 import type { Kit, Shell } from './frame'
 import {
   CARD_BACKGROUND,
   COLOR,
   COMMENT_COLOR,
-  COMMENT_ICON,
   RESOLVED_COLOR,
+  PENDING_COLOR,
   COMMIT_BOX,
+  talkColor as colorOfTalk,
+  talkIcon,
   MARK,
   helpButton,
   notesOf,
@@ -37,6 +43,14 @@ import {
 } from './frame'
 import { isMarkdownFile } from './markdown'
 
+// The most lines of an unsent comment its card shows.
+const DRAFT_LINES = 6
+// The most rows of what is being typed that are drawn under the field: its
+// last ones, where the typing is.
+const WRITE_ROWS = 8
+// What `commentLine` holds while the comment being typed is on the file as a
+// whole, not on a line of it.
+export const FILE_COMMENT = -1
 // The blame column: a short hash, eight letters of the author, how long ago.
 const BLAME_WIDTH = 21
 // How many lines of a looked-up name's type and docs the file screen shows.
@@ -44,6 +58,9 @@ const SYMBOL_LINES = 8
 // The narrowest the breadcrumb's popover is; it widens to its longest entry.
 const CRUMB_WIDTH = 46
 const ADDED_BACKGROUND = '#1f3a24'
+// The words that differ within a rewritten line, lit over the line's own.
+const ADDED_WORD = '#2f7d43'
+const REMOVED_WORD = '#9b2f2f'
 const FOUND_BACKGROUND = '#7a4a00'
 const REMOVED_BACKGROUND = '#4b1d1d'
 // The most removed lines drawn above one line; the window cannot scroll
@@ -84,6 +101,9 @@ export type FileModel = {
   // The lines the other side had, by the line they came before; the lines
   // this side changed; and whether the other side has no such file at all.
   removed: Readonly<Record<number, string[]>>
+  // Where the first of each run of removed lines was in the other side, by
+  // the same line: what a comment on a removed line is placed by.
+  removedAt: Readonly<Record<number, number>>
   changed: readonly LineRange[]
   isNewFile: boolean
   // The file's diagnostics, sorted, and the code said to be never used.
@@ -98,6 +118,9 @@ export type FileModel = {
   cursor: number
   isExpanded: boolean
   isDiff: boolean
+  // Whether the diff is cut down to what differs: each change and each
+  // commented line, with a few lines around it.
+  isChanges: boolean
   isMore: boolean
   isHinting: boolean
   // The search: whether its field shows, what is typed, the match the
@@ -111,6 +134,23 @@ export type FileModel = {
   canComment: boolean
   isCommenting: boolean
   commentLine: number
+  // The first line of the comment being typed when it is on several (then
+  // `commentLine` is the last); 0 when it is on one.
+  commentFrom: number
+  // The removed line the comment being typed is on, by its number in the
+  // other side; 0 when it is on a line of this side.
+  commentOld: number
+  // Who the person is on the forge ('' when not known), so their own
+  // comments can be changed; the comment being changed and the one asked
+  // about before deleting, by id; what the field starts with while one is
+  // being changed.
+  me: string
+  editing: string
+  deleting: string
+  draft: string
+  // What the comment field holds now, as typed (a new line as "\n"): drawn
+  // in full under the field, which is one line.
+  typed: string
   // The thread being answered, by its first comment's id; '' for none.
   replyTo: string
   // What the diff is against, by name, when that is not the comparison's
@@ -158,16 +198,25 @@ export type FileActions = {
   // Pressing a line's number: its block goes to the prompt, or, while
   // commenting, the line is picked to comment on.
   pressLine: (line: number) => void
+  // While commenting: a removed line is picked, by its number in the other
+  // side and the line of this side it is drawn before.
+  pressOldLine: (old: number, before: number) => void
   // Puts a line's diagnostics, with its code, into the prompt.
   sendIssues: (line: number) => void
   // Puts the review thread on a line, with the code it is about, into the prompt.
-  sendTalk: (line: number) => void
+  // `isLedger` says which card on the line was pressed: the ledger's
+  // findings, or (the default) the request's thread. Only that one is sent.
+  sendTalk: (line: number, isLedger?: boolean) => void
   // Opens the comment box under a line as an answer to the thread there, and
   // marks that thread resolved or open again. Both write to the forge only
   // once the person posts or presses.
   replyOn: (line: number) => void
   resolveOn: (line: number, isResolved: boolean) => void
   cancelComment: () => void
+  // Opens the box for a comment on the file as a whole.
+  commentOnFile: () => void
+  // Brings a comment on several lines back to the one its box is under.
+  commentOnOneLine: () => void
   // Leaves resolved threads out, or shows them again; lists every thread.
   toggleResolved: () => void
   listThreads: () => void
@@ -197,15 +246,33 @@ export type FileActions = {
   // passes the field's text; the button posts what was typed so far).
   toggleCommenting: () => void
   typeComment: (text: string) => void
-  postComment: (entered?: string) => void
+  // `isNow` sends a comment of its own at once, in place of leaving it to
+  // wait for the review.
+  // `how` says what becomes of a comment of its own: it waits for the review
+  // (the default), goes at once, or waits as a suggested replacement for its
+  // lines. While a comment is being changed, it saves that.
+  postComment: (entered?: string, how?: 'review' | 'now' | 'suggest') => void
+  // A comment of the person's own, by its id: opened in the field to be
+  // changed (under line `n`), asked about before it is deleted ('' takes the
+  // question away), and deleted. And any comment given a thumbs-up.
+  editComment: (id: string, n: number) => void
+  askDelete: (id: string) => void
+  deleteComment: (id: string) => void
+  likeComment: (id: string) => void
+  // Drops comments written for the review and not sent, by their ids.
+  discardDrafts: (ids: readonly string[]) => void
 }
 
 // The window as drawn, for the scroll hook: the furthest its first line may
 // go (where the file's last line sits on the bottom row), and where the
 // breadcrumb's open list sits among the pane's rows (which rows are over it,
 // where it is scrolled to, and how far it can go), if one is open.
+//
+// `shown` is the lines the changes-only view draws, in order, which the
+// window then steps among; undefined while every line shows.
 export type FileWindow = {
   maxTop: number
+  shown: readonly number[] | undefined
   crumbBox: { from: number; to: number; top: number; max: number } | undefined
 }
 
@@ -277,7 +344,10 @@ export const fileScreen = (
     (symbol === undefined ? 0 : symbolLines.length + 5 + (symbol.signature === '' ? 0 : 1)) +
     (isDiff ? 1 : 0) +
     (isFinding ? 3 : 0) +
+    // The row of the whole-file button.
     (isCommenting ? 1 : 0) +
+    // The box a comment on the file as a whole is typed in.
+    (isCommenting && commentLine === FILE_COMMENT ? 4 : 0) +
     // The main row of buttons, and the box of the rest when it is open.
     Math.ceil(100 / columns) +
     (isMore ? 2 + Math.ceil(170 / Math.max(20, columns - 4)) : 0) +
@@ -288,6 +358,29 @@ export const fileScreen = (
   let maxTop = Math.max(1, lineCount)
 
   const moveTo = (line: number) => actions.scrollTo(clamp(line, 1, maxTop))
+  // The changes-only view: the lines that show, or undefined where every
+  // line does (a new file is all change, and a file with nothing changed or
+  // said has nothing to cut down to).
+  const cut =
+    isDiff && model.isChanges && !isNewFile
+      ? changeLines(
+          lineCount,
+          changed,
+          Object.keys(removed).map(Number),
+          model.talk.map(one => one.line),
+        )
+      : []
+  const shown = cut.length === 0 ? undefined : cut
+  const firstLine = shown?.[0] ?? 1
+  const lastLine = shown?.[shown.length - 1] ?? lineCount
+  // The line drawn after one and before it, among those that show.
+  const nextLine = (n: number): number =>
+    shown === undefined ? n + 1 : (shown.find(line => line > n) ?? lineCount + 1)
+  const prevLine = (n: number): number =>
+    shown === undefined ? n - 1 : ([...shown].reverse().find(line => line < n) ?? 0)
+  // Moves the window by rows' worth of the lines that show.
+  const moveBy = (by: number) =>
+    moveTo(shown === undefined ? top + by : stepShown(shown, top, by))
   // The next commented line below the window's first lines, or the one
   // above; from the last it goes round to the first.
   const stepTalk = (way: 1 | -1) => {
@@ -356,6 +449,25 @@ export const fileScreen = (
   // One line of the file as elements, and how many rows they take.
   // `offset` is the row of the window the line starts on, where it is being
   // placed (not just measured): it decides which way the line's card opens.
+  // In the diff, the removed lines drawn above a changed line are taken as
+  // the lines it and those after it replaced, one for one in order: each
+  // such line, by its number, with the text it replaced.
+  const rewritten = new Map<number, string>()
+
+  if (isDiff && !isNewFile) {
+    for (const [before, gone] of Object.entries(removed)) {
+      for (const [at, text] of gone.entries()) {
+        const line = Number(before) + at
+
+        if (!changed.some(range => line >= range[0] && line <= range[1])) {
+          break
+        }
+
+        rewritten.set(line, text)
+      }
+    }
+  }
+
   const codeLine = (spans: readonly Span[], n: number, offset?: number) => {
     const here = byLine.get(n) ?? []
     const first = here[0]
@@ -381,6 +493,43 @@ export const fileScreen = (
       model.isHinting ? (info?.hints.get(n) ?? []) : [],
       info?.raw[n - 1],
     )
+    // In the diff, a line that replaced a removed one has the words that
+    // differ between the two lit: its parts are cut where those words start
+    // and end. A hint is the server's and takes up none of the file's text.
+    const lit = isAdded && rewritten.has(n) ? changedWords(rewritten.get(n) ?? '', texts[n - 1] ?? '').after : []
+    const litAt = new Set<number>()
+
+    if (lit.length > 0) {
+      const cut: typeof parts = []
+      let col = 0
+
+      for (const part of parts) {
+        if (part.isHint) {
+          cut.push(part)
+          continue
+        }
+
+        const edges = [
+          ...new Set(
+            [0, part.text.length, ...lit.flatMap(([from, to]) => [from - col, to - col])].filter(
+              edge => edge >= 0 && edge <= part.text.length,
+            ),
+          ),
+        ].sort((one, other) => one - other)
+
+        edges.slice(0, -1).forEach((edge, index) => {
+          if (lit.some(([from, to]) => col + edge >= from && col + edge < to)) {
+            litAt.add(cut.length)
+          }
+
+          cut.push({ ...part, text: part.text.slice(edge, edges[index + 1]) })
+        })
+        col += part.text.length
+      }
+
+      parts.splice(0, parts.length, ...cut)
+    }
+
     const length = parts.reduce((sum, part) => sum + part.text.length, 0)
     const isOpen = model.isExpanded || here.some(({ index }) => index === model.cursor)
     // The message rides on the code's own row when the code leaves it room.
@@ -410,7 +559,16 @@ export const fileScreen = (
               <Text> </Text>,
             ]
           ))}
-        <Text color="green">{isAdded ? '+' : isChanged ? '▎' : ' '}</Text>
+        {/* The lines the comment being typed is on are marked down their
+            edge, so a stretch of several can be seen before it is posted. */}
+        {isCommenting &&
+        commentLine > 0 &&
+        n <= commentLine &&
+        n >= (model.commentFrom > 0 ? model.commentFrom : commentLine) ? (
+          <Text color={COMMENT_COLOR}>┃</Text>
+        ) : (
+          <Text color="green">{isAdded ? '+' : isChanged ? '▎' : ' '}</Text>
+        )}
         <Button
           plain
           dimColor
@@ -424,8 +582,13 @@ export const fileScreen = (
     const code = (
       <Text backgroundColor={isAdded ? ADDED_BACKGROUND : undefined}>
         {parts.length === 0 ? ' ' : ''}
-        {parts.map(part =>
-          part.isHint ? (
+        {parts.map((part, at) =>
+          litAt.has(at) && !part.isFound && !part.isMarked ? (
+            // A word that differs from the line this one replaced.
+            <Text color={part.color === '' ? undefined : part.color} backgroundColor={ADDED_WORD} bold>
+              {part.text}
+            </Text>
+          ) : part.isHint ? (
             // An inlay hint is the server's aside, not the file's text.
             <Text color={part.color} italic dimColor>
               {part.text}
@@ -464,125 +627,290 @@ export const fileScreen = (
     // shows it: who and when, then what was said, replies indented. Folded,
     // the card keeps the first comment's opening lines and counts the rest.
     const talkWidth = Math.max(24, Math.min(100, codeColumns - gutter - 4))
-    const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
+    // A request's thread and the ledger's findings on the same line are two
+    // cards, each in its colour: a finding is no answer to the thread.
+    const forgeTalk = talk.filter(one => !isLedgerFinding(one) && !isDraft(one))
+    const ledgerTalk = talk.filter(isLedgerFinding)
+    // What was written for the review and not sent yet has a card of its
+    // own too, in the colour of what waits: all of it, and a way to drop it.
+    const draftTalk = talk.filter(isDraft)
+    const draftCard = () => {
+      if (draftTalk.length === 0) {
+        return { height: 0, rows: [] }
+      }
 
-    for (const [at, one] of (model.isExpanded ? talk : talk.slice(0, 1)).entries()) {
-      const indent = at === 0 ? '' : '  '
+      const lines = draftTalk.flatMap(one => [
+        {
+          isHead: true,
+          text: `✎ pending${one.startLine === undefined ? '' : ` · lines ${one.startLine}–${one.line}`} · goes with your review`,
+        },
+        ...wrapText(one.body.trim(), talkWidth - 4)
+          .slice(0, DRAFT_LINES)
+          .map(text => ({ isHead: false, text })),
+      ])
+      const height = lines.length + 3
+
+      return {
+        height,
+        rows: [
+          <Box
+            marginLeft={gutter + 2}
+            width={talkWidth}
+            height={height}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={PENDING_COLOR}
+            paddingX={1}
+            overflow="hidden"
+          >
+            {lines.map(line => (
+              <Text wrap="truncate-end" color={line.isHead ? PENDING_COLOR : undefined} bold={line.isHead}>
+                {line.text === '' ? ' ' : line.text}
+              </Text>
+            ))}
+            <Box height={1} overflow="hidden">
+              <Button
+                plain
+                key={`draft-drop:${n}`}
+                label="✕ discard"
+                onPress={() => actions.discardDrafts(draftTalk.map(draftId))}
+              />
+            </Box>
+          </Box>,
+        ],
+      }
+    }
+    const cardFor = (group: readonly Comment[], isLedger: boolean) => {
+      if (group.length === 0) {
+        return { height: 0, rows: [] }
+      }
+
+      const talkLines: { text: string; kind: 'head' | 'body' | 'more' }[] = []
+      const scope = isLedger ? ':ledger' : ''
+      // The thread's first comment, and whether it is the person's own.
+      const first = group[0]
+      const isMine = !isLedger && model.me !== '' && first?.author === model.me
+
+    for (const [at, one] of (model.isExpanded ? group : group.slice(0, 1)).entries()) {
+      // A finding stands by itself; an answer in a thread is set in.
+      const indent = at === 0 || isLedger ? '' : '  '
       const body = wrapText(one.body.trim(), talkWidth - 4 - indent.length)
 
       talkLines.push({
         kind: 'head',
-        text: `${indent}${at === 0 ? COMMENT_ICON : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
+        text: `${indent}${at === 0 || isLedger ? talkIcon(one) : '↳'} ${one.author} · ${one.when.slice(0, 10)}${one.startLine === undefined ? '' : ` · lines ${one.startLine}–${one.line}`}${one.isResolved === true ? ' · ✓ resolved' : ''}${one.isOutdated === true ? ' · outdated' : ''}`,
       })
 
       for (const line of model.isExpanded ? body : body.slice(0, TALK_FOLDED)) {
         talkLines.push({ kind: 'body', text: `${indent}${line}` })
       }
 
-      if (!model.isExpanded && (body.length > TALK_FOLDED || talk.length > 1)) {
+      if (!model.isExpanded && (body.length > TALK_FOLDED || group.length > 1)) {
+        const rest = group.length - 1
+        const counted = isLedger
+          ? `${rest} more ${rest === 1 ? 'finding' : 'findings'}`
+          : `${rest} ${rest === 1 ? 'reply' : 'replies'}`
+
         talkLines.push({
           kind: 'more',
-          text: `${[body.length > TALK_FOLDED ? '…' : '', talk.length > 1 ? `${talk.length - 1} ${talk.length === 2 ? 'reply' : 'replies'}` : ''].filter(part => part !== '').join(' ')} · e expands`,
+          text: `${[body.length > TALK_FOLDED ? '…' : '', rest > 0 ? counted : ''].filter(part => part !== '').join(' ')} · e expands`,
         })
       }
     }
 
-    // What can be done with the thread sits on the card's last row.
-    const isSettled = talk.some(one => one.isResolved === true)
-    const canSettle = talk.some(one => one.isResolved !== undefined)
-    // A settled thread steps back: a dim gold in place of the comments' purple.
-    const talkColor = isSettled ? RESOLVED_COLOR : COMMENT_COLOR
-    const cardHeight = talk.length === 0 ? 0 : talkLines.length + 2 + (model.canComment ? 1 : 0)
+
+      // What can be done with the thread sits on the card's last row. The
+      // ledger's findings are closed in the ledger, and have no thread to
+      // answer: theirs holds the way to the prompt alone.
+      const isSettled = isLedger
+        ? group.every(one => one.isResolved === true)
+        : group.some(one => one.isResolved === true)
+      const canSettle = !isLedger && group.some(one => one.isResolved !== undefined)
+      // A settled thread steps back: a dim gold in place of its own colour.
+      const talkColor = isSettled ? RESOLVED_COLOR : colorOfTalk(group[0])
+      const height = talkLines.length + 2 + (model.canComment ? 1 : 0)
+
+      return {
+        height,
+        rows: [
+          <Box
+            marginLeft={gutter + 2}
+            width={talkWidth}
+            height={height}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={talkColor}
+            paddingX={1}
+            overflow="hidden"
+          >
+            {talkLines.map((line, at) => {
+              const text = (
+                <Text
+                  wrap="truncate-end"
+                  color={line.kind === 'head' ? talkColor : undefined}
+                  bold={line.kind === 'head'}
+                  dimColor={line.kind === 'more'}
+                >
+                  {line.text}
+                </Text>
+              )
+
+              // The card's first row carries its handle, as a problem's
+              // does: pressed, the thread and its code go to the prompt.
+              return at === 0 ? (
+                <Box height={1} columnGap={1} overflow="hidden">
+                  <Button plain key={`talk:${n}${scope}`} label="↗" onPress={() => actions.sendTalk(n, isLedger)} />
+                  {text}
+                </Box>
+              ) : (
+                text
+              )
+            })}
+            {model.canComment && (
+              <Box height={1} columnGap={3} overflow="hidden">
+                {!isLedger && (
+                  <Button plain key={`reply:${n}`} label="↩ reply" onPress={() => actions.replyOn(n)} />
+                )}
+                {!isLedger && first !== undefined && (
+                  <Button plain key={`like:${n}`} label="+1" onPress={() => actions.likeComment(first.id)} />
+                )}
+                {/* A comment of the person's own can be changed or removed;
+                    removing is asked about first. */}
+                {isMine && first !== undefined && model.deleting !== first.id && (
+                  <Button plain key={`edit:${n}`} label="✎ edit" onPress={() => actions.editComment(first.id, n)} />
+                )}
+                {isMine && first !== undefined && model.deleting !== first.id && (
+                  <Button plain key={`delete:${n}`} label="✕ delete" onPress={() => actions.askDelete(first.id)} />
+                )}
+                {isMine && first !== undefined && model.deleting === first.id && (
+                  <Button
+                    plain
+                    key={`delete-yes:${n}`}
+                    label="delete it for good?  yes"
+                    onPress={() => actions.deleteComment(first.id)}
+                  />
+                )}
+                {isMine && first !== undefined && model.deleting === first.id && (
+                  <Button plain key={`delete-no:${n}`} label="no" onPress={() => actions.askDelete('')} />
+                )}
+                {canSettle && (
+                  <Button
+                    plain
+                    key={`settle:${n}`}
+                    label={isSettled ? '↺ reopen' : '✓ resolve'}
+                    onPress={() => actions.resolveOn(n, !isSettled)}
+                  />
+                )}
+                <Button
+                  plain
+                  key={`talk-send:${n}${scope}`}
+                  label="↗ to prompt"
+                  onPress={() => actions.sendTalk(n, isLedger)}
+                />
+              </Box>
+            )}
+          </Box>,
+        ],
+      }
+    }
+    const cards = [cardFor(forgeTalk, false), cardFor(ledgerTalk, true), draftCard()]
+    const cardHeight = cards.reduce((sum, card) => sum + card.height, 0)
     // The box a comment or a reply is typed in opens under the line it is
     // for (under the thread, when it answers one). Only Enter or its post
     // button sends anything to the forge.
     const isWriting = isCommenting && commentLine === n && Input !== undefined
-    const writeHeight = isWriting ? 3 : 0
-    const answered = model.replyTo === '' ? undefined : talk[0]
+    // The field has a row to itself and the buttons the one under it, so a
+    // narrow pane does not squeeze the field against them.
+    // What the field holds is drawn in full under it, wrapped: the field is
+    // one line, and a comment longer than it would otherwise be typed (or
+    // changed) unseen. As many rows as it fills, to a bound.
+    const typedRows = isWriting
+      ? wrapText(model.typed.replace(/\\n/g, '\n'), Math.max(8, talkWidth - 4)).slice(-WRITE_ROWS)
+      : []
+    const shownTyped = typedRows.length > 1 || (typedRows[0] ?? '').length > talkWidth - 30 ? typedRows : []
+    const writeHeight = isWriting ? 4 + shownTyped.length : 0
+    // The lines a comment being typed is on, when it is on more than one.
+    const isRange = model.commentFrom > 0 && model.commentFrom < n
+    // Whether the field holds a comment of the person's own, being changed.
+    const isEditing = model.editing !== '' && isWriting
+    const answered = model.replyTo === '' ? undefined : forgeTalk[0]
     const writeRows =
       isWriting && Input !== undefined
         ? [
             <Box
               marginLeft={gutter + 2}
               width={talkWidth}
-              height={3}
-              columnGap={2}
+              height={writeHeight}
+              flexDirection="column"
               borderStyle="round"
-              borderColor={COMMIT_BOX}
+              borderColor={COMMENT_COLOR}
               paddingX={1}
               overflow="hidden"
             >
-              <Input
-                key={`comment-text:${model.commentRound}`}
-                label={answered === undefined ? `comment on line ${n}` : `reply to ${answered.author}`}
-                placeholder="what to say, then Enter"
-                submitLabel="post"
-                autoFocus
-                onInput={actions.typeComment}
-                onSubmit={value => actions.postComment(value)}
-              />
-              <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
-              <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
+              <Box height={1} overflow="hidden">
+                <Input
+                  key={`comment-text:${model.commentRound}`}
+                  label={
+                    isEditing
+                      ? 'edit your comment'
+                      : answered !== undefined
+                        ? `reply to ${answered.author}`
+                        : model.commentOld > 0
+                          ? `comment on removed line ${model.commentOld}`
+                          : isRange
+                            ? `comment on lines ${model.commentFrom}–${n}`
+                            : `comment on line ${n}`
+                  }
+                  // A comment being changed starts as what it said.
+                  {...(isEditing ? { value: model.draft } : {})}
+                  placeholder="what to say, then Enter; \n starts a new line"
+                  submitLabel="post"
+                  autoFocus
+                  onInput={actions.typeComment}
+                  onSubmit={value => actions.postComment(value)}
+                />
+              </Box>
+              {shownTyped.map(line => (
+                <Box height={1} overflow="hidden">
+                  <Text dimColor wrap="truncate-end">
+                    {line === '' ? ' ' : line}
+                  </Text>
+                </Box>
+              ))}
+              <Box height={1} overflow="hidden" columnGap={2}>
+                {/* An answer is posted at once. A comment of its own waits for
+                    the review (Enter does that too), or goes now. */}
+                {isEditing ? (
+                  <Button key="comment-post" variant="primary" label="save" onPress={() => actions.postComment()} />
+                ) : answered !== undefined ? (
+                  <Button key="comment-post" variant="primary" label="post" onPress={() => actions.postComment()} />
+                ) : (
+                  [
+                    <Button
+                      key="comment-post"
+                      variant="primary"
+                      label="add to review"
+                      onPress={() => actions.postComment()}
+                    />,
+                    // What is typed, offered as a replacement for the lines
+                    // the comment is on: the forge shows a way to apply it.
+                    <Button
+                      key="comment-suggest"
+                      label="suggest as change"
+                      onPress={() => actions.postComment(undefined, 'suggest')}
+                    />,
+                    <Button key="comment-now" label="post now" onPress={() => actions.postComment(undefined, 'now')} />,
+                  ]
+                )}
+                <Button key="comment-cancel" label="cancel" onPress={actions.cancelComment} />
+              </Box>
             </Box>,
           ]
         : []
     // One element as tall as its lines and its border: the window counts the
     // card and the box by `talkHeight`.
     const talkHeight = cardHeight + writeHeight
-    const talkRows =
-      talk.length === 0
-        ? writeRows
-        : [
-            <Box
-              marginLeft={gutter + 2}
-              width={talkWidth}
-              height={cardHeight}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={talkColor}
-              paddingX={1}
-              overflow="hidden"
-            >
-              {talkLines.map((line, at) => {
-                const text = (
-                  <Text
-                    wrap="truncate-end"
-                    color={line.kind === 'head' ? talkColor : undefined}
-                    bold={line.kind === 'head'}
-                    dimColor={line.kind === 'more'}
-                  >
-                    {line.text}
-                  </Text>
-                )
-
-                // The card's first row carries its handle, as a problem's
-                // does: pressed, the thread and its code go to the prompt.
-                return at === 0 ? (
-                  <Box height={1} columnGap={1} overflow="hidden">
-                    <Button plain key={`talk:${n}`} label="↗" onPress={() => actions.sendTalk(n)} />
-                    {text}
-                  </Box>
-                ) : (
-                  text
-                )
-              })}
-              {model.canComment && (
-                <Box height={1} columnGap={3} overflow="hidden">
-                  <Button plain key={`reply:${n}`} label="↩ reply" onPress={() => actions.replyOn(n)} />
-                  {canSettle && (
-                    <Button
-                      plain
-                      key={`settle:${n}`}
-                      label={isSettled ? '↺ reopen' : '✓ resolve'}
-                      onPress={() => actions.resolveOn(n, !isSettled)}
-                    />
-                  )}
-                  <Button plain key={`talk-send:${n}`} label="↗ to prompt" onPress={() => actions.sendTalk(n)} />
-                </Box>
-              )}
-            </Box>,
-            ...writeRows,
-          ]
+    const talkRows = [...cards.flatMap(card => card.rows), ...writeRows]
 
     if (first === undefined) {
       return {
@@ -696,14 +1024,53 @@ export const fileScreen = (
   // are drawn above the line they came before, as a diff interleaves them.
   const removedRows = (before: number) => {
     const gone = isDiff ? (removed[before] ?? []) : []
-    const rows = gone.slice(0, REMOVED_LINES).map(text => (
-      <Box>
-        <Text color="red">{`-${' '.repeat(gutter)} `}</Text>
-        <Text color="#f48771" backgroundColor={REMOVED_BACKGROUND} wrap="truncate-end">
-          {text === '' ? ' ' : text}
-        </Text>
-      </Box>
-    ))
+    const rows = gone.slice(0, REMOVED_LINES).map((text, at) => {
+      // Where the line was rewritten, not just removed, the words the new
+      // line does not have are lit.
+      const lit = rewritten.get(before + at) === text ? changedWords(text, texts[before + at - 1] ?? '').before : []
+      const edges = [...new Set([0, text.length, ...lit.flat()])]
+        .filter(edge => edge >= 0 && edge <= text.length)
+        .sort((one, other) => one - other)
+
+      return (
+        <Box>
+          {/* While commenting, a removed line's mark is its handle, with its
+              number in the other side: pressed, the comment is on that line. */}
+          {isCommenting && model.removedAt[before] !== undefined ? (
+            <Box flexShrink={0}>
+              <Text color={model.commentOld === (model.removedAt[before] ?? 0) + at ? COMMENT_COLOR : 'red'}>
+                {model.commentOld === (model.removedAt[before] ?? 0) + at ? '┃' : '-'}
+              </Text>
+              <Button
+                plain
+                dimColor
+                key={`old:${(model.removedAt[before] ?? 0) + at}`}
+                label={String((model.removedAt[before] ?? 0) + at).padStart(gutter)}
+                onPress={() => actions.pressOldLine((model.removedAt[before] ?? 0) + at, before)}
+              />
+              <Text> </Text>
+            </Box>
+          ) : (
+            <Text color="red">{`-${' '.repeat(gutter)} `}</Text>
+          )}
+          <Text color="#f48771" backgroundColor={REMOVED_BACKGROUND} wrap="truncate-end">
+            {text === ''
+              ? ' '
+              : edges.slice(0, -1).map((edge, index) => {
+                  const piece = text.slice(edge, edges[index + 1])
+
+                  return lit.some(([from, to]) => edge >= from && edge < to) ? (
+                    <Text backgroundColor={REMOVED_WORD} bold>
+                      {piece}
+                    </Text>
+                  ) : (
+                    piece
+                  )
+                })}
+          </Text>
+        </Box>
+      )
+    })
 
     return gone.length > REMOVED_LINES
       ? [
@@ -718,29 +1085,55 @@ export const fileScreen = (
   // The window stops once the file's last line reaches its bottom row:
   // walking up from the end, `maxTop` is the first line of the last full
   // window, counting the rows each line and its diagnostics really take.
-  maxTop = Math.max(1, lineCount)
+  maxTop = Math.max(1, lastLine)
+
+  // In the changes-only view, a row stands for the unchanged lines left out
+  // above a line (`before` is that line, or one past the file's last).
+  const gapRows = (before: number) => {
+    const hidden = shown === undefined ? 0 : Math.min(before, lineCount + 1) - prevLine(before) - 1
+
+    // A rule across the code's width, so one change is set apart from the
+    // next: it says how many lines it stands for.
+    const label = ` ${hidden} unchanged ${hidden === 1 ? 'line' : 'lines'} `
+    const lead = '─'.repeat(gutter + 2)
+    const width = codeColumns + blameWidth
+
+    return hidden <= 0
+      ? []
+      : [
+          <Text color={COMMIT_BOX} dimColor wrap="truncate-end">
+            {lead}
+            {label}
+            {'─'.repeat(Math.max(0, width - lead.length - label.length))}
+          </Text>,
+        ]
+  }
+  // What follows the last line that shows: the unchanged lines left out
+  // after it, one row.
+  const tailGap = shown === undefined || lastLine >= lineCount ? [] : gapRows(lineCount + 1)
 
   if (lines !== undefined) {
     const rowsOf = (n: number): number =>
-      codeLine(lines[n - 1] ?? [], n).rows + removedRows(n).length
+      codeLine(lines[n - 1] ?? [], n).rows + removedRows(n).length + gapRows(n).length
     // The last line always shows, with what was removed after it.
-    let filled = removedRows(lineCount + 1).length + rowsOf(maxTop)
+    let filled = removedRows(lineCount + 1).length + tailGap.length + rowsOf(maxTop)
 
-    while (maxTop > 1 && filled + rowsOf(maxTop - 1) <= room) {
-      filled += rowsOf(maxTop - 1)
-      maxTop -= 1
+    while (maxTop > firstLine && filled + rowsOf(prevLine(maxTop)) <= room) {
+      maxTop = prevLine(maxTop)
+      filled += rowsOf(maxTop)
     }
   }
 
-  top = Math.min(top, maxTop)
+  // A top on a line left out moves to the next that shows.
+  top = Math.min(shown === undefined ? top : stepShown(shown, top, 0), maxTop)
   last = top - 1
 
-  while (lines !== undefined && last < lineCount && used < room) {
-    last += 1
-    const gone = removedRows(last)
-    const drawn = codeLine(lines[last - 1] ?? [], last, used + gone.length)
-    used += gone.length + drawn.rows
-    windowRows.push(...gone, ...drawn.elements)
+  for (let at = top; lines !== undefined && at <= lastLine && used < room; at = nextLine(at)) {
+    const above = [...gapRows(at), ...removedRows(at)]
+    const drawn = codeLine(lines[at - 1] ?? [], at, used + above.length)
+    used += above.length + drawn.rows
+    windowRows.push(...above, ...drawn.elements)
+    last = at
 
     if (drawn.overlay !== undefined) {
       overlays.push(drawn.overlay)
@@ -750,6 +1143,10 @@ export const fileScreen = (
   // Lines removed from the end of the file come before a line it no longer has.
   if (lines !== undefined && last === lineCount) {
     windowRows.push(...removedRows(lineCount + 1))
+  }
+
+  if (lines !== undefined && last === lastLine) {
+    windowRows.push(...tailGap)
   }
 
   // The next place the file differs from the base, below the window's top.
@@ -920,6 +1317,7 @@ export const fileScreen = (
   return {
     window: {
       maxTop,
+      shown,
       // Where the popover sits among the pane's rows: under the status and
       // the breadcrumb, inside the comparison border if any.
       crumbBox:
@@ -952,20 +1350,22 @@ export const fileScreen = (
             key="down"
             hotkey="d"
             label="down"
-            onPress={() => moveTo(top + Math.floor(room / 2))}
+            onPress={() => moveBy(Math.floor(room / 2))}
           />
           <Button
             plain
             key="up"
             hotkey="u"
             label="up"
-            onPress={() => moveTo(top - Math.floor(room / 2))}
+            onPress={() => moveBy(-Math.floor(room / 2))}
           />
           <Button
             plain
             key="diff"
             hotkey="v"
-            label={isDiff ? 'file view' : 'diff view'}
+            // The key goes round: the file, its diff, the diff cut down to
+            // what differs.
+            label={!isDiff ? 'diff view' : model.isChanges ? 'file view' : 'changes only'}
             onPress={actions.toggleDiff}
           />
           <Button plain key="find" hotkey="f" label="find" onPress={actions.find} />
@@ -982,13 +1382,16 @@ export const fileScreen = (
           />
           {helpButton(kit, actions.help)}
         </Box>
-        {isMore && (
+        {/* Folded, the box is still drawn, at no height: a key works while
+            its button is in the drawing, so the less-used keys answer
+            whether or not the box is open. */}
+        {(
           <Box
             columnGap={2}
             flexWrap="wrap"
-            borderStyle="round"
-            borderDimColor
-            paddingX={1}
+            {...(isMore
+              ? { borderStyle: 'round' as const, borderDimColor: true, paddingX: 1 }
+              : { height: 0, overflow: 'hidden' as const })}
           >
             <Button plain key="top" hotkey="g" label="top" onPress={() => moveTo(1)} />
             <Button
@@ -1081,7 +1484,13 @@ export const fileScreen = (
           {model.isChecked ? countLabel(diags) || '✓' : ''}
           {lineCount > 0 ? `  ${top}–${last} of ${lineCount}` : ''}
           {commit === '' ? '' : `  @ ${commit}`}
-          {isDiff ? '  · diff' : ''}
+          {!isDiff
+            ? ''
+            : shown !== undefined
+              ? '  · changes only'
+              : model.isChanges && !isNewFile
+                ? '  · diff (nothing differs here)'
+                : '  · diff'}
         </Text>
         {/* The looked-up name: what it is, and a way to where it is defined. */}
         {symbol !== undefined && (
@@ -1139,14 +1548,60 @@ export const fileScreen = (
         )}
         {/* The comment row: a line number picks the line, and only Enter or
             the post button sends anything to the forge. */}
+        {/* Commenting is told by the frame's colour (see the hooks module),
+            not by a row of words here. */}
+        {/* The file as a whole can be commented on too, on no line: its
+            button has the row under the hint to itself. */}
         {isCommenting && Input !== undefined && (
-          <Box height={1} overflow="hidden">
-            <Text color={COMMENT_COLOR} wrap="truncate-end">
-              {COMMENT_ICON}{' '}
-              {commentLine === 0
-                ? 'Commenting: press a line number to write on that line, or reply on a thread.'
-                : `Writing on line ${commentLine}: Enter posts it. Press another line number to move the box.`}
-            </Text>
+          <Box height={1} overflow="hidden" columnGap={2}>
+            <Button
+              plain
+              key="comment-file"
+              label={commentLine === FILE_COMMENT ? '[whole file ✓]' : '[whole file]'}
+              onPress={actions.commentOnFile}
+            />
+            {/* A comment stretched over several lines says so here, and
+                pressed goes back to the one line. */}
+            {model.commentFrom > 0 && commentLine > model.commentFrom && (
+              <Button
+                plain
+                key="comment-range"
+                label={`[lines ${model.commentFrom}–${commentLine}: back to one line]`}
+                onPress={actions.commentOnOneLine}
+              />
+            )}
+          </Box>
+        )}
+        {isCommenting && Input !== undefined && commentLine === FILE_COMMENT && (
+          <Box
+            height={4}
+            flexDirection="column"
+            borderStyle="round"
+            borderColor={COMMENT_COLOR}
+            paddingX={1}
+            overflow="hidden"
+          >
+            <Box height={1} overflow="hidden">
+              <Input
+                key={`comment-file-text:${model.commentRound}`}
+                label="comment on this file"
+                placeholder="what to say of the file as a whole, then Enter"
+                submitLabel="post"
+                autoFocus
+                onInput={actions.typeComment}
+                onSubmit={value => actions.postComment(value)}
+              />
+            </Box>
+            <Box height={1} overflow="hidden" columnGap={2}>
+              <Button
+                key="comment-file-post"
+                variant="primary"
+                label="add to review"
+                onPress={() => actions.postComment()}
+              />
+              <Button key="comment-file-now" label="post now" onPress={() => actions.postComment(undefined, 'now')} />
+              <Button key="comment-file-cancel" label="cancel" onPress={actions.cancelComment} />
+            </Box>
           </Box>
         )}
         {/* The find row: typing narrows the matches, Enter goes to the next. */}

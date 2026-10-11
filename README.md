@@ -21,6 +21,8 @@ the problem or it was already there.
 - **A file view.** The whole file with syntax colours, diagnostics under the
   lines they are on, a minimap, find, blame, a breadcrumb with the file's
   outline, inlay hints, and a diff view that interleaves what the base had.
+  Press `v` again to cut the diff down to the changes only: each change and
+  each commented line, with three lines around it.
   Markdown is shown rendered.
 - **Look things up.** Select a name to see its type and where it is defined,
   then list its uses, callers, callees and implementations, or search the
@@ -48,14 +50,34 @@ the problem or it was already there.
   selection or every new issue to the prompt (appended, never submitted), or
   have Claude told automatically what its own edits broke.
 - **Picks up where you left off.** Each repo's comparison and layout are kept
-  between sessions; run outside a repo, `/lens` offers the recent ones.
+  between sessions; `/lens recent` offers the recent ones.
+- **Requests, and a page of every change.** `p` in the file tree lists the
+  repo's open pull or merge requests, yours first; pressing one reviews it.
+  `d` puts every change of the comparison on one page to scroll through, with
+  the comments under their lines. While a request is under review each file
+  has a box to tick once you have read it; the ticks are kept between sessions.
+- **A review from start to finish.** `e` is the request at a glance: its
+  description rendered, checks, reviews, whether it merges, and merge, close
+  or check out from there. Comments wait for the review and go with your
+  verdict; they can be on a line, several lines, a removed line or a whole
+  file, be edited, deleted or offered as a suggested change. Ticks follow
+  GitHub's own "Viewed" marks.
+- **More on the page of changes.** Words that changed are lit; the two sides
+  can sit side by side (`v`); `f` searches; `n` `p` `j` `k` `c` `x` jump by
+  file, change and comment; and a change of your working tree is staged or
+  undone a hunk at a time.
+- **Folders without git.** A folder in no repository opens too: every file of
+  it is listed, its code files are checked, and anything else is left alone.
+  Nothing is compared there, so there is no diff, graph or commit box.
 
 ## Use
 
 ```
-/lens                       the repo you are in, uncommitted changes
+/lens                       the folder you are in: a repo's uncommitted changes, or a plain folder's files
 /lens main                  the working tree against main
 /lens ~/Code/my-repo main   another repo
+/lens ~/Documents/scripts   a folder that is not a repo
+/lens recent                pick one reviewed lately
 ```
 
 Press `h` in the pane for the keys of the screen you are on.

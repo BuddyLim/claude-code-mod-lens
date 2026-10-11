@@ -11,7 +11,16 @@ from pygments.token import Token as T
 path, lo, hi = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 # A fourth argument means the text comes on stdin (a commit's version of the
 # file, which is not on disk); the path then only picks the lexer.
-if len(sys.argv) > 4:
+#
+# "git:<commit>:./<path>" in its place has git read that version here, so a
+# long file does not travel through a pipe to this process.
+if len(sys.argv) > 4 and sys.argv[4].startswith("git:"):
+    import subprocess
+    shown = subprocess.run(["git", "show", sys.argv[4][4:]], capture_output=True)
+    if shown.returncode != 0:
+        sys.exit(shown.stderr.decode("utf-8", "replace"))
+    text = shown.stdout.decode("utf-8", "replace")
+elif len(sys.argv) > 4:
     text = sys.stdin.read()
 else:
     text = open(path, encoding="utf-8", errors="replace").read()
