@@ -11,6 +11,7 @@ import type { Picture } from '../pictures'
 import { cellsOf } from '../pictures'
 import type { Comment, Overview, RequestAct } from '../review'
 import { isDraft, isOnWholeFile } from '../review'
+import { rowsOf } from '../rows'
 import { chunkMarkdown } from '../text'
 import type { Kit, Shell } from './frame'
 import { COMMIT_BOX, FILES_ICON, LINK_ICON, RESOLVED_COLOR, helpButton, stateOf, skeleton, statusLine, talkColor, talkIcon } from './frame'
@@ -25,6 +26,8 @@ const LISTED = 40
 // How many of the conversation, and of the threads on files, are listed
 // until the rest are asked for; and the most of each that are.
 const FOLDED = 5
+// The most rows the line beside a description runs for.
+const BAR_ROWS = 600
 const TALK_ALL = 40
 const THREADS_ALL = 60
 // How many of its commits are listed until the rest are asked for.
@@ -284,8 +287,19 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
               tall as the text beside it. */}
           {body !== '' && (
             <Box>
-              <Box width={1} flexShrink={0} backgroundColor="#5a5a5a" />
-              <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={1}>
+              {/* A thin line, not a cell of colour: one stroke a row, laid
+                  beside the text from its top to its bottom and cut off
+                  there, so it is as tall as the text whatever that comes to. */}
+              <Box position="absolute" top={0} bottom={0} left={0} width={1} overflow="hidden">
+                {/* About as many strokes as the text has rows, should a
+                    surface not cut the line where the text ends. */}
+                <Text color="#5a5a5a">
+                  {'│\n'.repeat(
+                    Math.min(BAR_ROWS, Math.max(1, rowsOf({ type: 'Markdown', props: { text: body.slice(0, BODY_SHOWN) } }, shell.columns - 4))),
+                  )}
+                </Text>
+              </Box>
+              <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={2}>
                 {Markdown === undefined
                   ? body
                       .slice(0, BODY_SHOWN)

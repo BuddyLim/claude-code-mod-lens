@@ -66,7 +66,7 @@ export const rowsOf = (node: Drawn, columns: number): number => {
         : node.type === 'Text' || node.type === 'Markdown'
           ? isCut
             ? 1
-            : (node.type === 'Markdown' && typeof props.children === 'string' ? props.children : text)
+            : (node.type === 'Markdown' && typeof props.text === 'string' ? props.text : text)
                 .split('\n')
                 .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / room)), 0)
           : 1
