@@ -284,8 +284,8 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
                   .slice(0, BODY_SHOWN)
                   .split('\n')
                   .slice(0, 400)
-                  .map(line => <Text>{line === '' ? ' ' : line}</Text>)
-              : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => <Markdown text={piece} />))}
+                  .map(line => <Text dimColor>{line === '' ? ' ' : line}</Text>)
+              : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => <Markdown dimColor text={piece} />))}
           {body.length > BODY_SHOWN && <Text dimColor>… the rest of it is on the request's page.</Text>}
 
           {/* A terminal draws no picture, video or document in place: each
