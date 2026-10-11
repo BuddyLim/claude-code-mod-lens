@@ -8,7 +8,8 @@ import type { Comment } from '../review'
 import type { TableCell } from '../text'
 import { chunkMarkdown, splitMarkdown, tableWidths, wrapText } from '../text'
 import type { Kit, Shell } from './frame'
-import { RESOLVED_COLOR, helpButton, statusLine, talkColor, talkIcon } from './frame'
+import { LINK_ICON, RESOLVED_COLOR, helpButton, statusLine, talkColor, talkIcon } from './frame'
+import { markLinks } from '../media'
 
 const MARKDOWN = /\.(md|mdx|markdown)$/i
 // A Markdown element takes so much text at once, and a pane's tree so much in
@@ -164,7 +165,7 @@ export const markdownScreen = (
         return [table(piece.header, piece.rows)]
       }
 
-      const pages = chunkMarkdown(piece.text, MARKDOWN_CHUNK)
+      const pages = chunkMarkdown(markLinks(piece.text, LINK_ICON), MARKDOWN_CHUNK)
       const fits = pages.slice(0, Math.max(0, budget))
 
       budget -= pages.length

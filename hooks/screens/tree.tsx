@@ -8,7 +8,7 @@ import { isAwaited, isCheckable } from '../check'
 import { countLabel, diagsOf } from '../diags'
 import type { Stash } from '../git'
 import { isFinding } from '../ledger'
-import { hostOf, mediaOf } from '../media'
+import { hostOf, markLinks, mediaOf } from '../media'
 import type { Comment } from '../review'
 import { isDraft, isOnWholeFile } from '../review'
 import { clamp, fitStash, wrapText } from '../text'
@@ -1115,7 +1115,7 @@ export const treeScreen = (kit: Kit, model: TreeModel, actions: TreeActions) => 
               {model.talkOpen === one.id &&
                 (Markdown !== undefined ? (
                   <Box marginLeft={isInSection ? 4 : 2} flexDirection="column">
-                    <Markdown text={one.body.trim().slice(0, TALK_SHOWN)} />
+                    <Markdown text={markLinks(one.body.trim().slice(0, TALK_SHOWN), LINK_ICON)} />
                   </Box>
                 ) : (
                   wrapText(one.body.trim(), Math.max(20, shell.columns - 6))

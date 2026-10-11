@@ -255,7 +255,7 @@ test('the overview draws what a request says, where it stands and what it links 
   expect(await ui.find({ type: 'Text', text: /changes requested/ })).toBeDefined()
   // The description is handed to the surface as markdown, and its picture is listed as a link.
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Pictures, videos and files \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Attachments \(1\)/ })).toBeDefined()
   // The picture is the forge's own, so it was fetched, and it is drawn in
   // place: a file the terminal reads, in cells that keep its shape.
   await ui.drawn()

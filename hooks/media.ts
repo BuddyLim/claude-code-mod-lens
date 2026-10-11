@@ -169,3 +169,46 @@ export const sampleOf = (markdown: string, count: number, width: number): string
 // The site a link goes to, to say beside whatever it is called: a name is
 // the writer's to choose, where it leads is not.
 export const hostOf = (url: string): string => /^https?:\/\/([^/?#\s]{1,200})/i.exec(url)?.[1]?.toLowerCase() ?? ''
+
+// Markdown with every link that opens a page elsewhere marked as one: `mark`
+// (the sign of such a link) is put after its words, so a link reads as
+// something to press and not as coloured text. A picture written into the
+// text is no picture in a terminal, so it becomes a link to itself, marked
+// the same. Code is left as it is, fenced or between backticks, and so is a
+// picture that is itself the words of a link.
+const LINKED = new RegExp('(?<![\\[!])(!?)\\[([^\\[\\]\\n]{1,300})\\]\\((https?://[^\\s)]{1,2000})(?:\\s+"[^"\\n]{0,200}")?\\)', 'g')
+
+export const markLinks = (markdown: string, mark: string): string => {
+  let fence = ''
+
+  return markdown
+    .split('\n')
+    .map(line => {
+      const opened = /^\s{0,3}(```|~~~)/.exec(line)?.[1] ?? ''
+
+      if (fence !== '') {
+        fence = opened === fence ? '' : fence
+
+        return line
+      }
+
+      if (opened !== '') {
+        fence = opened
+
+        return line
+      }
+
+      // Every other piece of a line cut at its backticks is code.
+      return line
+        .split(/(`[^`]*`)/)
+        .map((piece, at) =>
+          at % 2 === 1
+            ? piece
+            : piece.replace(LINKED, (_whole, _bang: string, label: string, url: string) =>
+                label.endsWith(mark) ? `[${label}](${url})` : `[${label} ${mark}](${url})`,
+              ),
+        )
+        .join('')
+    })
+    .join('\n')
+}

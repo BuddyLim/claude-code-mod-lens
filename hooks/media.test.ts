@@ -1,6 +1,32 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MEDIA_KEPT, SCANNED, hostOf, mediaOf, sampleOf } from './media'
+import { MEDIA_KEPT, SCANNED, hostOf, markLinks, mediaOf, sampleOf } from './media'
+
+test('links in markdown are marked as links, pictures become links, and code is left alone', async () => {
+  const body = [
+    'See [the docs](https://example.com/docs) and [a clip](https://example.com/a.mp4 "title").',
+    '![a shot](https://example.com/shot.png)',
+    '[![badge](https://example.com/b.svg)](https://example.com/ci)',
+    'In code: `[not](https://example.com/x)` stays.',
+    '```',
+    '[nor this](https://example.com/y)',
+    '```',
+    '[a page here](docs/readme.md) and [marked ^](https://example.com/z)',
+  ].join('\n')
+
+  expect(markLinks(body, '^').split('\n')).toEqual([
+    'See [the docs ^](https://example.com/docs) and [a clip ^](https://example.com/a.mp4).',
+    '[a shot ^](https://example.com/shot.png)',
+    // A picture that is the words of a link is left as it was written.
+    '[![badge](https://example.com/b.svg)](https://example.com/ci)',
+    'In code: `[not](https://example.com/x)` stays.',
+    '```',
+    '[nor this](https://example.com/y)',
+    '```',
+    // A link inside the repository opens nothing elsewhere; one marked already is not marked twice.
+    '[a page here](docs/readme.md) and [marked ^](https://example.com/z)',
+  ])
+})
 
 test('the pictures, videos and documents of a description are listed in order, each once', async () => {
   const body = [

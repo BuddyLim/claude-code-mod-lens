@@ -6,7 +6,7 @@
 
 import { ageOf } from '../git'
 import type { Media } from '../media'
-import { hostOf, mediaOf } from '../media'
+import { hostOf, markLinks, mediaOf } from '../media'
 import type { Picture } from '../pictures'
 import { cellsOf } from '../pictures'
 import type { Overview, RequestAct } from '../review'
@@ -243,12 +243,19 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
                   .split('\n')
                   .slice(0, 400)
                   .map(line => <Text>{line === '' ? ' ' : line}</Text>)
-              : chunkMarkdown(body.slice(0, BODY_SHOWN), BODY_PIECE).map(piece => <Markdown text={piece} />))}
+              : chunkMarkdown(markLinks(body.slice(0, BODY_SHOWN), LINK_ICON), BODY_PIECE).map(piece => <Markdown text={piece} />))}
           {body.length > BODY_SHOWN && <Text dimColor>… the rest of it is on the request's page.</Text>}
 
           {/* A terminal draws no picture, video or document in place: each
               is a link that opens where it can be seen. */}
-          {media.length > 0 && heading(`Pictures, videos and files (${media.length})`)}
+          {media.length > 0 && heading(`Attachments (${media.length})`)}
+          {/* The same links as in the description above, gathered: what it
+              shows or attaches, apart from the pages it only points to. */}
+          {media.length > 0 && (
+            <Text dimColor wrap="truncate-end">
+              The pictures, videos and files the description links to, gathered here; pictures are drawn.
+            </Text>
+          )}
           {media.slice(0, LISTED).flatMap(one => {
             const picture = model.pictures.get(one.url)
             // A picture is drawn under its link where it has been fetched
