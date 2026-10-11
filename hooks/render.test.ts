@@ -217,7 +217,7 @@ test('the overview draws what a request says, where it stands and what it links 
       { context: 'deploy', state: 'PENDING', targetUrl: '' },
     ],
     latestReviews: [{ author: { login: 'bob' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-10-09T00:00:00Z', commit: { oid: 'c'.repeat(40) } }],
-    commits: [{ oid: 'd'.repeat(40), messageHeadline: 'Add it', authors: [{ login: 'ann' }] }],
+    commits: Array.from({ length: 7 }, (_, at) => ({ oid: String(at).repeat(40), messageHeadline: `Step ${at + 1}`, authors: [{ login: 'ann' }] })),
     labels: [{ name: 'feature' }],
     additions: 10,
     deletions: 2,
@@ -256,6 +256,14 @@ test('the overview draws what a request says, where it stands and what it links 
   // The description is handed to the surface as markdown, and its picture is listed as a link.
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Attachments \(1\)/ })).toBeDefined()
+  // Its latest five commits are listed, the newest first; the rest unfold.
+  expect(await ui.find({ type: 'Text', text: /Step 7/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Text', text: /^\S+ Step \d/ })).length).toBe(5)
+  expect((await ui.find({ key: 'commits-more' }))?.text).toBe('▾ show 2 earlier commits')
+  await ui.press({ key: 'commits-more' })
+  expect((await ui.findAll({ type: 'Text', text: /^\S+ Step \d/ })).length).toBe(7)
+  await ui.press({ key: 'commits-more' })
+  expect((await ui.findAll({ type: 'Text', text: /^\S+ Step \d/ })).length).toBe(5)
   // The picture is the forge's own, so it was fetched, and it is drawn in
   // place: a file the terminal reads, in cells that keep its shape.
   await ui.drawn()

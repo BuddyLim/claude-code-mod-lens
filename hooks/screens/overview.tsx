@@ -19,6 +19,8 @@ import { COMMIT_BOX, FILES_ICON, LINK_ICON, helpButton, stateOf, skeleton, statu
 const BODY_SHOWN = 40_000
 const BODY_PIECE = 8000
 const LISTED = 40
+// How many of its commits are listed until the rest are asked for.
+const COMMITS_FOLDED = 5
 // The most rows one picture takes.
 const PICTURE_ROWS = 24
 
@@ -40,6 +42,8 @@ export type OverviewModel = {
   // whether one is under way.
   asking: RequestAct | ''
   isActing: boolean
+  // Whether every commit is listed, in place of the latest few.
+  isCommitsOpen: boolean
 }
 
 export type OverviewActions = {
@@ -54,6 +58,8 @@ export type OverviewActions = {
   // does the one asked about.
   ask: (act: RequestAct | '') => void
   act: (act: RequestAct) => void
+  // Between the latest few commits and all of them.
+  toggleCommits: () => void
   help: () => void
 }
 
@@ -290,12 +296,34 @@ export const overviewScreen = (kit: Kit, model: OverviewModel, actions: Overview
           )}
 
           {overview.commits.length > 0 && heading(`Commits (${overview.commits.length})`)}
-          {overview.commits.slice(-LISTED).map(commit => (
-            <Text wrap="truncate-end">
-              <Text color="yellow">{commit.hash}</Text> {commit.subject}
-              <Text dimColor>{commit.author === '' ? '' : `  @${commit.author}`}</Text>
-            </Text>
-          ))}
+          {/* The latest few, the newest first; the rest are a press away. */}
+          {overview.commits
+            .slice(model.isCommitsOpen ? -LISTED : -COMMITS_FOLDED)
+            .reverse()
+            .map(commit => (
+              <Text wrap="truncate-end">
+                <Text color="yellow">{commit.hash}</Text> {commit.subject}
+                <Text dimColor>{commit.author === '' ? '' : `  @${commit.author}`}</Text>
+              </Text>
+            ))}
+          {overview.commits.length > COMMITS_FOLDED && (
+            <Box>
+              <Button
+                plain
+                dimColor
+                key="commits-more"
+                label={
+                  model.isCommitsOpen
+                    ? `▴ show only the latest ${COMMITS_FOLDED}`
+                    : `▾ show ${Math.min(LISTED, overview.commits.length) - COMMITS_FOLDED} earlier commits`
+                }
+                onPress={actions.toggleCommits}
+              />
+            </Box>
+          )}
+          {model.isCommitsOpen && overview.commits.length > LISTED && (
+            <Text dimColor>… {overview.commits.length - LISTED} earlier still are on the request's page.</Text>
+          )}
         </Box>
       )}
     </Box>

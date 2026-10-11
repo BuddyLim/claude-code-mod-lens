@@ -1062,6 +1062,8 @@ const loadMe = async ($: EngineInterface, repo: string): Promise<void> => {
 // (of which request, and which), and whether one is under way.
 // The request being opened from the list, as it is typed; '' for none.
 let requestOpening = ''
+// The request whose every commit the overview lists, by its key; '' for none.
+let commitsOpen = ''
 let requestAsked: { key: string; act: RequestAct | '' } = { key: '', act: '' }
 let requestActing = false
 
@@ -2294,8 +2296,9 @@ export const register: Register = (on, options) => {
               now: await $.clock.now(),
               asking: '',
               isActing: false,
+              isCommitsOpen: false,
             },
-            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, help: still },
+            { back: still, refresh: still, sinceReview: still, openFiles: still, openChanges: still, ask: still, act: still, toggleCommits: still, help: still },
           ),
         )
       }
@@ -2473,6 +2476,7 @@ export const register: Register = (on, options) => {
             now: await $.clock.now(),
             asking: requestAsked.key === key ? requestAsked.act : '',
             isActing: requestActing,
+            isCommitsOpen: commitsOpen === key,
           },
           {
             // Back goes where the overview was opened from: the list of requests, or the file tree.
@@ -2498,6 +2502,10 @@ export const register: Register = (on, options) => {
                   ...(last.overviewFrom === 'requests' ? { base: 'HEAD', target: '', baseWorktree: '' } : {}),
                 }),
               )
+            },
+            toggleCommits: () => {
+              commitsOpen = commitsOpen === key ? '' : key
+              set(nudged)
             },
             // On to the code: the files it changes, or every change on one page.
             openFiles: () => set((last): View => ({ ...last, screen: 'tree', codeFrom: 'overview' })),
